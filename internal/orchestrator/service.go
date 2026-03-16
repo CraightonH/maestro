@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,7 +26,16 @@ import (
 type Event struct {
 	Time    time.Time
 	Level   string
+	Source  string
+	RunID   string
+	Issue   string
 	Message string
+}
+
+type eventContext struct {
+	SourceName      string
+	RunID           string
+	IssueIdentifier string
 }
 
 type pendingStop struct {
@@ -62,6 +72,24 @@ type ApprovalHistoryEntry struct {
 	Outcome         string
 }
 
+type RetryView struct {
+	IssueID         string
+	IssueIdentifier string
+	SourceName      string
+	Attempt         int
+	DueAt           time.Time
+	Error           string
+}
+
+type RunOutputView struct {
+	RunID           string
+	SourceName      string
+	IssueIdentifier string
+	StdoutTail      string
+	StderrTail      string
+	UpdatedAt       time.Time
+}
+
 type SourceSummary struct {
 	Name             string
 	DisplayGroup     string
@@ -83,9 +111,11 @@ type Snapshot struct {
 	ClaimedCount     int
 	RetryCount       int
 	PendingApprovals []ApprovalView
+	Retries          []RetryView
 	ApprovalHistory  []ApprovalHistoryEntry
 	ActiveRun        *domain.AgentRun
 	ActiveRuns       []domain.AgentRun
+	RunOutputs       []RunOutputView
 	SourceSummaries  []SourceSummary
 	RecentEvents     []Event
 }
@@ -122,6 +152,7 @@ type Service struct {
 	approvals       map[string]ApprovalView
 	approvalOrder   []string
 	approvalHistory []ApprovalHistoryEntry
+	runOutputs      map[string]*runOutputBuffer
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -193,6 +224,7 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 		limiter:      deps.Limiter,
 		pendingStops: map[string]pendingStop{},
 		approvals:    map[string]ApprovalView{},
+		runOutputs:   map[string]*runOutputBuffer{},
 	}
 	if err := svc.restoreState(); err != nil {
 		logger.Warn("restore state failed", "error", err)
@@ -218,6 +250,50 @@ func (s *Service) Snapshot() Snapshot {
 		}
 	}
 	history := append([]ApprovalHistoryEntry(nil), s.approvalHistory...)
+	retries := make([]RetryView, 0, len(s.retryQueue))
+	for _, retry := range s.retryQueue {
+		retries = append(retries, RetryView{
+			IssueID:         retry.IssueID,
+			IssueIdentifier: retry.Identifier,
+			SourceName:      s.source.Name,
+			Attempt:         retry.Attempt,
+			DueAt:           retry.DueAt,
+			Error:           retry.Error,
+		})
+	}
+	sort.Slice(retries, func(i, j int) bool {
+		if retries[i].DueAt.Equal(retries[j].DueAt) {
+			return retries[i].IssueIdentifier < retries[j].IssueIdentifier
+		}
+		return retries[i].DueAt.Before(retries[j].DueAt)
+	})
+	runOutputs := make([]RunOutputView, 0, len(s.runOutputs))
+	for runID, output := range s.runOutputs {
+		output.mu.RLock()
+		updatedAt := output.updatedAt
+		output.mu.RUnlock()
+		runOutputs = append(runOutputs, RunOutputView{
+			RunID:      runID,
+			SourceName: s.source.Name,
+			StdoutTail: output.stdout.String(),
+			StderrTail: output.stderr.String(),
+			UpdatedAt:  updatedAt,
+		})
+	}
+	if activeRun != nil {
+		for i := range runOutputs {
+			if runOutputs[i].RunID == activeRun.ID {
+				runOutputs[i].IssueIdentifier = activeRun.Issue.Identifier
+				break
+			}
+		}
+	}
+	sort.Slice(runOutputs, func(i, j int) bool {
+		if runOutputs[i].UpdatedAt.Equal(runOutputs[j].UpdatedAt) {
+			return runOutputs[i].RunID < runOutputs[j].RunID
+		}
+		return runOutputs[i].UpdatedAt.After(runOutputs[j].UpdatedAt)
+	})
 	return Snapshot{
 		SourceName:       s.source.Name,
 		SourceTracker:    s.source.Tracker,
@@ -226,9 +302,11 @@ func (s *Service) Snapshot() Snapshot {
 		ClaimedCount:     len(s.claimed),
 		RetryCount:       len(s.retryQueue),
 		PendingApprovals: pendingApprovals,
+		Retries:          retries,
 		ApprovalHistory:  history,
 		ActiveRun:        activeRun,
 		ActiveRuns:       activeRuns(activeRun),
+		RunOutputs:       runOutputs,
 		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals))},
 		RecentEvents:     events,
 	}
@@ -257,6 +335,34 @@ func sourceSummaryForSnapshot(source config.SourceConfig, lastPollAt time.Time, 
 }
 
 func (s *Service) recordEvent(level string, message string, args ...any) {
+	s.recordEventWithContext(level, eventContext{}, message, args...)
+}
+
+func (s *Service) recordSourceEvent(level string, sourceName string, message string, args ...any) {
+	s.recordEventWithContext(level, eventContext{SourceName: sourceName}, message, args...)
+}
+
+func (s *Service) recordRunEvent(run *domain.AgentRun, level string, message string, args ...any) {
+	if run == nil {
+		s.recordEvent(level, message, args...)
+		return
+	}
+	s.recordEventWithContext(level, eventContext{
+		SourceName:      run.SourceName,
+		RunID:           run.ID,
+		IssueIdentifier: run.Issue.Identifier,
+	}, message, args...)
+}
+
+func (s *Service) recordRunEventByFields(level string, sourceName string, runID string, issueIdentifier string, message string, args ...any) {
+	s.recordEventWithContext(level, eventContext{
+		SourceName:      sourceName,
+		RunID:           runID,
+		IssueIdentifier: issueIdentifier,
+	}, message, args...)
+}
+
+func (s *Service) recordEventWithContext(level string, ctx eventContext, message string, args ...any) {
 	msg := redact.String(fmt.Sprintf(message, args...))
 	s.logger.Log(context.Background(), parseLevel(level), msg)
 
@@ -266,6 +372,9 @@ func (s *Service) recordEvent(level string, message string, args ...any) {
 	s.events = append(s.events, Event{
 		Time:    time.Now(),
 		Level:   strings.ToUpper(level),
+		Source:  ctx.SourceName,
+		RunID:   ctx.RunID,
+		Issue:   ctx.IssueIdentifier,
 		Message: msg,
 	})
 	if len(s.events) > 20 {

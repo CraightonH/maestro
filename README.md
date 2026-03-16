@@ -120,7 +120,10 @@ These keep logs, state, and workspaces under `demo/*/var/` so you can inspect an
 - `gitlab-epic` sources can optionally target exact epic IIDs with `epic_filter.iids`.
 - `source_defaults` and `agent_defaults` let you share tracker connection settings, common filters, and common agent runtime settings across large configs.
 - `display_group` and `tags` let you organize source-heavy configs in the TUI without affecting dispatch behavior.
-- The TUI supports `/` for search, `f` to cycle source groups, and `c` to clear filters.
+- The TUI supports `tab` to switch focus between sources, active runs, retries, and approvals, `/` for search, `f` to cycle source groups, `u` for attention-only filtering, `w` for awaiting-approval filtering, `c` to clear filters, `o` and `O` to change sort order, and `v` to toggle compact mode.
+- The source pane now includes a selected-source detail view with tracker, group, tags, poll stats, visible work counts, and recent source events.
+- The active-runs pane now includes a selected-run detail view with source, issue, timestamps, approval state, workspace path, error context, and live stdout/stderr tails.
+- The retries pane now shows queued reruns with due time, attempt number, and the last error.
 
 ## Docs
 

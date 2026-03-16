@@ -56,7 +56,7 @@ func (s *Service) recordApprovalRequest(request harness.ApprovalRequest) {
 	}
 	s.mu.Unlock()
 
-	s.recordEvent("warn", "approval requested for %s (%s)", request.RunID, request.ToolName)
+	s.recordRunEventByFields("warn", s.source.Name, request.RunID, view.IssueIdentifier, "approval requested for %s (%s)", request.RunID, request.ToolName)
 	_ = s.saveStateBestEffort()
 }
 
@@ -72,7 +72,7 @@ func (s *Service) ResolveApproval(requestID string, decision string) error {
 		RequestID: requestID,
 		Decision:  decision,
 	}); err != nil {
-		s.recordEvent("error", "approval %s for %s failed: %v", decision, request.RunID, err)
+		s.recordRunEventByFields("error", s.source.Name, request.RunID, request.IssueIdentifier, "approval %s for %s failed: %v", decision, request.RunID, err)
 		return err
 	}
 
@@ -107,7 +107,7 @@ func (s *Service) ResolveApproval(requestID string, decision string) error {
 	s.appendApprovalHistory(history)
 	s.mu.Unlock()
 
-	s.recordEvent("info", "approval %s for %s (%s)", decision, request.RunID, request.ToolName)
+	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "approval %s for %s (%s)", decision, request.RunID, request.ToolName)
 	_ = s.saveStateBestEffort()
 	return nil
 }

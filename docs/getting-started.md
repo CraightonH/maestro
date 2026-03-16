@@ -157,12 +157,20 @@ maestro cleanup workspaces --config /path/to/maestro.yaml --dry-run
 
 Manual approval is now supported for Claude. Use one of the `*-manual.yaml` samples and run with the TUI enabled so you can approve or reject requests:
 
+- `tab` switches focus between sources, active runs, retries, and approvals
 - `a` approves the first pending request
 - `r` rejects the first pending request
 - `/` enters source search mode
 - `f` cycles source-group filters
+- `u` toggles the attention-only filter
+- `w` toggles the awaiting-approval filter
 - `c` clears source filters
+- `o` cycles active-run sort order
+- `O` cycles retry sort order
+- `v` toggles compact mode
 - `q` exits the TUI
+
+The source pane now supports drill-down inspection of one source at a time, including poll stats and recent source events. The active-runs pane supports per-run inspection with live stdout/stderr tails, and the retries pane shows queued reruns with due times and prior errors. Attention and awaiting-approval quick filters, plus sort controls and compact mode, make it easier to scan large multi-source configs without losing access to the full detail panes.
 
 For Codex, the config path exists, but the current local app-server build did not emit approval requests during live validation on March 15, 2026.
 

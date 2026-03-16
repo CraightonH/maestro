@@ -61,7 +61,7 @@ func (s *Service) tick(ctx context.Context) error {
 	hasActive := s.activeRun != nil
 	s.mu.Unlock()
 
-	s.recordEvent("info", "polled %d candidate issues from %s", len(issues), s.source.Name)
+	s.recordSourceEvent("info", s.source.Name, "polled %d candidate issues from %s", len(issues), s.source.Name)
 
 	if hasActive {
 		s.reconcileActiveRun(ctx, issues)
@@ -87,6 +87,6 @@ func (s *Service) shutdown() error {
 		return nil
 	}
 
-	s.recordEvent("info", "stopping active run %s", activeRun.ID)
+	s.recordRunEvent(activeRun, "info", "stopping active run %s", activeRun.ID)
 	return s.harness.Stop(context.Background(), activeRun.ID)
 }

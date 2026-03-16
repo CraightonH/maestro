@@ -43,8 +43,8 @@ func (s *Service) stopRunAsFailed(ctx context.Context, runID string, reason stri
 	s.pendingStops[runID] = pendingStop{Status: domain.RunStatusFailed, Reason: reason, Retry: true}
 	s.mu.Unlock()
 
-	s.recordEvent("warn", "stopping run %s: %s", runID, reason)
+	s.recordRunEventByFields("warn", s.source.Name, runID, "", "stopping run %s: %s", runID, reason)
 	if err := s.harness.Stop(ctx, runID); err != nil {
-		s.recordEvent("error", "stop run %s failed: %v", runID, err)
+		s.recordRunEventByFields("error", s.source.Name, runID, "", "stop run %s failed: %v", runID, err)
 	}
 }

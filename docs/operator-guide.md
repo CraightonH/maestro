@@ -22,11 +22,31 @@ maestro run --config /path/to/maestro.yaml
 
 ## TUI Controls
 
-- `j` or down arrow selects the next pending approval
-- `k` or up arrow selects the previous pending approval
+- `tab` switches focus between sources, active runs, retries, and pending approvals
+- `j` or down arrow moves within the focused list
+- `k` or up arrow moves within the focused list
 - `a` approves the selected pending approval
 - `r` rejects the selected pending approval
+- `/` enters search mode
+- `f` cycles source-group filters
+- `u` toggles the attention-only filter
+- `w` toggles the awaiting-approval filter
+- `c` clears source filters
+- `o` cycles active-run sort order
+- `O` cycles retry sort order
+- `v` toggles compact mode
 - `q` quit
+
+The TUI now shows:
+
+- an overview line with visible source, active-run, approval, and retry counts
+- grouped per-source status lines with health badges for at-a-glance health
+- a selectable `Sources` list with a `Selected source` detail pane for tracker, group, tags, last poll, visible work counts, and recent source events
+- a selectable `Active runs` list
+- a selectable `Retries` list for delayed reruns
+- a `Selected run` detail pane with run ID, source, issue, title, URL, agent, harness, approval state, timestamps, workspace path, error, and live stdout/stderr tails
+- a `Selected retry` detail pane with source, issue, attempt, due time, and error
+- a selectable approval list plus detailed approval pane
 
 ## State And Logs
 
@@ -145,7 +165,10 @@ Active run should have stopped but kept going:
 
 Large multi-source config is hard to scan in the TUI:
 
-- press `/` to search by source name, tracker, group, or tag
+- press `/` to search by source name, tracker, group, tag, active issue, title, or error text
+- use `tab` to move between sources, active runs, retries, and approvals
+- press `u` to narrow the view to sources and work that need attention
+- press `w` to narrow the view to approval-driven work
 - press `f` to cycle source groups
 - press `c` to clear all source filters
 

@@ -40,7 +40,7 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 	s.mu.Unlock()
 	_ = s.saveStateBestEffort()
 
-	s.recordEvent("info", "dispatching %s to %s", issue.Identifier, run.AgentName)
+	s.recordRunEvent(run, "info", "dispatching %s to %s", issue.Identifier, run.AgentName)
 	s.applyTrackerLifecycle(ctx, issue.ID,
 		[]string{trackerbase.LifecycleLabelActive},
 		[]string{
@@ -88,10 +88,21 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		return fmt.Errorf("render prompt: %w", err)
 	}
 
+	s.initRunOutput(run.ID)
+	defer s.clearRunOutput(run.ID)
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	stdoutWriter := &activityWriter{target: &stdout, onWrite: func() { s.markRunActivity(run.ID) }}
-	stderrWriter := &activityWriter{target: &stderr, onWrite: func() { s.markRunActivity(run.ID) }}
+	stdoutWriter := &runOutputWriter{
+		target:  &stdout,
+		onWrite: func() { s.markRunActivity(run.ID) },
+		append:  func(p []byte) { s.appendRunOutput(run.ID, "stdout", p) },
+	}
+	stderrWriter := &runOutputWriter{
+		target:  &stderr,
+		onWrite: func() { s.markRunActivity(run.ID) },
+		append:  func(p []byte) { s.appendRunOutput(run.ID, "stderr", p) },
+	}
 	active, err := s.harness.Start(ctx, harness.RunConfig{
 		RunID:          run.ID,
 		Prompt:         renderedPrompt,
@@ -109,7 +120,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		r.Status = domain.RunStatusActive
 		r.LastActivityAt = time.Now()
 	})
-	s.recordEvent("info", "agent %s started for %s", run.AgentName, run.Issue.Identifier)
+	s.recordRunEvent(run, "info", "agent %s started for %s", run.AgentName, run.Issue.Identifier)
 
 	if err := active.Wait(); err != nil {
 		s.runHookBestEffort(context.Background(), s.cfg.Hooks.AfterRun, prepared.Path, run, "after_run")
@@ -175,7 +186,7 @@ func (s *Service) completeRun(runID string) {
 	s.mu.Unlock()
 
 	if scheduledRetry {
-		s.recordEvent("warn", "run %s stopped: %s; retry %d scheduled for %s", runID, comment, retry.Attempt, retry.DueAt.Format(time.RFC3339))
+		s.recordRunEventByFields("warn", s.source.Name, runID, issueIdentifier, "run %s stopped: %s; retry %d scheduled for %s", runID, comment, retry.Attempt, retry.DueAt.Format(time.RFC3339))
 		if issueID != "" {
 			s.applyTrackerLifecycle(context.Background(), issueID, []string{trackerbase.LifecycleLabelRetry}, []string{
 				trackerbase.LifecycleLabelActive,
@@ -189,7 +200,7 @@ func (s *Service) completeRun(runID string) {
 		return
 	}
 
-	s.recordEvent("info", "run %s completed", runID)
+	s.recordRunEventByFields("info", s.source.Name, runID, issueIdentifier, "run %s completed", runID)
 	if issueID != "" {
 		add := []string{trackerbase.LifecycleLabelDone}
 		if status == domain.RunStatusFailed {
@@ -200,7 +211,7 @@ func (s *Service) completeRun(runID string) {
 			trackerbase.LifecycleLabelRetry,
 		}, comment)
 		s.refreshStoredIssueTimestamp(context.Background(), issueID)
-		s.recordEvent("info", "tracker state updated for %s", issueIdentifier)
+		s.recordRunEventByFields("info", s.source.Name, runID, issueIdentifier, "tracker state updated for %s", issueIdentifier)
 	}
 	s.releaseClaim(issueID)
 	if s.limiter != nil {
@@ -264,7 +275,7 @@ func (s *Service) failRun(runID string, err error) {
 
 	if plannedStop {
 		if stop.Retry {
-			s.recordEvent("warn", "run %s stopped: %s; retry %d scheduled for %s", runID, stop.Reason, retry.Attempt, retry.DueAt.Format(time.RFC3339))
+			s.recordRunEventByFields("warn", s.source.Name, runID, issueIdentifier, "run %s stopped: %s; retry %d scheduled for %s", runID, stop.Reason, retry.Attempt, retry.DueAt.Format(time.RFC3339))
 			s.applyTrackerLifecycle(context.Background(), issueID, []string{trackerbase.LifecycleLabelRetry}, []string{
 				trackerbase.LifecycleLabelActive,
 				trackerbase.LifecycleLabelDone,
@@ -278,7 +289,7 @@ func (s *Service) failRun(runID string, err error) {
 			_ = s.saveStateBestEffort()
 			return
 		}
-		s.recordEvent("warn", "run %s stopped: %s", runID, stop.Reason)
+		s.recordRunEventByFields("warn", s.source.Name, runID, issueIdentifier, "run %s stopped: %s", runID, stop.Reason)
 		add := []string{trackerbase.LifecycleLabelDone}
 		if stop.Status == domain.RunStatusFailed {
 			add = []string{trackerbase.LifecycleLabelFailed}
@@ -296,7 +307,7 @@ func (s *Service) failRun(runID string, err error) {
 		return
 	}
 	if scheduledRetry {
-		s.recordEvent("warn", "run %s failed: %v; retry %d scheduled for %s", runID, err, retry.Attempt, retry.DueAt.Format(time.RFC3339))
+		s.recordRunEventByFields("warn", s.source.Name, runID, issueIdentifier, "run %s failed: %v; retry %d scheduled for %s", runID, err, retry.Attempt, retry.DueAt.Format(time.RFC3339))
 		s.applyTrackerLifecycle(context.Background(), issueID, []string{trackerbase.LifecycleLabelRetry}, []string{
 			trackerbase.LifecycleLabelActive,
 			trackerbase.LifecycleLabelDone,
@@ -310,7 +321,7 @@ func (s *Service) failRun(runID string, err error) {
 		_ = s.saveStateBestEffort()
 		return
 	}
-	s.recordEvent("error", "run %s failed: %v", runID, err)
+	s.recordRunEventByFields("error", s.source.Name, runID, issueIdentifier, "run %s failed: %v", runID, err)
 	if issueID != "" {
 		s.applyTrackerLifecycle(context.Background(), issueID, []string{trackerbase.LifecycleLabelFailed}, []string{
 			trackerbase.LifecycleLabelActive,

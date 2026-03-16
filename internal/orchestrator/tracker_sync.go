@@ -21,7 +21,7 @@ func (s *Service) reconcileActiveRun(ctx context.Context, polled []domain.Issue)
 	if current == nil {
 		refreshed, err := s.tracker.Get(ctx, run.Issue.ID)
 		if err != nil {
-			s.recordEvent("warn", "reconcile get failed for %s: %v", run.Issue.Identifier, err)
+			s.recordRunEvent(&run, "warn", "reconcile get failed for %s: %v", run.Issue.Identifier, err)
 			return
 		}
 		current = &refreshed
@@ -56,9 +56,9 @@ func (s *Service) stopActiveRunFromTracker(ctx context.Context, runID string, st
 	s.pendingStops[runID] = pendingStop{Status: status, Reason: reason}
 	s.mu.Unlock()
 
-	s.recordEvent("warn", "stopping run %s: %s", runID, reason)
+	s.recordRunEventByFields("warn", s.source.Name, runID, "", "stopping run %s: %s", runID, reason)
 	if err := s.harness.Stop(ctx, runID); err != nil {
-		s.recordEvent("error", "stop run %s failed: %v", runID, err)
+		s.recordRunEventByFields("error", s.source.Name, runID, "", "stop run %s failed: %v", runID, err)
 	}
 }
 
@@ -114,7 +114,7 @@ func (s *Service) refreshActiveRunIssue(ctx context.Context, runID string) {
 		return s.activeRun != nil && s.activeRun.ID == runID && s.activeRun.Issue.ID == issue.ID
 	})
 	if err != nil {
-		s.recordEvent("warn", "refresh active run %s failed: %v", runID, err)
+		s.recordRunEventByFields("warn", s.source.Name, runID, "", "refresh active run %s failed: %v", runID, err)
 		return
 	}
 

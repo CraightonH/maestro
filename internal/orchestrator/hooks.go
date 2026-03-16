@@ -32,9 +32,9 @@ func (s *Service) runHook(ctx context.Context, script string, workdir string, ru
 
 func (s *Service) runHookBestEffort(ctx context.Context, script string, workdir string, run *domain.AgentRun, stage string) {
 	if err := s.runHook(ctx, script, workdir, run, stage); err != nil {
-		s.recordEvent("warn", "%v", err)
+		s.recordRunEvent(run, "warn", "%v", err)
 	} else if strings.TrimSpace(script) != "" && strings.TrimSpace(workdir) != "" {
-		s.recordEvent("info", "hook %s completed for %s", stage, run.Issue.Identifier)
+		s.recordRunEvent(run, "info", "hook %s completed for %s", stage, run.Issue.Identifier)
 	}
 }
 
