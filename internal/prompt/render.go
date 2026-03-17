@@ -24,6 +24,10 @@ const systemPreamble = `## System
 - When referring to a secret-bearing value, replace the sensitive portion with REDACTED.
 `
 
+func SystemPreamble() string {
+	return strings.TrimSpace(systemPreamble)
+}
+
 func RenderFile(path string, data Data) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {

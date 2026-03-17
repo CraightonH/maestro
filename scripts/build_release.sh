@@ -12,6 +12,8 @@ fi
 OUT_DIR="${ROOT}/dist/${VERSION}"
 mkdir -p "${OUT_DIR}"
 
+"${ROOT}/scripts/sync_web_embed.sh"
+
 platforms=(
   "darwin amd64"
   "darwin arm64"

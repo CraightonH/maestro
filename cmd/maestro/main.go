@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/tjohnson/maestro/internal/api"
 	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/logging"
 	"github.com/tjohnson/maestro/internal/ops"
@@ -34,6 +35,8 @@ func main() {
 	switch args[0] {
 	case "run":
 		runCommand(args[1:])
+	case "demo-web":
+		demoWebCommand(args[1:])
 	case "inspect":
 		inspectCommand(args[1:])
 	case "reset":
@@ -44,6 +47,46 @@ func main() {
 		fmt.Println(version)
 	default:
 		runCommand(args)
+	}
+}
+
+func demoWebCommand(args []string) {
+	fs := flag.NewFlagSet("demo-web", flag.ExitOnError)
+	var host string
+	var port int
+	fs.StringVar(&host, "host", "127.0.0.1", "host to bind the demo server")
+	fs.IntVar(&port, "port", 8742, "port to bind the demo server")
+	_ = fs.Parse(args)
+
+	logDir, err := os.MkdirTemp("", "maestro-demo-logs.")
+	if err != nil {
+		fatalf("create demo log dir: %v", err)
+	}
+
+	logger, closeLogs, err := logging.New("info", logDir, 10)
+	if err != nil {
+		fatalf("init logger: %v", err)
+	}
+	defer func() {
+		if closeLogs != nil {
+			_ = closeLogs()
+		}
+	}()
+
+	cfg, err := api.DemoConfig(host, port)
+	if err != nil {
+		fatalf("create demo config: %v", err)
+	}
+	runtime := api.NewDemoRuntime()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	runtime.Start(ctx)
+
+	server := api.New(cfg, logger, runtime)
+	if err := server.Run(ctx); err != nil {
+		fatalf("run demo api server: %v", err)
 	}
 }
 
@@ -81,13 +124,21 @@ func runCommand(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	errCh := make(chan error, 1)
+	componentCount := 1
+	errCh := make(chan error, 2)
 	go func() {
 		errCh <- runtime.Run(ctx)
 	}()
+	if cfg.Server.Enabled {
+		componentCount++
+		server := api.New(cfg, logger, runtime)
+		go func() {
+			errCh <- server.Run(ctx)
+		}()
+	}
 
 	if noTUI {
-		if err := waitForExit(ctx, errCh, logger); err != nil {
+		if err := waitForExit(ctx, errCh, componentCount, logger); err != nil {
 			fatalf("run service: %v", err)
 		}
 		return
@@ -98,7 +149,7 @@ func runCommand(args []string) {
 		fatalf("run tui: %v", err)
 	}
 	cancel()
-	if err := waitForExit(context.Background(), errCh, logger); err != nil {
+	if err := waitForExit(context.Background(), errCh, componentCount, logger); err != nil {
 		fatalf("run service: %v", err)
 	}
 }
@@ -525,14 +576,22 @@ func printJSON(value any) {
 	fmt.Println(string(raw))
 }
 
-func waitForExit(ctx context.Context, errCh <-chan error, logger *slog.Logger) error {
-	select {
-	case err := <-errCh:
-		return err
-	case <-ctx.Done():
-		logger.Info("shutdown requested")
-		return <-errCh
+func waitForExit(ctx context.Context, errCh <-chan error, components int, logger *slog.Logger) error {
+	doneCh := ctx.Done()
+	var firstErr error
+	for components > 0 {
+		select {
+		case err := <-errCh:
+			components--
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		case <-doneCh:
+			logger.Info("shutdown requested")
+			doneCh = nil
+		}
 	}
+	return firstErr
 }
 
 func fatalf(format string, args ...any) {

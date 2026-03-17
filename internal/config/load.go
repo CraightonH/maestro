@@ -30,6 +30,24 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	return LoadBytes(absPath, raw)
+}
+
+// LoadBytes reads a YAML config payload as if it lived at path.
+func LoadBytes(path string, raw []byte) (*Config, error) {
+	absPath, err := expandPath(path)
+	if err != nil {
+		return nil, err
+	}
+	absPath, err = filepath.Abs(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return loadBytesAtPath(absPath, raw)
+}
+
+func loadBytesAtPath(absPath string, raw []byte) (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
@@ -98,6 +116,12 @@ func applySystemDefaults(cfg *Config) {
 	}
 	if cfg.Hooks.Timeout.Duration == 0 {
 		cfg.Hooks.Timeout = Duration{Duration: 30 * time.Second}
+	}
+	if cfg.Server.Host == "" {
+		cfg.Server.Host = "127.0.0.1"
+	}
+	if cfg.Server.Port == 0 {
+		cfg.Server.Port = 8742
 	}
 }
 

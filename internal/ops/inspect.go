@@ -1,50 +1,80 @@
 package ops
 
 import (
+	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
+	"github.com/tjohnson/maestro/internal/prompt"
 	"github.com/tjohnson/maestro/internal/state"
 )
 
 type ConfigSummary struct {
-	ConfigPath    string                `json:"config_path"`
-	WorkspaceRoot string                `json:"workspace_root"`
-	StateDir      string                `json:"state_dir"`
-	LogDir        string                `json:"log_dir"`
-	LogMaxFiles   int                   `json:"log_max_files"`
-	Sources       []ConfigSourceSummary `json:"sources"`
-	Agents        []ConfigAgentSummary  `json:"agents"`
+	ConfigPath          string                `json:"config_path"`
+	AgentPacksDir       string                `json:"agent_packs_dir,omitempty"`
+	UserName            string                `json:"user_name,omitempty"`
+	GitLabUsername      string                `json:"gitlab_username,omitempty"`
+	LinearUsername      string                `json:"linear_username,omitempty"`
+	WorkspaceRoot       string                `json:"workspace_root"`
+	StateDir            string                `json:"state_dir"`
+	LogDir              string                `json:"log_dir"`
+	LogMaxFiles         int                   `json:"log_max_files"`
+	MaxConcurrentGlobal int                   `json:"max_concurrent_global"`
+	StallTimeout        string                `json:"stall_timeout,omitempty"`
+	DefaultPollInterval string                `json:"default_poll_interval,omitempty"`
+	Sources             []ConfigSourceSummary `json:"sources"`
+	Agents              []ConfigAgentSummary  `json:"agents"`
 }
 
 type ConfigSourceSummary struct {
-	Name         string   `json:"name"`
-	Tracker      string   `json:"tracker"`
-	BaseURL      string   `json:"base_url,omitempty"`
-	Project      string   `json:"project,omitempty"`
-	Group        string   `json:"group,omitempty"`
-	Repo         string   `json:"repo,omitempty"`
-	FilterLabels []string `json:"filter_labels,omitempty"`
-	FilterStates []string `json:"filter_states,omitempty"`
-	Assignee     string   `json:"assignee,omitempty"`
-	PollInterval string   `json:"poll_interval"`
-	TokenEnv     string   `json:"token_env,omitempty"`
+	Name              string   `json:"name"`
+	DisplayGroup      string   `json:"display_group,omitempty"`
+	Tags              []string `json:"tags,omitempty"`
+	Tracker           string   `json:"tracker"`
+	AgentType         string   `json:"agent_type,omitempty"`
+	BaseURL           string   `json:"base_url,omitempty"`
+	Project           string   `json:"project,omitempty"`
+	Group             string   `json:"group,omitempty"`
+	Repo              string   `json:"repo,omitempty"`
+	FilterLabels      []string `json:"filter_labels,omitempty"`
+	FilterIIDs        []int    `json:"filter_iids,omitempty"`
+	FilterStates      []string `json:"filter_states,omitempty"`
+	Assignee          string   `json:"assignee,omitempty"`
+	EpicFilterLabels  []string `json:"epic_filter_labels,omitempty"`
+	EpicFilterIIDs    []int    `json:"epic_filter_iids,omitempty"`
+	IssueFilterLabels []string `json:"issue_filter_labels,omitempty"`
+	IssueFilterIIDs   []int    `json:"issue_filter_iids,omitempty"`
+	IssueStates       []string `json:"issue_states,omitempty"`
+	PollInterval      string   `json:"poll_interval"`
+	TokenEnv          string   `json:"token_env,omitempty"`
 }
 
 type ConfigAgentSummary struct {
-	Name           string   `json:"name"`
-	InstanceName   string   `json:"instance_name,omitempty"`
-	AgentPack      string   `json:"agent_pack,omitempty"`
-	Harness        string   `json:"harness"`
-	Workspace      string   `json:"workspace"`
-	ApprovalPolicy string   `json:"approval_policy"`
-	Prompt         string   `json:"prompt"`
-	ContextFiles   []string `json:"context_files,omitempty"`
-	Tools          []string `json:"tools,omitempty"`
-	Skills         []string `json:"skills,omitempty"`
-	EnvKeys        []string `json:"env_keys,omitempty"`
+	Description    string              `json:"description,omitempty"`
+	Name           string              `json:"name"`
+	InstanceName   string              `json:"instance_name,omitempty"`
+	AgentPack      string              `json:"agent_pack,omitempty"`
+	PackPath       string              `json:"pack_path,omitempty"`
+	Harness        string              `json:"harness"`
+	Workspace      string              `json:"workspace"`
+	ApprovalPolicy string              `json:"approval_policy"`
+	MaxConcurrent  int                 `json:"max_concurrent"`
+	Prompt         string              `json:"prompt"`
+	PromptBody     string              `json:"prompt_body,omitempty"`
+	SystemPrompt   string              `json:"system_prompt,omitempty"`
+	ContextFiles   []string            `json:"context_files,omitempty"`
+	ContextBodies  []ConfigFileSummary `json:"context_bodies,omitempty"`
+	Tools          []string            `json:"tools,omitempty"`
+	Skills         []string            `json:"skills,omitempty"`
+	EnvKeys        []string            `json:"env_keys,omitempty"`
+}
+
+type ConfigFileSummary struct {
+	Path    string `json:"path"`
+	Content string `json:"content,omitempty"`
 }
 
 type StateSummary struct {
@@ -97,25 +127,43 @@ type StateDecisionSummary struct {
 
 func SummarizeConfig(cfg *config.Config) ConfigSummary {
 	summary := ConfigSummary{
-		ConfigPath:    cfg.ConfigPath,
-		WorkspaceRoot: cfg.Workspace.Root,
-		StateDir:      cfg.State.Dir,
-		LogDir:        cfg.Logging.Dir,
-		LogMaxFiles:   cfg.Logging.MaxFiles,
+		ConfigPath:          cfg.ConfigPath,
+		AgentPacksDir:       cfg.AgentPacksDir,
+		UserName:            cfg.User.Name,
+		GitLabUsername:      cfg.User.GitLabUsername,
+		LinearUsername:      cfg.User.LinearUsername,
+		WorkspaceRoot:       cfg.Workspace.Root,
+		StateDir:            cfg.State.Dir,
+		LogDir:              cfg.Logging.Dir,
+		LogMaxFiles:         cfg.Logging.MaxFiles,
+		MaxConcurrentGlobal: cfg.Defaults.MaxConcurrentGlobal,
+		StallTimeout:        cfg.Defaults.StallTimeout.Duration.String(),
+		DefaultPollInterval: cfg.Defaults.PollInterval.Duration.String(),
 	}
 	for _, source := range cfg.Sources {
+		effectiveIssueFilter := source.EffectiveIssueFilter()
+		effectiveEpicFilter := source.EffectiveEpicFilter()
 		summary.Sources = append(summary.Sources, ConfigSourceSummary{
-			Name:         source.Name,
-			Tracker:      source.Tracker,
-			BaseURL:      source.Connection.BaseURL,
-			Project:      source.Connection.Project,
-			Group:        source.Connection.GroupPath(),
-			Repo:         source.Repo,
-			FilterLabels: append([]string(nil), source.Filter.Labels...),
-			FilterStates: append([]string(nil), source.Filter.States...),
-			Assignee:     source.Filter.Assignee,
-			PollInterval: source.PollInterval.Duration.String(),
-			TokenEnv:     source.Connection.TokenEnv,
+			Name:              source.Name,
+			DisplayGroup:      source.DisplayGroup,
+			Tags:              append([]string(nil), source.Tags...),
+			Tracker:           source.Tracker,
+			AgentType:         source.AgentType,
+			BaseURL:           source.Connection.BaseURL,
+			Project:           source.Connection.Project,
+			Group:             source.Connection.GroupPath(),
+			Repo:              source.Repo,
+			FilterLabels:      append([]string(nil), source.Filter.Labels...),
+			FilterIIDs:        append([]int(nil), source.Filter.IIDs...),
+			FilterStates:      append([]string(nil), source.Filter.States...),
+			Assignee:          source.Filter.Assignee,
+			EpicFilterLabels:  append([]string(nil), effectiveEpicFilter.Labels...),
+			EpicFilterIIDs:    append([]int(nil), effectiveEpicFilter.IIDs...),
+			IssueFilterLabels: append([]string(nil), effectiveIssueFilter.Labels...),
+			IssueFilterIIDs:   append([]int(nil), effectiveIssueFilter.IIDs...),
+			IssueStates:       append([]string(nil), effectiveIssueFilter.States...),
+			PollInterval:      source.PollInterval.Duration.String(),
+			TokenEnv:          source.Connection.TokenEnv,
 		})
 	}
 	for _, agent := range cfg.AgentTypes {
@@ -123,15 +171,30 @@ func SummarizeConfig(cfg *config.Config) ConfigSummary {
 		for key := range agent.Env {
 			envKeys = append(envKeys, key)
 		}
+		sort.Strings(envKeys)
+
+		contextBodies := make([]ConfigFileSummary, 0, len(agent.ContextFiles))
+		for _, path := range agent.ContextFiles {
+			contextBodies = append(contextBodies, ConfigFileSummary{
+				Path:    path,
+				Content: readConfigText(path),
+			})
+		}
 		summary.Agents = append(summary.Agents, ConfigAgentSummary{
+			Description:    agent.Description,
 			Name:           agent.Name,
 			InstanceName:   agent.InstanceName,
 			AgentPack:      agent.AgentPack,
+			PackPath:       agent.PackPath,
 			Harness:        agent.Harness,
 			Workspace:      agent.Workspace,
 			ApprovalPolicy: agent.ApprovalPolicy,
+			MaxConcurrent:  agent.MaxConcurrent,
 			Prompt:         agent.Prompt,
+			PromptBody:     readConfigText(agent.Prompt),
+			SystemPrompt:   prompt.SystemPreamble(),
 			ContextFiles:   append([]string(nil), agent.ContextFiles...),
+			ContextBodies:  contextBodies,
 			Tools:          append([]string(nil), agent.Tools...),
 			Skills:         append([]string(nil), agent.Skills...),
 			EnvKeys:        envKeys,
@@ -241,4 +304,15 @@ func summarizeStateHealth(summary StateSummary) string {
 	default:
 		return "empty"
 	}
+}
+
+func readConfigText(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
 }

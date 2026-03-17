@@ -32,6 +32,10 @@ func (d *Duration) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
+func (d Duration) MarshalYAML() (any, error) {
+	return d.Duration.String(), nil
+}
+
 type Config struct {
 	ConfigPath string `yaml:"-"`
 	ConfigDir  string `yaml:"-"`

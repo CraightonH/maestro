@@ -18,6 +18,7 @@ type Runtime interface {
 	Run(ctx context.Context) error
 	Snapshot() Snapshot
 	ResolveApproval(requestID string, decision string) error
+	StopRun(runID string, reason string) error
 }
 
 type Supervisor struct {
@@ -184,6 +185,21 @@ func (s *Supervisor) ResolveApproval(requestID string, decision string) error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return fmt.Errorf("approval request %q not found", requestID)
+}
+
+func (s *Supervisor) StopRun(runID string, reason string) error {
+	var errs []string
+	for _, svc := range s.services {
+		if err := svc.StopRun(runID, reason); err == nil {
+			return nil
+		} else if !strings.Contains(err.Error(), "not found") {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return fmt.Errorf("run %q not found", runID)
 }
 
 func (s *Supervisor) Services() []*Service {

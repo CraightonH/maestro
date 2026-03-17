@@ -20,6 +20,17 @@ Installed binary:
 maestro run --config /path/to/maestro.yaml
 ```
 
+To enable the local web/API surface during a normal run:
+
+```yaml
+server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8742
+```
+
+Then open [http://127.0.0.1:8742](http://127.0.0.1:8742).
+
 ## TUI Controls
 
 - `tab` switches focus between sources, active runs, retries, and pending approvals
@@ -88,6 +99,24 @@ Supported hook phases:
 - `hooks.after_run`
 
 All hooks run through the local shell and share `hooks.timeout`.
+
+## Local Web/API
+
+The first API slice is read-mostly with approval actions:
+
+- `GET /healthz`
+- `GET /api/v1/stream`
+- `GET /api/v1/status`
+- `GET /api/v1/config`
+- `GET /api/v1/sources`
+- `GET /api/v1/runs`
+- `GET /api/v1/retries`
+- `GET /api/v1/events`
+- `GET /api/v1/approvals`
+- `POST /api/v1/approvals/<request_id>/approve`
+- `POST /api/v1/approvals/<request_id>/reject`
+
+The built-in dashboard at `/` uses those resource endpoints directly and listens to `/api/v1/stream` over Server-Sent Events so the page refreshes on runtime changes without a fixed polling loop. The browser UI is dark by default, has a light theme toggle, and supports source/run selection, quick filtering, sorting, retries, approvals, and a context-aware event timeline.
 
 ## Normal Demo Flow
 

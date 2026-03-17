@@ -120,10 +120,38 @@ These keep logs, state, and workspaces under `demo/*/var/` so you can inspect an
 - `gitlab-epic` sources can optionally target exact epic IIDs with `epic_filter.iids`.
 - `source_defaults` and `agent_defaults` let you share tracker connection settings, common filters, and common agent runtime settings across large configs.
 - `display_group` and `tags` let you organize source-heavy configs in the TUI without affecting dispatch behavior.
+- `server.enabled` starts a local web/API surface on `server.host:server.port` with a built-in dashboard and approval actions.
 - The TUI supports `tab` to switch focus between sources, active runs, retries, and approvals, `/` for search, `f` to cycle source groups, `u` for attention-only filtering, `w` for awaiting-approval filtering, `c` to clear filters, `o` and `O` to change sort order, and `v` to toggle compact mode.
 - The source pane now includes a selected-source detail view with tracker, group, tags, poll stats, visible work counts, and recent source events.
 - The active-runs pane now includes a selected-run detail view with source, issue, timestamps, approval state, workspace path, error context, and live stdout/stderr tails.
 - The retries pane now shows queued reruns with due time, attempt number, and the last error.
+
+## Web/API
+
+The first web/API slice is local-first and intentionally small:
+
+- `GET /healthz`
+- `GET /api/v1/stream`
+- `GET /api/v1/status`
+- `GET /api/v1/config`
+- `GET /api/v1/sources`
+- `GET /api/v1/runs`
+- `GET /api/v1/retries`
+- `GET /api/v1/events`
+- `GET /api/v1/approvals`
+- `POST /api/v1/approvals/:request_id/approve`
+- `POST /api/v1/approvals/:request_id/reject`
+
+Enable it in config:
+
+```yaml
+server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8742
+```
+
+Then open [http://127.0.0.1:8742](http://127.0.0.1:8742). The built-in dashboard now consumes the resource endpoints directly, uses Server-Sent Events from `/api/v1/stream` for live refresh, defaults to a dark theme, and supports a browser-side light theme toggle plus filtering, sorting, and detail panes.
 
 ## Docs
 

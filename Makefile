@@ -1,14 +1,18 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION)
 
-.PHONY: test build install release run inspect-config inspect-state inspect-runs reset-issue cleanup-workspaces smoke-gitlab smoke-linear smoke-multi-source smoke-many-sources
+.PHONY: test build install release run inspect-config inspect-state inspect-runs reset-issue cleanup-workspaces smoke-gitlab smoke-linear smoke-multi-source smoke-many-sources web-embed
 
 test:
 	go test ./...
 
 build:
 	mkdir -p bin
+	./scripts/sync_web_embed.sh
 	go build -ldflags "$(LDFLAGS)" -o bin/maestro ./cmd/maestro
+
+web-embed:
+	./scripts/sync_web_embed.sh
 
 release:
 	@test -n "$(VERSION)" || (echo "VERSION is required, for example: make release VERSION=v0.1.0" && exit 1)

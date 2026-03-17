@@ -204,6 +204,58 @@ func TestValidateMVPAcceptsGitLabEpicSource(t *testing.T) {
 	}
 }
 
+func TestValidateMVPRejectsInvalidEnabledServerConfig(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Server: config.ServerConfig{
+			Enabled: true,
+			Host:    "",
+			Port:    70000,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "platform-dev",
+				Tracker:   "gitlab",
+				AgentType: "code-pr",
+				Connection: config.GitLabConnection{
+					BaseURL: "https://gitlab.example.com",
+					Project: "team/project",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:           "code-pr",
+				Harness:        "claude-code",
+				Workspace:      "git-clone",
+				Prompt:         promptPath,
+				ApprovalPolicy: "auto",
+				MaxConcurrent:  1,
+				StallTimeout:   config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	if err := config.ValidateMVP(cfg); err == nil {
+		t.Fatal("expected validation error")
+	}
+}
+
 func TestValidateMVPRejectsCredentialBearingRepoURL(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")

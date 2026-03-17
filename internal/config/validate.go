@@ -116,6 +116,14 @@ func ValidateMVP(cfg *Config) error {
 	if cfg.Logging.MaxFiles < 0 {
 		return fmt.Errorf("logging.max_files must be zero or greater")
 	}
+	if cfg.Server.Enabled {
+		if strings.TrimSpace(cfg.Server.Host) == "" {
+			return fmt.Errorf("server.host is required when server.enabled is true")
+		}
+		if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+			return fmt.Errorf("server.port must be between 1 and 65535 when server.enabled is true")
+		}
+	}
 	return nil
 }
 

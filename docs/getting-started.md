@@ -63,6 +63,17 @@ export MAESTRO_GITLAB_TOKEN=...
 go run ./cmd/maestro run --config /path/to/maestro.yaml
 ```
 
+If you want the local web/API surface too, add:
+
+```yaml
+server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8742
+```
+
+Then open [http://127.0.0.1:8742](http://127.0.0.1:8742).
+
 ## Minimal Linear Setup
 
 1. Create or choose a Linear project with at least one open issue in the target state.
@@ -171,6 +182,25 @@ Manual approval is now supported for Claude. Use one of the `*-manual.yaml` samp
 - `q` exits the TUI
 
 The source pane now supports drill-down inspection of one source at a time, including poll stats and recent source events. The active-runs pane supports per-run inspection with live stdout/stderr tails, and the retries pane shows queued reruns with due times and prior errors. Attention and awaiting-approval quick filters, plus sort controls and compact mode, make it easier to scan large multi-source configs without losing access to the full detail panes.
+
+## Local Web/API
+
+The first web/API slice is local-only and intentionally narrow. When `server.enabled` is true, Maestro serves:
+
+- a built-in dashboard at `/`
+- `GET /healthz`
+- `GET /api/v1/stream`
+- `GET /api/v1/status`
+- `GET /api/v1/config`
+- `GET /api/v1/sources`
+- `GET /api/v1/runs`
+- `GET /api/v1/retries`
+- `GET /api/v1/events`
+- `GET /api/v1/approvals`
+- `POST /api/v1/approvals/<request_id>/approve`
+- `POST /api/v1/approvals/<request_id>/reject`
+
+Bind it to `127.0.0.1` unless you have a specific reason to expose it more widely. The built-in dashboard uses Server-Sent Events from `/api/v1/stream` for live updates, defaults to dark theme, and includes a light theme toggle along with browser-side filtering and sorting controls.
 
 For Codex, the config path exists, but the current local app-server build did not emit approval requests during live validation on March 15, 2026.
 

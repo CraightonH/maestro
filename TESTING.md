@@ -22,6 +22,32 @@ The hermetic suite now also covers:
 - explicit GitLab epic `epic_filter` vs `issue_filter` behavior
 - global and per-agent dispatch limiter behavior
 
+## Web verification
+
+Run the web checks before changing the browser UI or cutting a release with the embedded dashboard:
+
+```bash
+cd web
+npm run lint
+npm run build
+npm run test:smoke
+```
+
+To verify the embedded frontend path rather than the dev filesystem path:
+
+```bash
+./scripts/sync_web_embed.sh
+go build -o /tmp/maestro-web-smoke ./cmd/maestro
+/tmp/maestro-web-smoke demo-web --host 127.0.0.1 --port 8761
+```
+
+Then, in a second shell:
+
+```bash
+cd web
+PLAYWRIGHT_EXTERNAL_SERVER=1 PLAYWRIGHT_BASE_URL=http://127.0.0.1:8761 npm run test:smoke
+```
+
 ## Live GitLab validation
 
 The GitLab live tests exercise both read and write paths against a configured project. They validate:
