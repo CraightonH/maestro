@@ -18,6 +18,7 @@ type AgentPackConfig struct {
 	Workspace      string            `yaml:"workspace"`
 	Prompt         string            `yaml:"prompt"`
 	ApprovalPolicy string            `yaml:"approval_policy"`
+	Communication  string            `yaml:"communication"`
 	MaxConcurrent  int               `yaml:"max_concurrent"`
 	Env            map[string]string `yaml:"env"`
 	Tools          []string          `yaml:"tools"`
@@ -166,6 +167,9 @@ func mergeAgentPack(agent *AgentTypeConfig, pack *AgentPackConfig) {
 	}
 	if agent.ApprovalPolicy == "" {
 		agent.ApprovalPolicy = pack.ApprovalPolicy
+	}
+	if agent.Communication == "" {
+		agent.Communication = pack.Communication
 	}
 	if agent.MaxConcurrent == 0 {
 		agent.MaxConcurrent = pack.MaxConcurrent

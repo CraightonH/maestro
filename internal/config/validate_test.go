@@ -204,6 +204,106 @@ func TestValidateMVPAcceptsGitLabEpicSource(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsSlackCommunicationChannel(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:           "code-pr",
+			Harness:        "claude-code",
+			Workspace:      "git-clone",
+			Prompt:         promptPath,
+			ApprovalPolicy: "manual",
+			Communication:  "slack-dm",
+			MaxConcurrent:  1,
+			StallTimeout:   config.Duration{Duration: time.Minute},
+		}},
+		Channels: []config.ChannelConfig{{
+			Name: "slack-dm",
+			Kind: "slack",
+			Config: map[string]any{
+				"token_env":     "SLACK_BOT_TOKEN",
+				"app_token_env": "SLACK_APP_TOKEN",
+			},
+		}},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected slack communication config to validate: %v", err)
+	}
+}
+
+func TestValidateMVPRejectsUnknownCommunicationChannel(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:           "code-pr",
+			Harness:        "claude-code",
+			Workspace:      "git-clone",
+			Prompt:         promptPath,
+			ApprovalPolicy: "manual",
+			Communication:  "missing-channel",
+			MaxConcurrent:  1,
+			StallTimeout:   config.Duration{Duration: time.Minute},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "unknown communication channel") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestValidateMVPRejectsInvalidEnabledServerConfig(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")

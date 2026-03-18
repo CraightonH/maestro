@@ -24,6 +24,25 @@ func ValidateMVP(cfg *Config) error {
 	}
 
 	agentsByName := make(map[string]AgentTypeConfig, len(cfg.AgentTypes))
+	channelKinds := make(map[string]string, len(cfg.Channels))
+	for i, channel := range cfg.Channels {
+		name := strings.TrimSpace(channel.Name)
+		if name == "" {
+			return fmt.Errorf("channels[%d].name is required", i)
+		}
+		if _, exists := channelKinds[name]; exists {
+			return fmt.Errorf("channels[%d].name %q is duplicated", i, name)
+		}
+		kind := strings.TrimSpace(channel.Kind)
+		if kind == "" {
+			return fmt.Errorf("channel %q kind is required", name)
+		}
+		if !slices.Contains([]string{"slack", "teams", "gitlab", "tui"}, kind) {
+			return fmt.Errorf("channel %q kind must be one of slack, teams, gitlab, tui", name)
+		}
+		channelKinds[name] = kind
+	}
+
 	for i, agent := range cfg.AgentTypes {
 		if strings.TrimSpace(agent.Name) == "" {
 			return fmt.Errorf("agent_types[%d].name is required", i)
@@ -53,6 +72,22 @@ func ValidateMVP(cfg *Config) error {
 		}
 		if _, err := os.Stat(agent.Prompt); err != nil {
 			return fmt.Errorf("agent %q prompt %q: %w", agent.Name, agent.Prompt, err)
+		}
+		if strings.TrimSpace(agent.Communication) != "" {
+			kind, ok := channelKinds[agent.Communication]
+			if !ok {
+				return fmt.Errorf("agent %q references unknown communication channel %q", agent.Name, agent.Communication)
+			}
+			if kind == "slack" {
+				tokenEnv := strings.TrimSpace(channelConfigString(channelByName(cfg.Channels, agent.Communication).Config, "token_env"))
+				appTokenEnv := strings.TrimSpace(channelConfigString(channelByName(cfg.Channels, agent.Communication).Config, "app_token_env"))
+				if tokenEnv == "" {
+					return fmt.Errorf("slack channel %q requires config.token_env", agent.Communication)
+				}
+				if appTokenEnv == "" {
+					return fmt.Errorf("slack channel %q requires config.app_token_env", agent.Communication)
+				}
+			}
 		}
 	}
 
@@ -125,6 +160,30 @@ func ValidateMVP(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+func channelByName(channels []ChannelConfig, name string) ChannelConfig {
+	for _, channel := range channels {
+		if channel.Name == name {
+			return channel
+		}
+	}
+	return ChannelConfig{}
+}
+
+func channelConfigString(values map[string]any, key string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	raw, ok := values[key]
+	if !ok || raw == nil {
+		return ""
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func validateRepoURL(raw string) error {

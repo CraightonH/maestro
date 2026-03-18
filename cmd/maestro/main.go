@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/tjohnson/maestro/internal/api"
+	"github.com/tjohnson/maestro/internal/channel"
 	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/logging"
 	"github.com/tjohnson/maestro/internal/ops"
@@ -120,15 +121,25 @@ func runCommand(args []string) {
 	if err != nil {
 		fatalf("build runtime: %v", err)
 	}
+	bridge, err := channel.NewBridge(cfg, logger, runtime)
+	if err != nil {
+		fatalf("build communication bridge: %v", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	componentCount := 1
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 	go func() {
 		errCh <- runtime.Run(ctx)
 	}()
+	if bridge != nil {
+		componentCount++
+		go func() {
+			errCh <- bridge.Run(ctx)
+		}()
+	}
 	if cfg.Server.Enabled {
 		componentCount++
 		server := api.New(cfg, logger, runtime)

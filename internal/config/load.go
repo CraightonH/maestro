@@ -229,6 +229,9 @@ func mergeAgentDefaults(target *AgentTypeConfig, defaults AgentDefaultsConfig) {
 	if strings.TrimSpace(target.ApprovalPolicy) == "" {
 		target.ApprovalPolicy = defaults.ApprovalPolicy
 	}
+	if strings.TrimSpace(target.Communication) == "" {
+		target.Communication = defaults.Communication
+	}
 	if target.MaxConcurrent == 0 {
 		target.MaxConcurrent = defaults.MaxConcurrent
 	}

@@ -61,6 +61,7 @@ type ConfigAgentSummary struct {
 	Harness        string              `json:"harness"`
 	Workspace      string              `json:"workspace"`
 	ApprovalPolicy string              `json:"approval_policy"`
+	Communication  string              `json:"communication,omitempty"`
 	MaxConcurrent  int                 `json:"max_concurrent"`
 	Prompt         string              `json:"prompt"`
 	PromptBody     string              `json:"prompt_body,omitempty"`
@@ -189,6 +190,7 @@ func SummarizeConfig(cfg *config.Config) ConfigSummary {
 			Harness:        agent.Harness,
 			Workspace:      agent.Workspace,
 			ApprovalPolicy: agent.ApprovalPolicy,
+			Communication:  agent.Communication,
 			MaxConcurrent:  agent.MaxConcurrent,
 			Prompt:         agent.Prompt,
 			PromptBody:     readConfigText(agent.Prompt),

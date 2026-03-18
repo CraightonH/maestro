@@ -118,6 +118,40 @@ The first API slice is read-mostly with approval actions:
 
 The built-in dashboard at `/` uses those resource endpoints directly and listens to `/api/v1/stream` over Server-Sent Events so the page refreshes on runtime changes without a fixed polling loop. The browser UI is dark by default, has a light theme toggle, and supports source/run selection, quick filtering, sorting, retries, approvals, and a context-aware event timeline.
 
+## Slack Operations
+
+Slack is now available as a communication channel for workflows that need remote approval handling.
+
+Current supported behavior:
+
+- DM or fixed-channel workflow threads
+- approval requests with interactive `Approve` and `Reject` buttons
+- workflow status updates for completion, failure, retries, and stops
+- `Stop workflow` from the Slack thread
+
+Required Slack config:
+
+- a channel entry under `channels`
+- `agent_types[].communication` pointing at that channel name
+- a bot token in `channels[].config.token_env`
+- an app-level Socket Mode token in `channels[].config.app_token_env`
+
+For DM routing, set either:
+
+- `channels[].config.user_id`
+- or `channels[].config.user_id_env`
+
+For a fixed channel, use:
+
+- `channels[].config.mode: channel`
+- `channels[].config.channel_id` or `channel_id_env`
+
+Current limits:
+
+- Slack does not yet support free-form reply-to-run conversation
+- there is no Teams equivalent yet
+- Slack state is persisted locally in `state.dir/slack.json`
+
 ## Normal Demo Flow
 
 1. Create or label one tracker issue so it matches the source filter.

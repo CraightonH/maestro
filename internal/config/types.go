@@ -84,6 +84,7 @@ type AgentDefaultsConfig struct {
 	Workspace      string            `yaml:"workspace"`
 	Prompt         string            `yaml:"prompt"`
 	ApprovalPolicy string            `yaml:"approval_policy"`
+	Communication  string            `yaml:"communication"`
 	MaxConcurrent  int               `yaml:"max_concurrent"`
 	StallTimeout   Duration          `yaml:"stall_timeout"`
 	Env            map[string]string `yaml:"env"`
@@ -139,6 +140,7 @@ type AgentTypeConfig struct {
 	Workspace      string            `yaml:"workspace"`
 	Prompt         string            `yaml:"prompt"`
 	ApprovalPolicy string            `yaml:"approval_policy"`
+	Communication  string            `yaml:"communication"`
 	MaxConcurrent  int               `yaml:"max_concurrent"`
 	StallTimeout   Duration          `yaml:"stall_timeout"`
 	Env            map[string]string `yaml:"env"`

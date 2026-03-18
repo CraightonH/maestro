@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/charmbracelet/bubbletea v1.3.4
+	github.com/gorilla/websocket v1.5.3
 	github.com/pmezard/go-difflib v1.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )

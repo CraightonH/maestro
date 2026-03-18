@@ -48,6 +48,38 @@ cd web
 PLAYWRIGHT_EXTERNAL_SERVER=1 PLAYWRIGHT_BASE_URL=http://127.0.0.1:8761 npm run test:smoke
 ```
 
+## Slack validation
+
+The Slack bridge currently has hermetic unit coverage for:
+
+- thread creation
+- approval message posting
+- approval message resolution updates
+- stop-from-Slack actions
+- persisted Slack message references
+- Socket Mode approval handling against a fake Slack HTTP + websocket server
+
+Run:
+
+```bash
+go test ./internal/channel -v
+```
+
+There is no default live Slack integration test in the repo yet. Live validation requires a Socket Mode-enabled Slack app plus disposable DM or channel targets.
+
+For an opt-in live Slack workspace check, set:
+
+- `MAESTRO_TEST_LIVE_SLACK=1`
+- `MAESTRO_TEST_SLACK_BOT_TOKEN`
+- `MAESTRO_TEST_SLACK_APP_TOKEN`
+- `MAESTRO_TEST_SLACK_USER_ID`
+
+Run:
+
+```bash
+go test ./internal/channel -run TestLiveSlackClientDMThreadLifecycle -v
+```
+
 ## Live GitLab validation
 
 The GitLab live tests exercise both read and write paths against a configured project. They validate:

@@ -10,6 +10,8 @@
 - One tracker token:
   - GitLab personal access token for project issue polling
   - Linear API token for project issue polling
+- Optional communication channel:
+  - Slack bot token plus Slack app-level token for DM or channel-thread approvals/status
 
 ## Minimal GitLab Setup
 
@@ -182,6 +184,46 @@ Manual approval is now supported for Claude. Use one of the `*-manual.yaml` samp
 - `q` exits the TUI
 
 The source pane now supports drill-down inspection of one source at a time, including poll stats and recent source events. The active-runs pane supports per-run inspection with live stdout/stderr tails, and the retries pane shows queued reruns with due times and prior errors. Attention and awaiting-approval quick filters, plus sort controls and compact mode, make it easier to scan large multi-source configs without losing access to the full detail panes.
+
+## Slack Approval Setup
+
+If you want approval prompts outside the terminal, start from [examples/gitlab-claude-slack-manual.yaml](../examples/gitlab-claude-slack-manual.yaml).
+
+Required environment variables:
+
+- `MAESTRO_SLACK_BOT_TOKEN`
+- `MAESTRO_SLACK_APP_TOKEN`
+- `MAESTRO_SLACK_USER_ID`
+
+Minimal config shape:
+
+```yaml
+agent_types:
+  - name: repo-maintainer
+    approval_policy: manual
+    communication: slack-dm
+
+channels:
+  - name: slack-dm
+    kind: slack
+    config:
+      mode: dm
+      token_env: MAESTRO_SLACK_BOT_TOKEN
+      app_token_env: MAESTRO_SLACK_APP_TOKEN
+      user_id_env: MAESTRO_SLACK_USER_ID
+```
+
+Current Slack behavior:
+
+- starts a DM thread or fixed-channel thread for the matching workflow
+- posts approval requests with buttons
+- posts completion, failure, retry, and stop updates
+- allows `Stop workflow` from the Slack thread
+
+Current Slack limits:
+
+- no free-form Slack reply loop into the workflow yet
+- no built-in hot reload of Slack channel config
 
 ## Local Web/API
 

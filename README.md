@@ -12,6 +12,7 @@ The current build is a working POC. It is intentionally narrow in surface area, 
 - Claude runs end to end
 - Codex runs end to end
 - Claude manual approval flow
+- Slack DM threads for approval prompts and run status updates
 - Local workspace cloning and branch creation
 - Prompt templating
 - Retry with persisted `runs.json`
@@ -26,11 +27,11 @@ The current build is a working POC. It is intentionally narrow in surface area, 
 
 ## Current Limits
 
-- No API server or web UI yet
 - GitLab project issues and GitLab epic-backed child issues are supported
 - Codex manual approval is wired in code but the current local app-server build does not emit approval requests in this environment
 - Hook support is currently limited to `after_create`, `before_run`, and `after_run`
-- Slack, API server, web UI, dynamic config reload, and tracker-specific completion workflows are still out of scope
+- Slack currently covers status updates plus approval buttons, not general threaded conversation back into the run
+- Dynamic config reload and tracker-specific completion workflows are still out of scope
 
 ## Quick Start
 
@@ -72,6 +73,7 @@ make smoke-many-sources
 
 - GitLab + Claude auto: [examples/gitlab-claude-auto.yaml](examples/gitlab-claude-auto.yaml)
 - GitLab + Claude manual: [examples/gitlab-claude-manual.yaml](examples/gitlab-claude-manual.yaml)
+- GitLab + Claude manual + Slack DM approvals: [examples/gitlab-claude-slack-manual.yaml](examples/gitlab-claude-slack-manual.yaml)
 - GitLab + Codex auto: [examples/gitlab-codex-auto.yaml](examples/gitlab-codex-auto.yaml)
 - GitLab epic + Claude auto: [examples/gitlab-epic-claude-auto.yaml](examples/gitlab-epic-claude-auto.yaml)
 - GitLab + repo-maintainer pack: [examples/gitlab-repo-maintainer.yaml](examples/gitlab-repo-maintainer.yaml)
@@ -121,6 +123,9 @@ These keep logs, state, and workspaces under `demo/*/var/` so you can inspect an
 - `source_defaults` and `agent_defaults` let you share tracker connection settings, common filters, and common agent runtime settings across large configs.
 - `display_group` and `tags` let you organize source-heavy configs in the TUI without affecting dispatch behavior.
 - `server.enabled` starts a local web/API surface on `server.host:server.port` with a built-in dashboard and approval actions.
+- `agent_types[].communication` can route a run into a named channel such as Slack.
+- Slack channels currently support DM or fixed-channel threads, approval buttons, and status updates.
+- Slack requires a bot token plus an app-level token for Socket Mode. Use `channels[].config.token_env` and `channels[].config.app_token_env`.
 - The TUI supports `tab` to switch focus between sources, active runs, retries, and approvals, `/` for search, `f` to cycle source groups, `u` for attention-only filtering, `w` for awaiting-approval filtering, `c` to clear filters, `o` and `O` to change sort order, and `v` to toggle compact mode.
 - The source pane now includes a selected-source detail view with tracker, group, tags, poll stats, visible work counts, and recent source events.
 - The active-runs pane now includes a selected-run detail view with source, issue, timestamps, approval state, workspace path, error context, and live stdout/stderr tails.
@@ -152,6 +157,43 @@ server:
 ```
 
 Then open [http://127.0.0.1:8742](http://127.0.0.1:8742). The built-in dashboard now consumes the resource endpoints directly, uses Server-Sent Events from `/api/v1/stream` for live refresh, defaults to a dark theme, and supports a browser-side light theme toggle plus filtering, sorting, and detail panes.
+
+## Slack
+
+Slack is now available as a communication channel for approval-driven runs.
+
+Current scope:
+
+- open a DM thread or use a fixed channel thread for a workflow
+- post approval requests with `Approve` and `Reject` buttons
+- post status updates for completion, failure, retry scheduling, and stops
+- allow `Stop workflow` directly from the Slack thread
+
+Current limits:
+
+- no free-form Slack thread reply loop back into the run yet
+- no Teams equivalent yet
+- no live Slack workspace test in the default repo test matrix yet
+
+Minimal agent/channel wiring:
+
+```yaml
+agent_types:
+  - name: repo-maintainer
+    approval_policy: manual
+    communication: slack-dm
+
+channels:
+  - name: slack-dm
+    kind: slack
+    config:
+      mode: dm
+      token_env: MAESTRO_SLACK_BOT_TOKEN
+      app_token_env: MAESTRO_SLACK_APP_TOKEN
+      user_id_env: MAESTRO_SLACK_USER_ID
+```
+
+This requires a Slack app with Socket Mode enabled.
 
 ## Docs
 
