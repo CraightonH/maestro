@@ -1,4 +1,4 @@
-import type { Approval, ApprovalHistoryEntry, EventItem, RetryEntry } from "../types";
+import type { Approval, ApprovalHistoryEntry, EventItem, Message, MessageHistoryEntry, RetryEntry } from "../types";
 import { formatDate } from "../lib/helpers";
 import { EmptyState, PanelHeader, Pill } from "./ui";
 
@@ -10,10 +10,12 @@ export function OverviewPage({
   onSourceGroupChange,
   sourceGroups,
   approvals,
+  messages,
   retries,
   sources,
   events,
   approvalHistory,
+  messageHistory,
   onOpenSource,
 }: {
   generatedAt?: string;
@@ -23,10 +25,12 @@ export function OverviewPage({
   onSourceGroupChange: (next: string) => void;
   sourceGroups: string[];
   approvals: Approval[];
+  messages: Message[];
   retries: RetryEntry[];
   sources: Array<{ name: string; displayGroup?: string; tracker: string; agentType?: string; health: string; visibleCount: number }>;
   events: EventItem[];
   approvalHistory: ApprovalHistoryEntry[];
+  messageHistory: MessageHistoryEntry[];
   onOpenSource: (name: string) => void;
 }) {
   return (
@@ -83,8 +87,18 @@ export function OverviewPage({
         </section>
 
         <section className="panel">
-          <PanelHeader title="Attention" copy="" meta={`${approvals.length + retries.length} items`} />
+          <PanelHeader title="Attention" copy="" meta={`${messages.length + approvals.length + retries.length} items`} />
           <div className="stack">
+            {messages.map((message) => (
+              <article key={message.request_id} className="listCard staticCard emphasisCard">
+                <strong>{message.summary || "Operator gate"}</strong>
+                <span>{message.issue_identifier || "Unknown issue"} · {message.agent_name || "operator control"}</span>
+                <div className="pills">
+                  <Pill tone="warn">{message.kind === "before_work" ? "before work" : "message"}</Pill>
+                  <Pill>{formatDate(message.requested_at)}</Pill>
+                </div>
+              </article>
+            ))}
             {approvals.map((approval) => (
               <article key={approval.request_id} className="listCard staticCard emphasisCard">
                 <strong>{approval.tool_name || "Approval request"}</strong>
@@ -104,13 +118,23 @@ export function OverviewPage({
                 </div>
               </article>
             ))}
-            {!approvals.length && !retries.length ? <EmptyState copy="No approvals or retries need attention right now." /> : null}
+            {!messages.length && !approvals.length && !retries.length ? <EmptyState copy="No operator controls, approvals, or retries need attention right now." /> : null}
           </div>
         </section>
 
         <section className="panel">
-          <PanelHeader title="Recent decisions" copy="" meta={`${approvalHistory.length} shown`} />
+          <PanelHeader title="Recent operator decisions" copy="" meta={`${approvalHistory.length + messageHistory.length} shown`} />
           <div className="stack">
+            {messageHistory.map((entry) => (
+              <article key={`${entry.request_id}-${entry.replied_at || ""}`} className="listCard staticCard">
+                <strong>{entry.issue_identifier || entry.run_id || "message"}</strong>
+                <span>{entry.kind === "before_work" ? "before work" : "message"} · {entry.reply || "replied"}</span>
+                <div className="pills">
+                  <Pill tone="info">{entry.outcome || "resolved"}</Pill>
+                  <Pill>{formatDate(entry.replied_at || entry.requested_at)}</Pill>
+                </div>
+              </article>
+            ))}
             {approvalHistory.map((entry) => (
               <article key={`${entry.request_id}-${entry.decided_at || ""}`} className="listCard staticCard">
                 <strong>{entry.issue_identifier || entry.run_id || "decision"}</strong>
@@ -121,7 +145,7 @@ export function OverviewPage({
                 </div>
               </article>
             ))}
-            {!approvalHistory.length ? <EmptyState copy="No approval history in the current view." /> : null}
+            {!approvalHistory.length && !messageHistory.length ? <EmptyState copy="No operator decision history in the current view." /> : null}
           </div>
         </section>
 

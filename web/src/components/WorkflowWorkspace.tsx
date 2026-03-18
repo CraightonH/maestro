@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Approval, ConfigSourceSummary, EventItem, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
+import type { Approval, ConfigSourceSummary, EventItem, Message, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
 import { sourceScopeHref, type SourceDraft } from "../lib/helpers";
 import { Control, EmptyState, PanelHeader, Pill } from "./ui";
 
@@ -11,6 +11,7 @@ export function WorkflowWorkspace({
   runs,
   retries,
   approvals,
+  messages,
   events,
   sourceDraft,
   showEditor,
@@ -22,6 +23,7 @@ export function WorkflowWorkspace({
   onToggleEditor,
   onStopWorkflow,
   onOpenAgent,
+  onResolveMessage,
 }: {
   workflow?: ConfigSourceSummary;
   runtime?: SourceSummary;
@@ -30,6 +32,7 @@ export function WorkflowWorkspace({
   runs: Run[];
   retries: RetryEntry[];
   approvals: Approval[];
+  messages: Message[];
   events: EventItem[];
   sourceDraft: SourceDraft;
   showEditor: boolean;
@@ -41,8 +44,10 @@ export function WorkflowWorkspace({
   onToggleEditor: () => void;
   onStopWorkflow: () => void;
   onOpenAgent: (name: string) => void;
+  onResolveMessage: (requestId: string, reply: string) => Promise<void>;
 }) {
   const [expandedLogs, setExpandedLogs] = useState(false);
+  const [messageReplies, setMessageReplies] = useState<Record<string, string>>({});
   const agentName = workflow?.agent_type || "";
   const logText = useMemo(() => {
     const merged = [currentOutput?.stdout_tail, currentOutput?.stderr_tail].filter(Boolean).join("\n");
@@ -92,6 +97,47 @@ export function WorkflowWorkspace({
                 )}
                 {(workflow.tags || []).map((tag) => <Pill key={tag}>{tag}</Pill>)}
               </div>
+              {messages.length ? (
+                <div className="stack compactStack">
+                  {messages.map((message) => (
+                    <article key={message.request_id} className="detailCard inlineMessageCard">
+                      <div className="detailCardHeader">
+                        <div>
+                          <strong>{message.summary || "Operator control"}</strong>
+                          <span>{message.kind === "before_work" ? "Before work gate" : "Agent message"}</span>
+                        </div>
+                        <Pill tone="warn">{message.requested_at ? "waiting" : "pending"}</Pill>
+                      </div>
+                      <p className="message">{message.body || "Reply to continue."}</p>
+                      <div className="messageComposer">
+                        <input
+                          value={messageReplies[message.request_id] || ""}
+                          onChange={(event) =>
+                            setMessageReplies((current) => ({
+                              ...current,
+                              [message.request_id]: event.target.value,
+                            }))
+                          }
+                          placeholder={message.kind === "before_work" ? "Reply with start or add operator guidance" : "Reply to the agent"}
+                        />
+                        <div className="buttonRow">
+                          {message.kind === "before_work" ? (
+                            <button className="actionButton primary" onClick={() => void onResolveMessage(message.request_id, "start")}>
+                              Start
+                            </button>
+                          ) : null}
+                          <button
+                            className="actionButton"
+                            onClick={() => void onResolveMessage(message.request_id, messageReplies[message.request_id] || "")}
+                          >
+                            Send reply
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              ) : null}
             </div>
             <div className="workflowSideRail">
               <div className="workflowTopBar">
@@ -114,7 +160,7 @@ export function WorkflowWorkspace({
                 <CompactMeta label="Assignee" value={workflow.assignee || "n/a"} />
                 <CompactMeta label="Labels" value={(workflow.filter_labels || []).join(", ") || "n/a"} />
                 <CompactMeta label="Issue labels" value={(workflow.issue_filter_labels || []).join(", ") || "n/a"} />
-                <CompactMeta label="Queue" value={`${approvals.length} approvals · ${retries.length} retries`} />
+                <CompactMeta label="Queue" value={`${messages.length} controls · ${approvals.length} approvals · ${retries.length} retries`} />
               </div>
             </div>
           </div>
@@ -145,6 +191,12 @@ export function WorkflowWorkspace({
                 <span>{currentRun.status} · attempt {currentRun.attempt}</span>
               </article>
             ) : null}
+            {messages.map((message) => (
+              <article key={message.request_id} className="listCard staticCard">
+                <strong>{message.summary || "Operator control"}</strong>
+                <span>{message.kind === "before_work" ? "before work gate" : "message"} · {message.issue_identifier || "unknown issue"}</span>
+              </article>
+            ))}
             {approvals.map((approval) => (
               <article key={approval.request_id} className="listCard staticCard">
                 <strong>Approval: {approval.tool_name || "request"}</strong>
@@ -157,7 +209,7 @@ export function WorkflowWorkspace({
                 <span>retry attempt {retry.attempt}</span>
               </article>
             ))}
-            {!currentRun && !approvals.length && !retries.length ? <EmptyState copy="No active task, approvals, or retries for this workflow." /> : null}
+            {!currentRun && !messages.length && !approvals.length && !retries.length ? <EmptyState copy="No active task, control requests, approvals, or retries for this workflow." /> : null}
           </div>
         </section>
 

@@ -636,6 +636,70 @@ func TestServiceKeepsApprovalPendingWhenApprovalFails(t *testing.T) {
 	}
 }
 
+func TestServiceTracksAndResolvesMessageRequests(t *testing.T) {
+	cfg := testConfig(t)
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#57", "team/project#57"),
+	}
+	fakeHarness := &testutil.FakeHarness{
+		WaitBlock: make(chan struct{}),
+		MessageCh: make(chan harness.MessageRequest, 1),
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun != nil
+	})
+
+	runID := svc.Snapshot().ActiveRun.ID
+	fakeHarness.MessageCh <- harness.MessageRequest{
+		RequestID:   "msg-1",
+		RunID:       runID,
+		Summary:     "Need clarification",
+		Body:        "Should I update the API contract or only the UI copy?",
+		RequestedAt: time.Now().Add(-time.Minute),
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return len(snapshot.PendingMessages) == 1 && snapshot.ActiveRun != nil && snapshot.ActiveRun.Status == domain.RunStatusAwaiting
+	})
+
+	if err := svc.ResolveMessage("msg-1", "Update the API contract too."); err != nil {
+		t.Fatalf("resolve message: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return len(snapshot.PendingMessages) == 0 && len(snapshot.MessageHistory) == 1 && snapshot.ActiveRun != nil && snapshot.ActiveRun.Status == domain.RunStatusActive
+	})
+
+	close(fakeHarness.WaitBlock)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+	if len(fakeHarness.Replies) != 1 || fakeHarness.Replies[0].Reply != "Update the API contract too." {
+		t.Fatalf("message replies = %+v", fakeHarness.Replies)
+	}
+}
+
 func TestServiceRestoresApprovalHistoryAsStaleAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	cfg := testConfigWithRoot(t, root)

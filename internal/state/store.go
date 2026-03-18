@@ -10,7 +10,7 @@ import (
 	"github.com/tjohnson/maestro/internal/domain"
 )
 
-const currentVersion = 2
+const currentVersion = 3
 
 type TerminalIssue struct {
 	IssueID        string           `json:"issue_id"`
@@ -71,6 +71,34 @@ type PersistedApprovalDecision struct {
 	Outcome         string    `json:"outcome,omitempty"`
 }
 
+type PersistedMessageRequest struct {
+	RequestID       string    `json:"request_id"`
+	RunID           string    `json:"run_id"`
+	IssueID         string    `json:"issue_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	AgentName       string    `json:"agent_name,omitempty"`
+	Kind            string    `json:"kind,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Body            string    `json:"body,omitempty"`
+	RequestedAt     time.Time `json:"requested_at"`
+	Resolvable      bool      `json:"resolvable,omitempty"`
+}
+
+type PersistedMessageReply struct {
+	RequestID       string    `json:"request_id"`
+	RunID           string    `json:"run_id"`
+	IssueID         string    `json:"issue_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	AgentName       string    `json:"agent_name,omitempty"`
+	Kind            string    `json:"kind,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Body            string    `json:"body,omitempty"`
+	Reply           string    `json:"reply,omitempty"`
+	RequestedAt     time.Time `json:"requested_at,omitempty"`
+	RepliedAt       time.Time `json:"replied_at"`
+	Outcome         string    `json:"outcome,omitempty"`
+}
+
 type Snapshot struct {
 	Version          int                         `json:"version"`
 	Finished         map[string]TerminalIssue    `json:"finished"`
@@ -78,6 +106,8 @@ type Snapshot struct {
 	ActiveRun        *PersistedRun               `json:"active_run,omitempty"`
 	PendingApprovals []PersistedApprovalRequest  `json:"pending_approvals,omitempty"`
 	ApprovalHistory  []PersistedApprovalDecision `json:"approval_history,omitempty"`
+	PendingMessages  []PersistedMessageRequest   `json:"pending_messages,omitempty"`
+	MessageHistory   []PersistedMessageReply     `json:"message_history,omitempty"`
 }
 
 type Store struct {
@@ -135,6 +165,12 @@ func (s *Store) Save(snapshot Snapshot) error {
 	if snapshot.ApprovalHistory == nil {
 		snapshot.ApprovalHistory = []PersistedApprovalDecision{}
 	}
+	if snapshot.PendingMessages == nil {
+		snapshot.PendingMessages = []PersistedMessageRequest{}
+	}
+	if snapshot.MessageHistory == nil {
+		snapshot.MessageHistory = []PersistedMessageReply{}
+	}
 
 	raw, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
@@ -173,5 +209,7 @@ func emptySnapshot() Snapshot {
 		RetryQueue:       map[string]RetryEntry{},
 		PendingApprovals: []PersistedApprovalRequest{},
 		ApprovalHistory:  []PersistedApprovalDecision{},
+		PendingMessages:  []PersistedMessageRequest{},
+		MessageHistory:   []PersistedMessageReply{},
 	}
 }

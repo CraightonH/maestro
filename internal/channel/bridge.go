@@ -28,6 +28,7 @@ const slackTickInterval = 2 * time.Second
 type Runtime interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
+	ResolveMessage(requestID string, reply string) error
 	StopRun(runID string, reason string) error
 }
 
@@ -42,6 +43,7 @@ type Bridge struct {
 	mu                  sync.Mutex
 	state               slackBridgeState
 	seenApprovalHistory map[string]struct{}
+	seenMessageHistory  map[string]struct{}
 	seenEvents          map[string]struct{}
 	runMeta             map[string]runContext
 }
@@ -59,6 +61,7 @@ type runContext struct {
 type slackBridgeState struct {
 	Threads   map[string]slackThreadRef  `json:"threads"`
 	Approvals map[string]slackMessageRef `json:"approvals"`
+	Messages  map[string]slackMessageRef `json:"messages"`
 }
 
 type slackThreadRef struct {
@@ -92,7 +95,7 @@ type slackClient interface {
 	ResolveChannel(ctx context.Context) (string, error)
 	PostMessage(ctx context.Context, channelID string, threadTS string, text string, blocks []any) (slackPostedMessage, error)
 	UpdateMessage(ctx context.Context, channelID string, messageTS string, text string, blocks []any) error
-	RunSocketMode(ctx context.Context, handler func(blockActionPayload)) error
+	RunSocketMode(ctx context.Context, handler func(slackInboundEnvelope)) error
 }
 
 type slackPostedMessage struct {
@@ -161,6 +164,27 @@ type blockActionPayload struct {
 	} `json:"actions"`
 }
 
+type slackInboundEnvelope struct {
+	Action  *blockActionPayload
+	Message *slackMessageEvent
+}
+
+type slackEventCallbackPayload struct {
+	Type  string            `json:"type"`
+	Event slackMessageEvent `json:"event"`
+}
+
+type slackMessageEvent struct {
+	Type     string `json:"type"`
+	Subtype  string `json:"subtype"`
+	Channel  string `json:"channel"`
+	User     string `json:"user"`
+	Text     string `json:"text"`
+	ThreadTS string `json:"thread_ts"`
+	TS       string `json:"ts"`
+	BotID    string `json:"bot_id"`
+}
+
 func NewBridge(cfg *config.Config, logger *slog.Logger, runtime Runtime) (*Bridge, error) {
 	agentChannels := map[string]string{}
 	channelDefs := map[string]config.ChannelConfig{}
@@ -211,6 +235,7 @@ func NewBridge(cfg *config.Config, logger *slog.Logger, runtime Runtime) (*Bridg
 		statePath:           filepath.Join(cfg.State.Dir, "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
 		seenEvents:          map[string]struct{}{},
 		runMeta:             map[string]runContext{},
 	}
@@ -224,8 +249,8 @@ func NewBridge(cfg *config.Config, logger *slog.Logger, runtime Runtime) (*Bridg
 func (b *Bridge) Run(ctx context.Context) error {
 	for _, channel := range b.channels {
 		go func(channel *slackChannel) {
-			if err := channel.client.RunSocketMode(ctx, func(payload blockActionPayload) {
-				b.handleAction(context.Background(), channel.name, payload)
+			if err := channel.client.RunSocketMode(ctx, func(envelope slackInboundEnvelope) {
+				b.handleInbound(context.Background(), channel.name, envelope)
 			}); err != nil && !errors.Is(err, context.Canceled) {
 				b.logger.Warn("slack socket mode stopped", "channel", channel.name, "error", err)
 			}
@@ -254,6 +279,9 @@ func (b *Bridge) seed(snapshot orchestrator.Snapshot) {
 	}
 	for _, entry := range snapshot.ApprovalHistory {
 		b.seenApprovalHistory[historyKey(entry)] = struct{}{}
+	}
+	for _, entry := range snapshot.MessageHistory {
+		b.seenMessageHistory[messageHistoryKey(entry)] = struct{}{}
 	}
 	for _, event := range snapshot.RecentEvents {
 		b.seenEvents[eventKey(event)] = struct{}{}
@@ -302,6 +330,18 @@ func (b *Bridge) reconcile(ctx context.Context, snapshot orchestrator.Snapshot) 
 		}
 	}
 
+	for _, message := range snapshot.PendingMessages {
+		b.mu.Lock()
+		_, posted := b.state.Messages[message.RequestID]
+		b.mu.Unlock()
+		if posted {
+			continue
+		}
+		if err := b.postMessageRequest(ctx, message); err != nil {
+			b.logger.Warn("post slack message request failed", "request_id", message.RequestID, "error", err)
+		}
+	}
+
 	for _, entry := range snapshot.ApprovalHistory {
 		key := historyKey(entry)
 		b.mu.Lock()
@@ -315,6 +355,22 @@ func (b *Bridge) reconcile(ctx context.Context, snapshot orchestrator.Snapshot) 
 		}
 		b.mu.Lock()
 		b.seenApprovalHistory[key] = struct{}{}
+		b.mu.Unlock()
+	}
+
+	for _, entry := range snapshot.MessageHistory {
+		key := messageHistoryKey(entry)
+		b.mu.Lock()
+		_, seen := b.seenMessageHistory[key]
+		b.mu.Unlock()
+		if seen {
+			continue
+		}
+		if err := b.applyMessageHistory(ctx, entry); err != nil {
+			b.logger.Warn("apply slack message history failed", "request_id", entry.RequestID, "error", err)
+		}
+		b.mu.Lock()
+		b.seenMessageHistory[key] = struct{}{}
 		b.mu.Unlock()
 	}
 
@@ -382,6 +438,34 @@ func (b *Bridge) postApprovalRequest(ctx context.Context, approval orchestrator.
 	return b.saveState()
 }
 
+func (b *Bridge) postMessageRequest(ctx context.Context, request orchestrator.MessageView) error {
+	meta, ok := b.lookupRunContext(request.RunID, request.AgentName, request.IssueIdentifier)
+	if !ok {
+		return nil
+	}
+	thread, err := b.ensureThread(ctx, meta)
+	if err != nil {
+		return err
+	}
+	channel := b.channels[b.agentChannels[meta.AgentType]]
+	text, blocks := renderMessageRequest(meta, request)
+
+	posted, err := channel.client.PostMessage(ctx, thread.ChannelID, thread.ThreadTS, text, blocks)
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	b.state.Messages[request.RequestID] = slackMessageRef{
+		ChannelName: channel.name,
+		ChannelID:   posted.ChannelID,
+		MessageTS:   posted.MessageTS,
+		ThreadTS:    thread.ThreadTS,
+	}
+	b.mu.Unlock()
+	return b.saveState()
+}
+
 func (b *Bridge) applyApprovalHistory(ctx context.Context, entry orchestrator.ApprovalHistoryEntry) error {
 	b.mu.Lock()
 	messageRef, ok := b.state.Approvals[entry.RequestID]
@@ -410,6 +494,30 @@ func (b *Bridge) applyApprovalHistory(ctx context.Context, entry orchestrator.Ap
 	return b.saveState()
 }
 
+func (b *Bridge) applyMessageHistory(ctx context.Context, entry orchestrator.MessageHistoryEntry) error {
+	b.mu.Lock()
+	messageRef, ok := b.state.Messages[entry.RequestID]
+	if ok {
+		delete(b.state.Messages, entry.RequestID)
+	}
+	b.mu.Unlock()
+
+	if !ok {
+		return b.saveState()
+	}
+
+	channel := b.channels[messageRef.ChannelName]
+	if channel == nil {
+		return b.saveState()
+	}
+
+	text, blocks := renderMessageHistory(entry)
+	if err := channel.client.UpdateMessage(ctx, messageRef.ChannelID, messageRef.MessageTS, text, blocks); err != nil {
+		return err
+	}
+	return b.saveState()
+}
+
 func (b *Bridge) postEvent(ctx context.Context, event orchestrator.Event) error {
 	meta, ok := b.lookupRunContext(event.RunID, "", event.Issue)
 	if !ok {
@@ -431,6 +539,16 @@ func (b *Bridge) postEvent(ctx context.Context, event orchestrator.Event) error 
 	return err
 }
 
+func (b *Bridge) handleInbound(ctx context.Context, channelName string, envelope slackInboundEnvelope) {
+	if envelope.Action != nil {
+		b.handleAction(ctx, channelName, *envelope.Action)
+		return
+	}
+	if envelope.Message != nil {
+		b.handleMessageReply(ctx, channelName, *envelope.Message)
+	}
+}
+
 func (b *Bridge) handleAction(ctx context.Context, channelName string, payload blockActionPayload) {
 	if payload.Type != "block_actions" || len(payload.Actions) == 0 {
 		return
@@ -442,6 +560,12 @@ func (b *Bridge) handleAction(ctx context.Context, channelName string, payload b
 		decision = "approve"
 	case "maestro_reject":
 		decision = "reject"
+	case "maestro_message_start":
+		b.handleMessageAction(ctx, channelName, payload, action.Value, "start")
+		return
+	case "maestro_message_deny":
+		b.handleDenyBeforeWorkAction(ctx, channelName, payload, action.Value)
+		return
 	case "maestro_stop_run":
 		b.handleStopAction(ctx, channelName, payload, action.Value)
 		return
@@ -473,6 +597,69 @@ func (b *Bridge) handleAction(ctx context.Context, channelName string, payload b
 	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
 }
 
+func (b *Bridge) handleMessageAction(ctx context.Context, channelName string, payload blockActionPayload, requestID string, reply string) {
+	channel := b.channels[channelName]
+	if channel == nil {
+		return
+	}
+
+	text := ""
+	blocks := []any{}
+	if err := b.runtime.ResolveMessage(requestID, reply); err != nil {
+		text = redact.String(fmt.Sprintf("Reply failed: %v", err))
+		blocks = []any{slackSection(fmt.Sprintf("*Reply failed*\n%s", text))}
+	} else {
+		text = "Before-work review approved"
+		blocks = []any{
+			slackSection("*Before-work review approved*"),
+			slackContext(fmt.Sprintf("Reply: %s · %s", redact.String(reply), time.Now().Format(time.RFC3339))),
+		}
+		b.mu.Lock()
+		delete(b.state.Messages, requestID)
+		b.mu.Unlock()
+		_ = b.saveState()
+	}
+	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
+}
+
+func (b *Bridge) handleDenyBeforeWorkAction(ctx context.Context, channelName string, payload blockActionPayload, runID string) {
+	channel := b.channels[channelName]
+	if channel == nil {
+		return
+	}
+
+	text := ""
+	blocks := []any{}
+	if err := b.runtime.StopRun(runID, "denied in Slack before work began"); err != nil {
+		text = redact.String(fmt.Sprintf("Deny failed: %v", err))
+		blocks = []any{slackSection(fmt.Sprintf("*Deny failed*\n%s", text))}
+	} else {
+		text = "Before-work review denied"
+		blocks = []any{
+			slackSection("*Before-work review denied*"),
+			slackContext(fmt.Sprintf("Workflow stopped · %s", time.Now().Format(time.RFC3339))),
+		}
+	}
+	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
+}
+
+func (b *Bridge) handleMessageReply(ctx context.Context, channelName string, payload slackMessageEvent) {
+	if payload.Type != "message" || payload.Subtype != "" || strings.TrimSpace(payload.BotID) != "" {
+		return
+	}
+	if strings.TrimSpace(payload.ThreadTS) == "" || strings.TrimSpace(payload.Text) == "" {
+		return
+	}
+
+	requestID := b.lookupMessageRequest(channelName, payload.Channel, payload.ThreadTS)
+	if requestID == "" {
+		return
+	}
+	if err := b.runtime.ResolveMessage(requestID, strings.TrimSpace(payload.Text)); err != nil {
+		b.logger.Warn("resolve slack message reply failed", "request_id", requestID, "error", err)
+	}
+}
+
 func (b *Bridge) handleStopAction(ctx context.Context, channelName string, payload blockActionPayload, runID string) {
 	channel := b.channels[channelName]
 	if channel == nil {
@@ -492,6 +679,78 @@ func (b *Bridge) handleStopAction(ctx context.Context, channelName string, paylo
 		}
 	}
 	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
+}
+
+func renderMessageRequest(meta runContext, request orchestrator.MessageView) (string, []any) {
+	body := strings.TrimSpace(request.Body)
+	if body == "" {
+		body = request.Summary
+	}
+	body = clipSlackText(redact.String(body), 900)
+
+	switch request.Kind {
+	case "before_work":
+		text := redact.String(fmt.Sprintf("Before work review for %s", request.IssueIdentifier))
+		header := fmt.Sprintf("*Before work review*\n*Issue:* %s", slackIssueLink(meta.IssueURL, request.IssueIdentifier))
+		if strings.TrimSpace(meta.IssueTitle) != "" {
+			header += fmt.Sprintf("\n*Task:* %s", redact.String(meta.IssueTitle))
+		}
+		if strings.TrimSpace(meta.AgentName) != "" {
+			header += fmt.Sprintf("\n*Agent:* %s", meta.AgentName)
+		}
+		if strings.TrimSpace(meta.SourceName) != "" {
+			header += fmt.Sprintf("\n*Workflow:* %s", meta.SourceName)
+		}
+		actions := []map[string]any{
+			slackButton("Approve and start", "maestro_message_start", request.RequestID, "primary"),
+			slackButton("Deny and stop", "maestro_message_deny", request.RunID, "danger"),
+		}
+		if strings.TrimSpace(meta.IssueURL) != "" {
+			actions = append([]map[string]any{slackLinkButton("View issue", meta.IssueURL)}, actions...)
+		}
+		return text, []any{
+			slackSection(header),
+			slackSection(body),
+			slackContext("Use the buttons below to start or deny the workflow. Reply in this thread to add operator guidance."),
+			slackActions(actions...),
+		}
+	default:
+		text := redact.String(firstNonEmpty(request.Summary, fmt.Sprintf("Question for %s", request.IssueIdentifier)))
+		blocks := []any{
+			slackSection(fmt.Sprintf("*Question from %s*\n*Issue:* %s", meta.AgentName, slackIssueLink(meta.IssueURL, request.IssueIdentifier))),
+			slackSection(body),
+			slackContext("Reply in this thread to answer."),
+		}
+		if strings.TrimSpace(meta.IssueURL) != "" {
+			blocks = append(blocks, slackActions(slackLinkButton("View issue", meta.IssueURL)))
+		}
+		return text, blocks
+	}
+}
+
+func renderMessageHistory(entry orchestrator.MessageHistoryEntry) (string, []any) {
+	switch entry.Kind {
+	case "before_work":
+		text := redact.String(firstNonEmpty(entry.Reply, "Before-work review updated"))
+		blocks := []any{
+			slackSection(fmt.Sprintf("*Before-work review %s*\n*Issue:* %s", entry.Outcome, entry.IssueIdentifier)),
+		}
+		if strings.TrimSpace(entry.Reply) != "" {
+			blocks = append(blocks, slackSection(redact.String(entry.Reply)))
+		}
+		blocks = append(blocks, slackContext(fmt.Sprintf("%s · %s", strings.ToUpper(entry.Outcome), entry.RepliedAt.Format(time.RFC3339))))
+		return text, blocks
+	default:
+		text := redact.String(firstNonEmpty(entry.Reply, "Question answered"))
+		blocks := []any{
+			slackSection(fmt.Sprintf("*Question answered*\n*Issue:* %s", entry.IssueIdentifier)),
+		}
+		if strings.TrimSpace(entry.Reply) != "" {
+			blocks = append(blocks, slackSection(redact.String(entry.Reply)))
+		}
+		blocks = append(blocks, slackContext(fmt.Sprintf("%s · %s", strings.ToUpper(entry.Outcome), entry.RepliedAt.Format(time.RFC3339))))
+		return text, blocks
+	}
 }
 
 func (b *Bridge) ensureThread(ctx context.Context, meta runContext) (slackThreadRef, error) {
@@ -565,12 +824,27 @@ func (b *Bridge) lookupRunContext(runID string, agentName string, issueIdentifie
 	return runContext{}, false
 }
 
+func (b *Bridge) lookupMessageRequest(channelName string, channelID string, threadTS string) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for requestID, ref := range b.state.Messages {
+		if ref.ChannelName == channelName && ref.ChannelID == channelID && ref.ThreadTS == threadTS {
+			return requestID
+		}
+	}
+	return ""
+}
+
 func issueKey(sourceName string, issueIdentifier string) string {
 	return strings.TrimSpace(sourceName) + "|" + strings.TrimSpace(issueIdentifier)
 }
 
 func historyKey(entry orchestrator.ApprovalHistoryEntry) string {
 	return entry.RequestID + "|" + entry.DecidedAt.Format(time.RFC3339Nano) + "|" + entry.Decision
+}
+
+func messageHistoryKey(entry orchestrator.MessageHistoryEntry) string {
+	return entry.RequestID + "|" + entry.RepliedAt.Format(time.RFC3339Nano) + "|" + entry.Outcome
 }
 
 func eventKey(event orchestrator.Event) string {
@@ -597,6 +871,7 @@ func emptySlackState() slackBridgeState {
 	return slackBridgeState{
 		Threads:   map[string]slackThreadRef{},
 		Approvals: map[string]slackMessageRef{},
+		Messages:  map[string]slackMessageRef{},
 	}
 }
 
@@ -618,6 +893,9 @@ func (b *Bridge) loadState() error {
 	}
 	if state.Approvals == nil {
 		state.Approvals = map[string]slackMessageRef{}
+	}
+	if state.Messages == nil {
+		state.Messages = map[string]slackMessageRef{}
 	}
 	b.state = state
 	return nil
@@ -841,7 +1119,7 @@ func (c *slackHTTPClient) UpdateMessage(ctx context.Context, channelID string, m
 	return nil
 }
 
-func (c *slackHTTPClient) RunSocketMode(ctx context.Context, handler func(blockActionPayload)) error {
+func (c *slackHTTPClient) RunSocketMode(ctx context.Context, handler func(slackInboundEnvelope)) error {
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -900,7 +1178,7 @@ func (c *slackHTTPClient) connectionURL(ctx context.Context) (string, error) {
 	return response.URL, nil
 }
 
-func (c *slackHTTPClient) consumeSocket(ctx context.Context, conn *websocket.Conn, handler func(blockActionPayload)) error {
+func (c *slackHTTPClient) consumeSocket(ctx context.Context, conn *websocket.Conn, handler func(slackInboundEnvelope)) error {
 	_ = conn.SetReadDeadline(time.Time{})
 	for {
 		if ctx.Err() != nil {
@@ -926,11 +1204,13 @@ func (c *slackHTTPClient) consumeSocket(ctx context.Context, conn *websocket.Con
 			continue
 		}
 		var action blockActionPayload
-		if err := json.Unmarshal(envelope.Payload, &action); err != nil {
+		if err := json.Unmarshal(envelope.Payload, &action); err == nil && action.Type == "block_actions" {
+			handler(slackInboundEnvelope{Action: &action})
 			continue
 		}
-		if action.Type == "block_actions" {
-			handler(action)
+		var callback slackEventCallbackPayload
+		if err := json.Unmarshal(envelope.Payload, &callback); err == nil && callback.Type == "event_callback" && callback.Event.Type == "message" {
+			handler(slackInboundEnvelope{Message: &callback.Event})
 		}
 	}
 }

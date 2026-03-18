@@ -52,6 +52,19 @@ export interface Approval {
   resolvable: boolean;
 }
 
+export interface Message {
+  request_id: string;
+  run_id?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  agent_name?: string;
+  kind?: string;
+  summary?: string;
+  body?: string;
+  requested_at?: string;
+  resolvable: boolean;
+}
+
 export interface ApprovalHistoryEntry {
   request_id: string;
   run_id?: string;
@@ -64,6 +77,21 @@ export interface ApprovalHistoryEntry {
   reason?: string;
   requested_at?: string;
   decided_at?: string;
+  outcome?: string;
+}
+
+export interface MessageHistoryEntry {
+  request_id: string;
+  run_id?: string;
+  issue_id?: string;
+  issue_identifier?: string;
+  agent_name?: string;
+  kind?: string;
+  summary?: string;
+  body?: string;
+  reply?: string;
+  requested_at?: string;
+  replied_at?: string;
   outcome?: string;
 }
 
@@ -96,6 +124,7 @@ export interface SourceSummary {
   retry_count: number;
   active_run_count: number;
   pending_approvals: number;
+  pending_messages: number;
 }
 
 export interface ConfigFileSummary {
@@ -182,6 +211,17 @@ export interface ConfigSummary {
   max_concurrent_global: number;
   stall_timeout?: string;
   default_poll_interval?: string;
+  hooks: {
+    after_create?: string;
+    before_run?: string;
+    after_run?: string;
+    before_remove?: string;
+    timeout?: string;
+  };
+  controls: {
+    before_work_enabled: boolean;
+    before_work_prompt?: string;
+  };
   sources: ConfigSourceSummary[];
   agents: ConfigAgentSummary[];
 }
@@ -191,6 +231,7 @@ export interface StatusResponse {
   config: ConfigSummary;
   snapshot: {
     approval_history?: ApprovalHistoryEntry[];
+    message_history?: MessageHistoryEntry[];
   };
 }
 

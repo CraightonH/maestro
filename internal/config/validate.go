@@ -148,6 +148,9 @@ func ValidateMVP(cfg *Config) error {
 	if cfg.Hooks.Timeout.Duration <= 0 {
 		return fmt.Errorf("hooks.timeout must be greater than zero")
 	}
+	if strings.Contains(cfg.Controls.BeforeWork.Prompt, "{{") {
+		return fmt.Errorf("controls.before_work.prompt must be plain text for v0.1")
+	}
 	if cfg.Logging.MaxFiles < 0 {
 		return fmt.Errorf("logging.max_files must be zero or greater")
 	}

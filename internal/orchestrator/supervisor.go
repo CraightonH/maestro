@@ -18,6 +18,7 @@ type Runtime interface {
 	Run(ctx context.Context) error
 	Snapshot() Snapshot
 	ResolveApproval(requestID string, decision string) error
+	ResolveMessage(requestID string, reply string) error
 	StopRun(runID string, reason string) error
 }
 
@@ -185,6 +186,15 @@ func (s *Supervisor) ResolveApproval(requestID string, decision string) error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return fmt.Errorf("approval request %q not found", requestID)
+}
+
+func (s *Supervisor) ResolveMessage(requestID string, reply string) error {
+	for _, svc := range s.services {
+		if err := svc.ResolveMessage(requestID, reply); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("message request %q not found", requestID)
 }
 
 func (s *Supervisor) StopRun(runID string, reason string) error {

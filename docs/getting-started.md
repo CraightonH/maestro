@@ -275,6 +275,7 @@ Pack examples live under:
 
 The current build supports these hook phases:
 
+- shell hooks:
 - `hooks.after_create`
 - `hooks.before_run`
 - `hooks.after_run`
@@ -295,3 +296,9 @@ Hook commands receive:
 `defaults.stall_timeout` sets the inactivity timeout for runs. You can override it per agent with `agent_types[].stall_timeout`.
 
 `hooks.before_remove` is reserved in the config but is not implemented yet.
+
+Maestro control points are separate from shell hooks. The first one is:
+
+- `controls.before_work`
+
+`before_work` pauses the workflow after claim/workspace prep and before the agent starts. The operator can reply with `start`, add instructions, or stop the run from the TUI, web UI, or Slack if a communication channel is configured.

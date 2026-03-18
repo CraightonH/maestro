@@ -29,7 +29,8 @@ The current build is a working POC. It is intentionally narrow in surface area, 
 
 - GitLab project issues and GitLab epic-backed child issues are supported
 - Codex manual approval is wired in code but the current local app-server build does not emit approval requests in this environment
-- Hook support is currently limited to `after_create`, `before_run`, and `after_run`
+- Shell hook support is currently limited to `after_create`, `before_run`, and `after_run`
+- Maestro control points currently include `controls.before_work` plus runtime approvals and operator message replies
 - Slack currently covers status updates plus approval buttons, not general threaded conversation back into the run
 - Dynamic config reload and tracker-specific completion workflows are still out of scope
 
@@ -111,6 +112,8 @@ These keep logs, state, and workspaces under `demo/*/var/` so you can inspect an
 - `defaults.stall_timeout` sets the inactivity window before Maestro stops a run and queues a retry.
 - `agent_types[].stall_timeout` overrides that value for a specific agent.
 - `hooks.after_create`, `hooks.before_run`, and `hooks.after_run` run as shell commands with the timeout from `hooks.timeout`.
+- `controls.before_work` is a Maestro-managed operator gate after claim/workspace prep and before the agent starts.
+- Operator replies to `before_work` are injected into the run prompt as structured operator guidance.
 - Hook commands receive `MAESTRO_RUN_ID`, `MAESTRO_ISSUE_ID`, `MAESTRO_ISSUE_IDENTIFIER`, `MAESTRO_AGENT_NAME`, `MAESTRO_AGENT_TYPE`, `MAESTRO_RUN_STAGE`, `MAESTRO_RUN_STATUS`, and `MAESTRO_WORKSPACE_PATH`.
 - `hooks.before_remove` is reserved in config but not implemented yet.
 - `maestro inspect runs` gives a run-centric view over active, retry, and finished items.

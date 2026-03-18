@@ -227,6 +227,14 @@ func (a *Adapter) Approve(ctx context.Context, decision harness.ApprovalDecision
 	return fmt.Errorf("approval request %q not found", decision.RequestID)
 }
 
+func (a *Adapter) Messages() <-chan harness.MessageRequest {
+	return nil
+}
+
+func (a *Adapter) Reply(ctx context.Context, reply harness.MessageReply) error {
+	return harness.ErrMessagesUnsupported
+}
+
 func (r *activeRun) RunID() string {
 	return r.runID
 }

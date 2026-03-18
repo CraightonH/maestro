@@ -25,8 +25,23 @@ type ConfigSummary struct {
 	MaxConcurrentGlobal int                   `json:"max_concurrent_global"`
 	StallTimeout        string                `json:"stall_timeout,omitempty"`
 	DefaultPollInterval string                `json:"default_poll_interval,omitempty"`
+	Hooks               ConfigHooksSummary    `json:"hooks"`
+	Controls            ConfigControlsSummary `json:"controls"`
 	Sources             []ConfigSourceSummary `json:"sources"`
 	Agents              []ConfigAgentSummary  `json:"agents"`
+}
+
+type ConfigHooksSummary struct {
+	AfterCreate  string `json:"after_create,omitempty"`
+	BeforeRun    string `json:"before_run,omitempty"`
+	AfterRun     string `json:"after_run,omitempty"`
+	BeforeRemove string `json:"before_remove,omitempty"`
+	Timeout      string `json:"timeout,omitempty"`
+}
+
+type ConfigControlsSummary struct {
+	BeforeWorkEnabled bool   `json:"before_work_enabled"`
+	BeforeWorkPrompt  string `json:"before_work_prompt,omitempty"`
 }
 
 type ConfigSourceSummary struct {
@@ -140,6 +155,17 @@ func SummarizeConfig(cfg *config.Config) ConfigSummary {
 		MaxConcurrentGlobal: cfg.Defaults.MaxConcurrentGlobal,
 		StallTimeout:        cfg.Defaults.StallTimeout.Duration.String(),
 		DefaultPollInterval: cfg.Defaults.PollInterval.Duration.String(),
+		Hooks: ConfigHooksSummary{
+			AfterCreate:  cfg.Hooks.AfterCreate,
+			BeforeRun:    cfg.Hooks.BeforeRun,
+			AfterRun:     cfg.Hooks.AfterRun,
+			BeforeRemove: cfg.Hooks.BeforeRemove,
+			Timeout:      cfg.Hooks.Timeout.Duration.String(),
+		},
+		Controls: ConfigControlsSummary{
+			BeforeWorkEnabled: cfg.Controls.BeforeWork.Enabled,
+			BeforeWorkPrompt:  cfg.Controls.BeforeWork.Prompt,
+		},
 	}
 	for _, source := range cfg.Sources {
 		effectiveIssueFilter := source.EffectiveIssueFilter()

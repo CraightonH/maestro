@@ -347,6 +347,7 @@ select {
 .sidebarNav,
 .sidebarFooter,
 .stack,
+.compactStack,
 .timeline,
 .buttonRow,
 .pills,
@@ -358,9 +359,14 @@ select {
 .sidebarNav,
 .sidebarFooter,
 .stack,
+.compactStack,
 .timeline,
 .pageTabs {
   flex-direction: column;
+}
+
+.compactStack {
+  gap: 8px;
 }
 
 .sidebarFooter {
@@ -1108,6 +1114,15 @@ select {
   align-items: flex-start;
   gap: 14px;
   margin-bottom: 12px;
+}
+
+.inlineMessageCard {
+  gap: 10px;
+}
+
+.messageComposer {
+  display: grid;
+  gap: 10px;
 }
 
 .detailCardHeader a {

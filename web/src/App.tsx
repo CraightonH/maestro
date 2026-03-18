@@ -5,6 +5,7 @@ import {
   fetchBackupDetail,
   fetchDashboardData,
   openStream,
+  replyToMessage,
   resolveApproval,
   restoreBackup,
   saveConfig,
@@ -147,11 +148,13 @@ function App() {
   const runs = dashboard?.runs.items ?? [];
   const outputs = dashboard?.runs.outputs ?? [];
   const approvals = dashboard?.approvals.items ?? [];
+  const messages = dashboard?.messages.items ?? [];
   const retries = dashboard?.retries.items ?? [];
   const events = dashboard?.events.items ?? [];
   const backups = dashboard?.backups.items ?? [];
   const agents = config?.agents ?? [];
   const approvalHistory = dashboard?.status.snapshot.approval_history ?? [];
+  const messageHistory = dashboard?.status.snapshot.message_history ?? [];
 
   const mergedSources = config?.sources.map((source) => {
     const runtime = sources.find((item) => item.name === source.name);
@@ -212,6 +215,19 @@ function App() {
     ]);
   });
 
+  const visibleMessages = messages.filter((message) => {
+    const run = runs.find((item) => item.id === message.run_id);
+    if (run && !filteredSourceNames.includes(run.source_name)) return false;
+    if (!deferredSearch) return true;
+    return matchesSearch(deferredSearch, [
+      message.agent_name,
+      message.issue_identifier,
+      message.summary,
+      message.body,
+      message.kind,
+    ]);
+  });
+
   const visibleRetries = retries.filter((retry) => {
     if (!filteredSourceNames.includes(retry.source_name)) return false;
     if (quickFilter === "awaiting-approval") return false;
@@ -237,12 +253,21 @@ function App() {
     const run = runs.find((item) => item.id === approval.run_id);
     return run?.source_name === selectedSource?.config.name;
   });
+  const selectedSourceMessages = messages.filter((message) => {
+    const run = runs.find((item) => item.id === message.run_id);
+    return run?.source_name === selectedSource?.config.name;
+  });
   const selectedSourceEvents = events.filter((event) => event.source === selectedSource?.config.name);
   const selectedAgentApprovals = approvals.filter((approval) => approval.agent_name === selectedAgent?.name);
   const selectedAgentEvents = events.filter((event) => event.run_id === currentRun?.id || event.source === currentRun?.source_name);
 
   async function handleApproval(requestId: string, action: "approve" | "reject") {
     await resolveApproval(requestId, action);
+    await refresh();
+  }
+
+  async function handleMessageReply(requestId: string, reply: string) {
+    await replyToMessage(requestId, reply);
     await refresh();
   }
 
@@ -551,6 +576,7 @@ function App() {
               onSourceGroupChange={setSourceGroup}
               sourceGroups={sourceGroups}
               approvals={visibleApprovals}
+              messages={visibleMessages}
               retries={visibleRetries}
               sources={filteredSources.map((source) => ({
                   name: source.config.name,
@@ -570,6 +596,19 @@ function App() {
                     entry.tool_name,
                     entry.outcome,
                     entry.decision,
+                  ]);
+                })
+                .slice(0, 6)}
+              messageHistory={messageHistory
+                .filter((entry) => {
+                  if (!deferredSearch) return true;
+                  return matchesSearch(deferredSearch, [
+                    entry.issue_identifier,
+                    entry.agent_name,
+                    entry.summary,
+                    entry.reply,
+                    entry.kind,
+                    entry.outcome,
                   ]);
                 })
                 .slice(0, 6)}
@@ -601,6 +640,7 @@ function App() {
               runs={selectedSourceRuns}
               retries={selectedSourceRetries}
               approvals={selectedSourceApprovals}
+              messages={selectedSourceMessages}
               events={selectedSourceEvents}
               sourceDraft={sourceDraft}
               showEditor={showWorkflowEditor}
@@ -618,6 +658,7 @@ function App() {
                 setSelectedAgentName(name);
                 navigate("agent", { agentName: name });
               }}
+              onResolveMessage={(requestId, reply) => handleMessageReply(requestId, reply)}
             />
           ) : null}
 

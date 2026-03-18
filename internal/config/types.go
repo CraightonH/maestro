@@ -51,6 +51,7 @@ type Config struct {
 	Workspace      WorkspaceConfig      `yaml:"workspace"`
 	State          StateConfig          `yaml:"state"`
 	Hooks          HooksConfig          `yaml:"hooks"`
+	Controls       ControlsConfig       `yaml:"controls"`
 	Server         ServerConfig         `yaml:"server"`
 	Logging        LoggingConfig        `yaml:"logging"`
 }
@@ -175,6 +176,15 @@ type HooksConfig struct {
 	AfterRun     string   `yaml:"after_run"`
 	BeforeRemove string   `yaml:"before_remove"`
 	Timeout      Duration `yaml:"timeout"`
+}
+
+type ControlsConfig struct {
+	BeforeWork BeforeWorkControlConfig `yaml:"before_work"`
+}
+
+type BeforeWorkControlConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Prompt  string `yaml:"prompt"`
 }
 
 type ServerConfig struct {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tjohnson/maestro/internal/domain"
@@ -17,8 +18,9 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 		return nil
 	}
 	attempt := s.takeAttempt(issue)
+	startedAt := time.Now()
 	run := &domain.AgentRun{
-		ID:             fmt.Sprintf("%d", time.Now().UnixNano()),
+		ID:             newRunID(startedAt),
 		AgentName:      s.agent.InstanceName,
 		AgentType:      s.agent.Name,
 		Issue:          issue,
@@ -28,7 +30,7 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 		Attempt:        attempt,
 		ApprovalPolicy: s.agent.ApprovalPolicy,
 		ApprovalState:  s.approvalState(),
-		StartedAt:      time.Now(),
+		StartedAt:      startedAt,
 	}
 	if run.AgentName == "" {
 		run.AgentName = s.agent.Name
@@ -48,13 +50,24 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 			trackerbase.LifecycleLabelDone,
 			trackerbase.LifecycleLabelFailed,
 		},
-		fmt.Sprintf("Maestro started run %s (attempt %d) with agent %s.", run.ID, run.Attempt, run.AgentName),
+		fmt.Sprintf(
+			"Maestro started workflow %s for %s with %s (attempt %d, run %s).",
+			run.SourceName,
+			run.Issue.Identifier,
+			run.AgentName,
+			run.Attempt+1,
+			run.ID,
+		),
 	)
 	s.refreshActiveRunIssue(ctx, run.ID)
 
 	s.runWG.Add(1)
 	go s.executeRun(ctx, run)
 	return nil
+}
+
+func newRunID(now time.Time) string {
+	return fmt.Sprintf("run-%s-%06d", now.Format("20060102-150405"), now.Nanosecond()/1000)
 }
 
 func (s *Service) executeRun(ctx context.Context, run *domain.AgentRun) {
@@ -79,11 +92,15 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		r.WorkspacePath = prepared.Path
 	})
 	s.runHookBestEffort(ctx, s.cfg.Hooks.AfterCreate, prepared.Path, run, "after_create")
+	operatorInstruction, err := s.runBeforeWorkGate(ctx, run)
+	if err != nil {
+		return err
+	}
 	if err := s.runHook(ctx, s.cfg.Hooks.BeforeRun, prepared.Path, run, "before_run"); err != nil {
 		return err
 	}
 
-	renderedPrompt, err := s.renderPrompt(run.Issue, run.AgentName, run.Attempt)
+	renderedPrompt, err := s.renderPrompt(run.Issue, run.AgentName, run.Attempt, operatorInstruction)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
 	}
@@ -135,6 +152,43 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 	s.runHookBestEffort(context.Background(), s.cfg.Hooks.AfterRun, prepared.Path, run, "after_run")
 	s.completeRun(run.ID)
 	return nil
+}
+
+func (s *Service) runBeforeWorkGate(ctx context.Context, run *domain.AgentRun) (string, error) {
+	if !s.cfg.Controls.BeforeWork.Enabled {
+		return "", nil
+	}
+
+	body := strings.TrimSpace(s.cfg.Controls.BeforeWork.Prompt)
+	if body == "" {
+		body = fmt.Sprintf("Review %s before work begins. Reply with any operator instructions or simply say start.", run.Issue.Identifier)
+	}
+	summary := fmt.Sprintf("Before work: %s", run.Issue.Identifier)
+	view, replyCh := s.createControlMessage(run, summary, body)
+	defer s.cancelControlMessage(view.RequestID, "cancelled")
+
+	s.recordRunEvent(run, "info", "waiting for before_work confirmation for %s", run.Issue.Identifier)
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case reply, ok := <-replyCh:
+			if !ok {
+				return "", fmt.Errorf("before_work gate for %s was closed", run.ID)
+			}
+			return strings.TrimSpace(reply), nil
+		case <-ticker.C:
+			s.mu.RLock()
+			_, stopped := s.pendingStops[run.ID]
+			s.mu.RUnlock()
+			if stopped {
+				return "", fmt.Errorf("run stopped before work began")
+			}
+		}
+	}
 }
 
 func (s *Service) completeRun(runID string) {

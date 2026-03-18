@@ -49,3 +49,8 @@ state:
 logging:
   level: info
   dir: ~/.local/state/maestro/logs
+
+controls:
+  before_work:
+    enabled: true
+    prompt: "Review the claimed issue before the agent starts. Reply with start, or add operator guidance for the run."

@@ -22,6 +22,7 @@ import (
 type fakeRuntime struct {
 	snapshot  orchestrator.Snapshot
 	decisions []string
+	replies   []string
 	stops     []string
 }
 
@@ -31,6 +32,11 @@ func (f *fakeRuntime) Snapshot() orchestrator.Snapshot {
 
 func (f *fakeRuntime) ResolveApproval(requestID string, decision string) error {
 	f.decisions = append(f.decisions, requestID+":"+decision)
+	return nil
+}
+
+func (f *fakeRuntime) ResolveMessage(requestID string, reply string) error {
+	f.replies = append(f.replies, requestID+":"+reply)
 	return nil
 }
 
@@ -139,7 +145,7 @@ func TestRunStopEndpointStopsRun(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", recorder.Code)
 	}
-	if got := strings.Join(runtime.stops, ","); !strings.Contains(got, "run-1:stopped by operator") {
+	if got := strings.Join(runtime.stops, ","); !strings.Contains(got, "run-1:stopped from the web console") {
 		t.Fatalf("stops = %q", got)
 	}
 }
@@ -165,6 +171,9 @@ func TestResourceEndpointsReturnCollections(t *testing.T) {
 			PendingApprovals: []orchestrator.ApprovalView{
 				{RequestID: "approval-1", IssueIdentifier: "team/project#1", ToolName: "Write"},
 			},
+			PendingMessages: []orchestrator.MessageView{
+				{RequestID: "message-1", IssueIdentifier: "team/project#1", Kind: "before_work", Summary: "Before work: team/project#1", Body: "Reply with start", Resolvable: true},
+			},
 		},
 	}
 	cfg := &config.Config{
@@ -182,6 +191,7 @@ func TestResourceEndpointsReturnCollections(t *testing.T) {
 		{path: "/api/v1/retries", wantCount: `"count": 1`, wantPieces: []string{`"issue_identifier": "team/project#2"`}},
 		{path: "/api/v1/events", wantCount: `"count": 1`, wantPieces: []string{`"message": "polled"`}},
 		{path: "/api/v1/approvals", wantCount: `"count": 1`, wantPieces: []string{`"request_id": "approval-1"`}},
+		{path: "/api/v1/messages", wantCount: `"count": 1`, wantPieces: []string{`"request_id": "message-1"`, `"kind": "before_work"`}},
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
@@ -199,6 +209,43 @@ func TestResourceEndpointsReturnCollections(t *testing.T) {
 				t.Fatalf("%s missing %q:\n%s", test.path, want, body)
 			}
 		}
+	}
+}
+
+func TestMessageReplyEndpointResolvesReply(t *testing.T) {
+	runtime := &fakeRuntime{}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/message-1/reply", strings.NewReader(`{"reply":"start"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
+	}
+	if got := strings.Join(runtime.replies, ","); got != "message-1:start" {
+		t.Fatalf("replies = %q", got)
+	}
+}
+
+func TestMessageReplyEndpointRejectsEmptyReply(t *testing.T) {
+	runtime := &fakeRuntime{}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/message-1/reply", strings.NewReader(`{"reply":"   "}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400", recorder.Code)
 	}
 }
 

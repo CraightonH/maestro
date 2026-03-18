@@ -15,6 +15,7 @@ import (
 type snapshotProvider interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
+	ResolveMessage(requestID string, reply string) error
 }
 
 type tickMsg time.Time
@@ -27,6 +28,7 @@ type quickFilterMode string
 const (
 	focusSources   focusPane = "sources"
 	focusRuns      focusPane = "runs"
+	focusMessages  focusPane = "messages"
 	focusRetries   focusPane = "retries"
 	focusApprovals focusPane = "approvals"
 
@@ -49,9 +51,12 @@ type Model struct {
 	selectedRetry    int
 	selectedRun      int
 	selectedSource   int
+	selectedMessage  int
 	notice           string
 	searchMode       bool
 	searchQuery      string
+	replyMode        bool
+	replyInput       string
 	groupFilter      string
 	focus            focusPane
 	runSort          runSortMode
@@ -80,6 +85,48 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.replyMode {
+			switch msg.String() {
+			case "esc":
+				m.replyMode = false
+				m.replyInput = ""
+				return m, nil
+			case "enter":
+				pending := m.filteredPendingMessages()
+				if len(pending) == 0 {
+					m.replyMode = false
+					m.replyInput = ""
+					return m, nil
+				}
+				reply := strings.TrimSpace(m.replyInput)
+				if reply == "" {
+					m.notice = "message reply cannot be empty"
+					return m, nil
+				}
+				err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, reply)
+				if err != nil {
+					m.notice = "message reply failed: " + err.Error()
+				} else {
+					m.notice = "message reply sent"
+					m.replyMode = false
+					m.replyInput = ""
+				}
+				m.snapshot = m.service.Snapshot()
+				m.clampSelection()
+				return m, nil
+			case "backspace":
+				runes := []rune(m.replyInput)
+				if len(runes) > 0 {
+					m.replyInput = string(runes[:len(runes)-1])
+				}
+				return m, nil
+			default:
+				if len(msg.Runes) > 0 && !msg.Alt && !msg.Paste {
+					m.replyInput += string(msg.Runes)
+				}
+				return m, nil
+			}
+		}
 		if m.searchMode {
 			switch msg.String() {
 			case "esc":
@@ -153,6 +200,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(pending) > 0 && m.selectedApproval < len(pending)-1 {
 					m.selectedApproval++
 				}
+			case focusMessages:
+				pending := m.filteredPendingMessages()
+				if len(pending) > 0 && m.selectedMessage < len(pending)-1 {
+					m.selectedMessage++
+				}
 			case focusRetries:
 				retries := m.filteredRetries()
 				if len(retries) > 0 && m.selectedRetry < len(retries)-1 {
@@ -173,6 +225,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case focusApprovals:
 				if m.selectedApproval > 0 {
 					m.selectedApproval--
+				}
+			case focusMessages:
+				if m.selectedMessage > 0 {
+					m.selectedMessage--
 				}
 			case focusRetries:
 				if m.selectedRetry > 0 {
@@ -207,6 +263,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.snapshot = m.service.Snapshot()
 				m.clampSelection()
 			}
+		case "s":
+			if m.focus == focusMessages {
+				pending := m.filteredPendingMessages()
+				if len(pending) > 0 {
+					err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, "start")
+					if err != nil {
+						m.notice = "message reply failed: " + err.Error()
+					} else {
+						m.notice = "start reply sent"
+					}
+					m.snapshot = m.service.Snapshot()
+					m.clampSelection()
+				}
+			}
+		case "e":
+			if m.focus == focusMessages && len(m.filteredPendingMessages()) > 0 {
+				m.replyMode = true
+				m.replyInput = ""
+				return m, nil
+			}
 		}
 	case tickMsg:
 		m.snapshot = m.service.Snapshot()
@@ -221,6 +297,7 @@ func (m Model) View() string {
 	var b strings.Builder
 	filteredSources := m.filteredSourceSummaries()
 	filteredApprovals := m.filteredPendingApprovals()
+	filteredMessages := m.filteredPendingMessages()
 	filteredRetries := m.filteredRetries()
 	filteredActiveRuns := m.filteredActiveRuns()
 	filteredHistory := m.filteredApprovalHistory()
@@ -230,10 +307,11 @@ func (m Model) View() string {
 	selectedRunOutput := m.selectedRunOutput(filteredActiveRuns)
 	b.WriteString("Maestro MVP\n\n")
 	b.WriteString(fmt.Sprintf(
-		"Overview: sources=%d active=%d approvals=%d retries=%d focus=%s run-sort=%s retry-sort=%s view=%s quick=%s\n",
+		"Overview: sources=%d active=%d approvals=%d messages=%d retries=%d focus=%s run-sort=%s retry-sort=%s view=%s quick=%s\n",
 		len(filteredSources),
 		len(filteredActiveRuns),
 		len(filteredApprovals),
+		len(filteredMessages),
 		len(filteredRetries),
 		m.focus,
 		m.runSort,
@@ -274,7 +352,7 @@ func (m Model) View() string {
 					tagText = fmt.Sprintf(" tags=%s", strings.Join(summary.Tags, ","))
 				}
 				if m.compact {
-					b.WriteString(fmt.Sprintf("   %s [%s] %s [%s] c=%d a=%d r=%d p=%d last=%s%s\n",
+					b.WriteString(fmt.Sprintf("   %s [%s] %s [%s] c=%d a=%d r=%d p=%d m=%d last=%s%s\n",
 						marker,
 						health,
 						summary.Name,
@@ -283,12 +361,13 @@ func (m Model) View() string {
 						summary.ActiveRunCount,
 						summary.RetryCount,
 						summary.PendingApprovals,
+						summary.PendingMessages,
 						lastPoll,
 						tagText,
 					))
 					continue
 				}
-				b.WriteString(fmt.Sprintf("   %s [%s] %s [%s]%s polled=%d last=%s claimed=%d active=%d retry=%d approvals=%d\n",
+				b.WriteString(fmt.Sprintf("   %s [%s] %s [%s]%s polled=%d last=%s claimed=%d active=%d retry=%d approvals=%d messages=%d\n",
 					marker,
 					health,
 					summary.Name,
@@ -300,6 +379,7 @@ func (m Model) View() string {
 					summary.ActiveRunCount,
 					summary.RetryCount,
 					summary.PendingApprovals,
+					summary.PendingMessages,
 				))
 			}
 		}
@@ -324,6 +404,7 @@ func (m Model) View() string {
 		b.WriteString(fmt.Sprintf("  Active runs: %d\n", selected.ActiveRunCount))
 		b.WriteString(fmt.Sprintf("  Retries: %d\n", selected.RetryCount))
 		b.WriteString(fmt.Sprintf("  Pending approvals: %d\n", selected.PendingApprovals))
+		b.WriteString(fmt.Sprintf("  Pending messages: %d\n", selected.PendingMessages))
 		b.WriteString(fmt.Sprintf("  Visible active runs: %d\n", countRunsForSource(filteredActiveRuns, selected.Name)))
 		b.WriteString(fmt.Sprintf("  Visible retries: %d\n", countRetriesForSource(filteredRetries, selected.Name)))
 		b.WriteString("\nSelected source events:\n")
@@ -338,6 +419,37 @@ func (m Model) View() string {
 				}
 				b.WriteString(fmt.Sprintf("  [%s] %s %s\n", event.Level, event.Time.Format("15:04:05"), event.Message))
 			}
+		}
+		b.WriteString("\n")
+	}
+	if len(filteredMessages) > 0 {
+		b.WriteString("Pending messages:\n")
+		for i, message := range filteredMessages {
+			marker := " "
+			if i == m.selectedMessage && m.focus == focusMessages {
+				marker = ">"
+			}
+			b.WriteString(fmt.Sprintf(" %s %s on %s [%s] %s ago\n", marker, messageLabel(message.Kind), message.IssueIdentifier, message.AgentName, timeAgo(message.RequestedAt)))
+		}
+		selected := filteredMessages[m.selectedMessage]
+		b.WriteString("\nSelected message:\n")
+		b.WriteString(fmt.Sprintf("  Request: %s\n", selected.RequestID))
+		b.WriteString(fmt.Sprintf("  Kind: %s\n", messageLabel(selected.Kind)))
+		b.WriteString(fmt.Sprintf("  Run: %s\n", selected.RunID))
+		if selected.AgentName != "" {
+			b.WriteString(fmt.Sprintf("  Agent: %s\n", selected.AgentName))
+		}
+		if selected.IssueIdentifier != "" {
+			b.WriteString(fmt.Sprintf("  Issue: %s\n", selected.IssueIdentifier))
+		}
+		if selected.Summary != "" {
+			b.WriteString(fmt.Sprintf("  Summary: %s\n", selected.Summary))
+		}
+		if selected.Body != "" {
+			b.WriteString(fmt.Sprintf("  Details:\n%s\n", indentBlock(strings.TrimSpace(selected.Body), "    ")))
+		}
+		if m.replyMode && m.focus == focusMessages {
+			b.WriteString(fmt.Sprintf("  Reply: %s_\n", m.replyInput))
 		}
 		b.WriteString("\n")
 	}
@@ -495,6 +607,19 @@ func (m Model) View() string {
 		}
 	}
 
+	b.WriteString("\nMessage history:\n")
+	historyCount := 0
+	for _, entry := range m.snapshot.MessageHistory {
+		if !m.matchesSearch(entry.AgentName, entry.IssueIdentifier, entry.Summary, entry.Reply, entry.Outcome) {
+			continue
+		}
+		b.WriteString(fmt.Sprintf("  %s on %s (%s)\n", messageLabel(entry.Kind), entry.IssueIdentifier, entry.Outcome))
+		historyCount++
+	}
+	if historyCount == 0 {
+		b.WriteString("  none\n")
+	}
+
 	b.WriteString("\nRecent events:\n")
 	if len(filteredEvents) == 0 {
 		b.WriteString("  none\n")
@@ -512,7 +637,7 @@ func (m Model) View() string {
 	if m.searchMode {
 		b.WriteString(fmt.Sprintf("\nSearch: %s_\n", m.searchQuery))
 	}
-	b.WriteString("\nKeys: tab change focus, j/k move, a approve, r reject, / search, f cycle group, u attention filter, w awaiting filter, c clear filters, o run sort, O retry sort, v compact, q quit.\n")
+	b.WriteString("\nKeys: tab change focus, j/k move, a approve, r reject, e reply to message, s send start, / search, f cycle group, u attention filter, w awaiting filter, c clear filters, o run sort, O retry sort, v compact, q quit.\n")
 	return b.String()
 }
 
@@ -553,6 +678,7 @@ func (m *Model) clampSelection() {
 	m.normalizeFocus()
 	sources := m.filteredSourceSummaries()
 	pending := m.filteredPendingApprovals()
+	messages := m.filteredPendingMessages()
 	retries := m.filteredRetries()
 	runs := m.filteredActiveRuns()
 	if len(sources) == 0 {
@@ -573,6 +699,16 @@ func (m *Model) clampSelection() {
 		}
 		if m.selectedApproval < 0 {
 			m.selectedApproval = 0
+		}
+	}
+	if len(messages) == 0 {
+		m.selectedMessage = 0
+	} else {
+		if m.selectedMessage >= len(messages) {
+			m.selectedMessage = len(messages) - 1
+		}
+		if m.selectedMessage < 0 {
+			m.selectedMessage = 0
 		}
 	}
 	if len(runs) == 0 {
@@ -638,6 +774,30 @@ func (m Model) filteredPendingApprovals() []orchestrator.ApprovalView {
 			continue
 		}
 		out = append(out, approval)
+	}
+	return out
+}
+
+func (m Model) filteredPendingMessages() []orchestrator.MessageView {
+	out := make([]orchestrator.MessageView, 0, len(m.snapshot.PendingMessages))
+	visibleSources := m.visibleSourceNames()
+	for _, message := range m.snapshot.PendingMessages {
+		if len(visibleSources) > 0 {
+			if sourceName, ok := sourceNameForMessage(m.snapshot.ActiveRuns, message); ok {
+				if _, visible := visibleSources[sourceName]; !visible {
+					continue
+				}
+			}
+		} else if m.groupFilter != "" {
+			continue
+		}
+		if !m.matchesQuickFilterMessage(message) {
+			continue
+		}
+		if !m.matchesSearch(message.AgentName, message.IssueIdentifier, message.Summary, message.Body, message.Kind) {
+			continue
+		}
+		out = append(out, message)
 	}
 	return out
 }
@@ -773,7 +933,7 @@ func (m Model) matchesQuickFilterSource(summary orchestrator.SourceSummary) bool
 		health := sourceHealth(summary, m.snapshot.RecentEvents)
 		return health == "ERROR" || health == "RETRY" || health == "WARN" || health == "WAIT"
 	case quickFilterAwaiting:
-		return summary.PendingApprovals > 0
+		return summary.PendingApprovals > 0 || summary.PendingMessages > 0
 	default:
 		return true
 	}
@@ -794,6 +954,15 @@ func (m Model) matchesQuickFilterRetry(retry orchestrator.RetryView) bool {
 	switch m.quickFilter {
 	case quickFilterAwaiting:
 		return false
+	default:
+		return true
+	}
+}
+
+func (m Model) matchesQuickFilterMessage(message orchestrator.MessageView) bool {
+	switch m.quickFilter {
+	case quickFilterAttention, quickFilterAwaiting:
+		return true
 	default:
 		return true
 	}
@@ -829,10 +998,13 @@ func (m Model) filterSummary() string {
 func (m *Model) normalizeFocus() {
 	hasSources := len(m.filteredSourceSummaries()) > 0
 	hasRuns := len(m.filteredActiveRuns()) > 0
+	hasMessages := len(m.filteredPendingMessages()) > 0
 	hasRetries := len(m.filteredRetries()) > 0
 	hasApprovals := len(m.filteredPendingApprovals()) > 0
 	switch {
 	case m.focus == focusSources && hasSources:
+		return
+	case m.focus == focusMessages && hasMessages:
 		return
 	case m.focus == focusApprovals && hasApprovals:
 		return
@@ -844,6 +1016,8 @@ func (m *Model) normalizeFocus() {
 		m.focus = focusSources
 	case hasRuns:
 		m.focus = focusRuns
+	case hasMessages:
+		m.focus = focusMessages
 	case hasRetries:
 		m.focus = focusRetries
 	case hasApprovals:
@@ -856,14 +1030,18 @@ func (m *Model) normalizeFocus() {
 func (m Model) nextFocus() focusPane {
 	hasSources := len(m.filteredSourceSummaries()) > 0
 	hasRuns := len(m.filteredActiveRuns()) > 0
+	hasMessages := len(m.filteredPendingMessages()) > 0
 	hasRetries := len(m.filteredRetries()) > 0
 	hasApprovals := len(m.filteredPendingApprovals()) > 0
-	options := make([]focusPane, 0, 4)
+	options := make([]focusPane, 0, 5)
 	if hasSources {
 		options = append(options, focusSources)
 	}
 	if hasRuns {
 		options = append(options, focusRuns)
+	}
+	if hasMessages {
+		options = append(options, focusMessages)
 	}
 	if hasRetries {
 		options = append(options, focusRetries)
@@ -965,6 +1143,17 @@ func dueIn(ts time.Time) string {
 	}
 }
 
+func messageLabel(kind string) string {
+	switch strings.TrimSpace(kind) {
+	case "before_work":
+		return "before_work gate"
+	case "", "agent_message":
+		return "agent message"
+	default:
+		return kind
+	}
+}
+
 func countRunsForSource(runs []domain.AgentRun, sourceName string) int {
 	count := 0
 	for _, run := range runs {
@@ -981,7 +1170,7 @@ func sourceHealth(summary orchestrator.SourceSummary, events []orchestrator.Even
 		return "ERROR"
 	case summary.RetryCount > 0:
 		return "RETRY"
-	case summary.PendingApprovals > 0:
+	case summary.PendingApprovals > 0 || summary.PendingMessages > 0:
 		return "WAIT"
 	case summary.ActiveRunCount > 0:
 		return "RUN"
@@ -1081,6 +1270,15 @@ func countRetriesForSource(retries []orchestrator.RetryView, sourceName string) 
 		}
 	}
 	return count
+}
+
+func sourceNameForMessage(runs []domain.AgentRun, message orchestrator.MessageView) (string, bool) {
+	for _, run := range runs {
+		if run.ID == message.RunID {
+			return run.SourceName, true
+		}
+	}
+	return "", false
 }
 
 type sourceSummaryGroup struct {

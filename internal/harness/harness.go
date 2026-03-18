@@ -8,6 +8,7 @@ import (
 )
 
 var ErrApprovalsUnsupported = errors.New("approvals unsupported")
+var ErrMessagesUnsupported = errors.New("messages unsupported")
 
 type RunConfig struct {
 	RunID          string
@@ -40,10 +41,28 @@ type ApprovalDecision struct {
 	TimedOut  bool
 }
 
+type MessageRequest struct {
+	RequestID   string
+	RunID       string
+	Kind        string
+	Summary     string
+	Body        string
+	RequestedAt time.Time
+}
+
+type MessageReply struct {
+	RequestID string
+	Kind      string
+	Reply     string
+	RepliedAt time.Time
+}
+
 type Harness interface {
 	Kind() string
 	Start(ctx context.Context, cfg RunConfig) (ActiveRun, error)
 	Stop(ctx context.Context, runID string) error
 	Approvals() <-chan ApprovalRequest
 	Approve(ctx context.Context, decision ApprovalDecision) error
+	Messages() <-chan MessageRequest
+	Reply(ctx context.Context, reply MessageReply) error
 }

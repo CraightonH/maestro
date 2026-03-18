@@ -6,6 +6,7 @@ import type {
   ConfigRawResponse,
   ConfigValidateResponse,
   EventItem,
+  Message,
   PackSaveRequest,
   PackSaveResponse,
   RetryEntry,
@@ -24,12 +25,13 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function fetchDashboardData() {
-  const [status, sources, runs, approvals, retries, events, rawConfig, backups] =
+  const [status, sources, runs, approvals, messages, retries, events, rawConfig, backups] =
     await Promise.all([
       fetchJSON<StatusResponse>("/api/v1/status"),
       fetchJSON<CollectionResponse<SourceSummary>>("/api/v1/sources"),
       fetchJSON<RunsResponse>("/api/v1/runs"),
       fetchJSON<CollectionResponse<Approval>>("/api/v1/approvals"),
+      fetchJSON<CollectionResponse<Message>>("/api/v1/messages"),
       fetchJSON<CollectionResponse<RetryEntry>>("/api/v1/retries"),
       fetchJSON<CollectionResponse<EventItem>>("/api/v1/events"),
       fetchJSON<ConfigRawResponse>("/api/v1/config/raw").catch(() => ({
@@ -44,7 +46,7 @@ export async function fetchDashboardData() {
       })),
     ]);
 
-  return { status, sources, runs, approvals, retries, events, rawConfig, backups };
+  return { status, sources, runs, approvals, messages, retries, events, rawConfig, backups };
 }
 
 export function openStream(onUpdate: () => void, onError?: () => void) {
@@ -61,6 +63,14 @@ export function openStream(onUpdate: () => void, onError?: () => void) {
 export async function resolveApproval(requestId: string, action: "approve" | "reject") {
   return fetchJSON<{ ok: boolean }>(`/api/v1/approvals/${encodeURIComponent(requestId)}/${action}`, {
     method: "POST",
+  });
+}
+
+export async function replyToMessage(requestId: string, reply: string) {
+  return fetchJSON<{ ok: boolean }>(`/api/v1/messages/${encodeURIComponent(requestId)}/reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ reply }),
   });
 }
 

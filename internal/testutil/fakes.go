@@ -131,8 +131,11 @@ type FakeHarness struct {
 	StopCalls   []string
 	WaitBlock   chan struct{}
 	ApprovalCh  chan harness.ApprovalRequest
+	MessageCh   chan harness.MessageRequest
 	ApproveErr  error
+	ReplyErr    error
 	Decisions   []harness.ApprovalDecision
+	Replies     []harness.MessageReply
 
 	mu sync.Mutex
 }
@@ -206,6 +209,23 @@ func (f *FakeHarness) Approve(ctx context.Context, decision harness.ApprovalDeci
 	}
 	if f.ApprovalCh == nil {
 		return harness.ErrApprovalsUnsupported
+	}
+	return nil
+}
+
+func (f *FakeHarness) Messages() <-chan harness.MessageRequest {
+	return f.MessageCh
+}
+
+func (f *FakeHarness) Reply(ctx context.Context, reply harness.MessageReply) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Replies = append(f.Replies, reply)
+	if f.ReplyErr != nil {
+		return f.ReplyErr
+	}
+	if f.MessageCh == nil {
+		return harness.ErrMessagesUnsupported
 	}
 	return nil
 }

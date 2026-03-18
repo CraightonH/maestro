@@ -33,11 +33,13 @@ Then open [http://127.0.0.1:8742](http://127.0.0.1:8742).
 
 ## TUI Controls
 
-- `tab` switches focus between sources, active runs, retries, and pending approvals
+- `tab` switches focus between sources, active runs, pending messages, retries, and pending approvals
 - `j` or down arrow moves within the focused list
 - `k` or up arrow moves within the focused list
 - `a` approves the selected pending approval
 - `r` rejects the selected pending approval
+- `e` enters reply mode for the selected pending message
+- `s` sends a quick `start` reply for the selected pending message
 - `/` enters search mode
 - `f` cycles source-group filters
 - `u` toggles the attention-only filter
@@ -94,11 +96,20 @@ If a run stops producing observable output for longer than that window, Maestro 
 
 Supported hook phases:
 
+- shell hooks:
 - `hooks.after_create`
 - `hooks.before_run`
 - `hooks.after_run`
 
 All hooks run through the local shell and share `hooks.timeout`.
+
+Current Maestro control points:
+
+- `controls.before_work`
+- runtime approval requests
+- runtime message requests and operator replies
+
+`controls.before_work` is a blocking Maestro-managed gate after the issue is claimed and the workspace is prepared, but before the harness starts. Use it when you want the operator to review the work item, add instructions, or stop the run before any agent work begins.
 
 ## Local Web/API
 
@@ -113,8 +124,10 @@ The first API slice is read-mostly with approval actions:
 - `GET /api/v1/retries`
 - `GET /api/v1/events`
 - `GET /api/v1/approvals`
+- `GET /api/v1/messages`
 - `POST /api/v1/approvals/<request_id>/approve`
 - `POST /api/v1/approvals/<request_id>/reject`
+- `POST /api/v1/messages/<request_id>/reply`
 
 The built-in dashboard at `/` uses those resource endpoints directly and listens to `/api/v1/stream` over Server-Sent Events so the page refreshes on runtime changes without a fixed polling loop. The browser UI is dark by default, has a light theme toggle, and supports source/run selection, quick filtering, sorting, retries, approvals, and a context-aware event timeline.
 
@@ -126,6 +139,8 @@ Current supported behavior:
 
 - DM or fixed-channel workflow threads
 - approval requests with interactive `Approve` and `Reject` buttons
+- pending Maestro control messages such as `before_work`
+- Slack thread replies routed into pending Maestro control messages and generic runtime message requests
 - workflow status updates for completion, failure, retries, and stops
 - `Stop workflow` from the Slack thread
 
@@ -148,7 +163,7 @@ For a fixed channel, use:
 
 Current limits:
 
-- Slack does not yet support free-form reply-to-run conversation
+- Slack thread replies now resolve pending Maestro control messages and generic runtime message requests, but there is still no broad free-form agent chat surface
 - there is no Teams equivalent yet
 - Slack state is persisted locally in `state.dir/slack.json`
 

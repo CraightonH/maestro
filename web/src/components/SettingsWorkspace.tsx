@@ -110,6 +110,24 @@ export function SettingsWorkspace({
               <Metric label="Log dir" value={config.log_dir || "n/a"} />
             </div>
           </section>
+
+          <section className="panel">
+            <PanelHeader title="Shell hooks" copy="Local scripts that Maestro executes itself around the run lifecycle." meta={config.hooks.timeout || "n/a"} />
+            <div className="detailList compact">
+              <Metric label="after_create" value={config.hooks.after_create || "unset"} />
+              <Metric label="before_run" value={config.hooks.before_run || "unset"} />
+              <Metric label="after_run" value={config.hooks.after_run || "unset"} />
+              <Metric label="before_remove" value={config.hooks.before_remove || "reserved"} />
+            </div>
+          </section>
+
+          <section className="panel">
+            <PanelHeader title="Maestro controls" copy="Workflow gates and operator-driven control points managed by Maestro, not shell scripts." meta={config.controls.before_work_enabled ? "before_work enabled" : "before_work disabled"} />
+            <div className="detailList compact">
+              <Metric label="before_work" value={config.controls.before_work_enabled ? "enabled" : "disabled"} />
+              <Metric label="Prompt" value={config.controls.before_work_prompt || "default prompt"} />
+            </div>
+          </section>
         </div>
       ) : null}
 

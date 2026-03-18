@@ -23,6 +23,10 @@ func (s staticSnapshotProvider) ResolveApproval(requestID string, decision strin
 	return nil
 }
 
+func (s staticSnapshotProvider) ResolveMessage(requestID string, reply string) error {
+	return nil
+}
+
 func TestViewGroupsSourcesAndShowsTags(t *testing.T) {
 	snapshot := orchestrator.Snapshot{
 		SourceName: "epic-a, project-a, linear-a",
@@ -176,7 +180,7 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 
 	view := model.View()
 	for _, want := range []string{
-		"Overview: sources=2 active=2 approvals=0 retries=0 focus=runs run-sort=oldest",
+		"Overview: sources=2 active=2 approvals=0 messages=0 retries=0 focus=runs run-sort=oldest",
 		"Active runs:",
 		"> [RUN] coder on team/project#1 [active]",
 		"Source: project-a | Title: Backend work",

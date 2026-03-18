@@ -25,7 +25,9 @@ type DemoRuntime struct {
 	runOutputs      map[string]orchestrator.RunOutputView
 	retries         []orchestrator.RetryView
 	approvals       []orchestrator.ApprovalView
+	messages        []orchestrator.MessageView
 	approvalHistory []orchestrator.ApprovalHistoryEntry
+	messageHistory  []orchestrator.MessageHistoryEntry
 	events          []orchestrator.Event
 	tick            int
 }
@@ -269,7 +271,7 @@ func NewDemoRuntime() *DemoRuntime {
 		SourceName:     "gitlab-platform",
 		HarnessKind:    "claude-code",
 		WorkspacePath:  "/tmp/maestro-demo/workspaces/platform_app_42",
-		Status:         domain.RunStatusActive,
+		Status:         domain.RunStatusAwaiting,
 		Attempt:        1,
 		ApprovalPolicy: "auto",
 		ApprovalState:  domain.ApprovalStateApproved,
@@ -347,7 +349,7 @@ func NewDemoRuntime() *DemoRuntime {
 	demo := &DemoRuntime{
 		startedAt: now,
 		sources: []orchestrator.SourceSummary{
-			{Name: "gitlab-platform", DisplayGroup: "GitLab", Tags: []string{"platform", "prod"}, Tracker: "gitlab", LastPollAt: now.Add(-12 * time.Second), LastPollCount: 2, ClaimedCount: 1, ActiveRunCount: 1},
+			{Name: "gitlab-platform", DisplayGroup: "GitLab", Tags: []string{"platform", "prod"}, Tracker: "gitlab", LastPollAt: now.Add(-12 * time.Second), LastPollCount: 2, ClaimedCount: 1, ActiveRunCount: 1, PendingMessages: 1},
 			{Name: "gitlab-epic-growth", DisplayGroup: "GitLab", Tags: []string{"epic", "growth"}, Tracker: "gitlab-epic", LastPollAt: now.Add(-9 * time.Second), LastPollCount: 3, ClaimedCount: 1, ActiveRunCount: 1, PendingApprovals: 1},
 			{Name: "linear-design", DisplayGroup: "Linear", Tags: []string{"design", "ux"}, Tracker: "linear", LastPollAt: now.Add(-7 * time.Second), LastPollCount: 1, ClaimedCount: 1, ActiveRunCount: 1, RetryCount: 1},
 		},
@@ -357,7 +359,7 @@ func NewDemoRuntime() *DemoRuntime {
 				RunID:           run1.ID,
 				SourceName:      run1.SourceName,
 				IssueIdentifier: run1.Issue.Identifier,
-				StdoutTail:      "Inspecting API handlers\nUpdating export route tests\nRunning go test ./internal/api\n",
+				StdoutTail:      "Workspace prepared\nWaiting for operator guidance before work begins\n",
 				UpdatedAt:       now.Add(-15 * time.Second),
 			},
 			run2.ID: {
@@ -397,6 +399,20 @@ func NewDemoRuntime() *DemoRuntime {
 				ToolInput:       "Update onboarding banner copy and CTA spacing in src/banner.tsx",
 				ApprovalPolicy:  "manual",
 				RequestedAt:     now.Add(-95 * time.Second),
+				Resolvable:      true,
+			},
+		},
+		messages: []orchestrator.MessageView{
+			{
+				RequestID:       "control-before-work:run-platform-42",
+				RunID:           run1.ID,
+				IssueID:         run1.Issue.ID,
+				IssueIdentifier: run1.Issue.Identifier,
+				AgentName:       run1.AgentName,
+				Kind:            "before_work",
+				Summary:         "Before work: platform/app#42",
+				Body:            "Review platform/app#42 before work begins. Reply with any operator instructions or simply say start.",
+				RequestedAt:     now.Add(-45 * time.Second),
 				Resolvable:      true,
 			},
 		},
@@ -474,8 +490,10 @@ func (d *DemoRuntime) Snapshot() orchestrator.Snapshot {
 		ClaimedCount:     len(runs),
 		RetryCount:       len(retries),
 		PendingApprovals: approvals,
+		PendingMessages:  append([]orchestrator.MessageView(nil), d.messages...),
 		Retries:          retries,
 		ApprovalHistory:  history,
+		MessageHistory:   append([]orchestrator.MessageHistoryEntry(nil), d.messageHistory...),
 		ActiveRuns:       runs,
 		RunOutputs:       runOutputs,
 		SourceSummaries:  sourceSummaries,
@@ -544,6 +562,56 @@ func (d *DemoRuntime) ResolveApproval(requestID string, decision string) error {
 		}
 		break
 	}
+	d.refreshSourceCountsLocked()
+	return nil
+}
+
+func (d *DemoRuntime) ResolveMessage(requestID string, reply string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	index := -1
+	var request orchestrator.MessageView
+	for i, candidate := range d.messages {
+		if candidate.RequestID == requestID {
+			index = i
+			request = candidate
+			break
+		}
+	}
+	if index == -1 {
+		return fmt.Errorf("message %q not found", requestID)
+	}
+
+	now := time.Now().UTC()
+	d.messages = append(d.messages[:index], d.messages[index+1:]...)
+	d.messageHistory = append([]orchestrator.MessageHistoryEntry{{
+		RequestID:       request.RequestID,
+		RunID:           request.RunID,
+		IssueID:         request.IssueID,
+		IssueIdentifier: request.IssueIdentifier,
+		AgentName:       request.AgentName,
+		Kind:            request.Kind,
+		Summary:         request.Summary,
+		Body:            request.Body,
+		Reply:           reply,
+		RequestedAt:     request.RequestedAt,
+		RepliedAt:       now,
+		Outcome:         "resolved",
+	}}, d.messageHistory...)
+	if len(d.messageHistory) > 10 {
+		d.messageHistory = d.messageHistory[:10]
+	}
+	for i := range d.runs {
+		if d.runs[i].ID != request.RunID {
+			continue
+		}
+		d.runs[i].Status = domain.RunStatusActive
+		d.runs[i].LastActivityAt = now
+		d.appendOutputLocked(d.runs[i].ID, fmt.Sprintf("Operator guidance received: %s\n", reply))
+		break
+	}
+	d.appendEventLocked(orchestrator.Event{Time: now, Level: "INFO", Source: sourceNameForRun(d.runs, request.RunID), RunID: request.RunID, Issue: request.IssueIdentifier, Message: "operator message reply received"})
 	d.refreshSourceCountsLocked()
 	return nil
 }
@@ -625,6 +693,7 @@ func (d *DemoRuntime) advance() {
 func (d *DemoRuntime) refreshSourceCountsLocked() {
 	activeCounts := map[string]int{}
 	approvalCounts := map[string]int{}
+	messageCounts := map[string]int{}
 	retryCounts := map[string]int{}
 	claimedCounts := map[string]int{}
 
@@ -641,6 +710,12 @@ func (d *DemoRuntime) refreshSourceCountsLocked() {
 			approvalCounts[sourceName]++
 		}
 	}
+	for _, message := range d.messages {
+		sourceName := sourceNameForRun(d.runs, message.RunID)
+		if sourceName != "" {
+			messageCounts[sourceName]++
+		}
+	}
 	for _, retry := range d.retries {
 		retryCounts[retry.SourceName]++
 	}
@@ -648,6 +723,7 @@ func (d *DemoRuntime) refreshSourceCountsLocked() {
 		d.sources[i].ActiveRunCount = activeCounts[d.sources[i].Name]
 		d.sources[i].ClaimedCount = claimedCounts[d.sources[i].Name]
 		d.sources[i].PendingApprovals = approvalCounts[d.sources[i].Name]
+		d.sources[i].PendingMessages = messageCounts[d.sources[i].Name]
 		d.sources[i].RetryCount = retryCounts[d.sources[i].Name]
 	}
 }

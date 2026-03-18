@@ -34,6 +34,7 @@ var embeddedFrontend embed.FS
 type runtimeView interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
+	ResolveMessage(requestID string, reply string) error
 	StopRun(runID string, reason string) error
 }
 
@@ -133,8 +134,10 @@ type snapshotJSON struct {
 	ClaimedCount     int                   `json:"claimed_count"`
 	RetryCount       int                   `json:"retry_count"`
 	PendingApprovals []approvalJSON        `json:"pending_approvals,omitempty"`
+	PendingMessages  []messageJSON         `json:"pending_messages,omitempty"`
 	Retries          []retryJSON           `json:"retries,omitempty"`
 	ApprovalHistory  []approvalHistoryJSON `json:"approval_history,omitempty"`
+	MessageHistory   []messageHistoryJSON  `json:"message_history,omitempty"`
 	ActiveRun        *runJSON              `json:"active_run,omitempty"`
 	ActiveRuns       []runJSON             `json:"active_runs,omitempty"`
 	RunOutputs       []runOutputJSON       `json:"run_outputs,omitempty"`
@@ -153,6 +156,7 @@ type sourceSummaryJSON struct {
 	RetryCount       int       `json:"retry_count"`
 	ActiveRunCount   int       `json:"active_run_count"`
 	PendingApprovals int       `json:"pending_approvals"`
+	PendingMessages  int       `json:"pending_messages"`
 }
 
 type issueJSON struct {
@@ -231,6 +235,34 @@ type approvalHistoryJSON struct {
 	Outcome         string    `json:"outcome,omitempty"`
 }
 
+type messageJSON struct {
+	RequestID       string    `json:"request_id"`
+	RunID           string    `json:"run_id,omitempty"`
+	IssueID         string    `json:"issue_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	AgentName       string    `json:"agent_name,omitempty"`
+	Kind            string    `json:"kind,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Body            string    `json:"body,omitempty"`
+	RequestedAt     time.Time `json:"requested_at,omitempty"`
+	Resolvable      bool      `json:"resolvable"`
+}
+
+type messageHistoryJSON struct {
+	RequestID       string    `json:"request_id"`
+	RunID           string    `json:"run_id,omitempty"`
+	IssueID         string    `json:"issue_id,omitempty"`
+	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	AgentName       string    `json:"agent_name,omitempty"`
+	Kind            string    `json:"kind,omitempty"`
+	Summary         string    `json:"summary,omitempty"`
+	Body            string    `json:"body,omitempty"`
+	Reply           string    `json:"reply,omitempty"`
+	RequestedAt     time.Time `json:"requested_at,omitempty"`
+	RepliedAt       time.Time `json:"replied_at,omitempty"`
+	Outcome         string    `json:"outcome,omitempty"`
+}
+
 type eventJSON struct {
 	Time    time.Time `json:"time,omitempty"`
 	Level   string    `json:"level,omitempty"`
@@ -280,6 +312,8 @@ func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
 	mux.HandleFunc("/api/v1/events", server.handleEvents)
 	mux.HandleFunc("/api/v1/approvals", server.handleApprovals)
 	mux.HandleFunc("/api/v1/approvals/", server.handleApprovalAction)
+	mux.HandleFunc("/api/v1/messages", server.handleMessages)
+	mux.HandleFunc("/api/v1/messages/", server.handleMessageAction)
 	mux.HandleFunc("/api/v1/runs/", server.handleRunAction)
 	mux.HandleFunc("/api/v1/packs/save", server.handlePackSave)
 
@@ -821,6 +855,15 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 	writeCollection(w, encodeApprovals(snapshot.PendingApprovals))
 }
 
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, http.MethodGet)
+		return
+	}
+	snapshot := s.runtime.Snapshot()
+	writeCollection(w, encodeMessages(snapshot.PendingMessages))
+}
+
 func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeMethodNotAllowed(w, http.MethodGet)
@@ -906,6 +949,55 @@ func (s *Server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/messages/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 || parts[1] != "reply" {
+		http.NotFound(w, r)
+		return
+	}
+
+	var payload struct {
+		Reply string `json:"reply"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"error": "invalid reply payload",
+		})
+		return
+	}
+	payload.Reply = strings.TrimSpace(payload.Reply)
+	if payload.Reply == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":    false,
+			"error": "reply is required",
+		})
+		return
+	}
+
+	requestID := parts[0]
+	if err := s.runtime.ResolveMessage(requestID, payload.Reply); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":      false,
+			"error":   err.Error(),
+			"request": requestID,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"request": requestID,
+		"action":  "reply",
+	})
+}
+
 func (s *Server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
@@ -925,7 +1017,7 @@ func (s *Server) handleRunAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.runtime.StopRun(runID, "stopped by operator from the web console"); err != nil {
+	if err := s.runtime.StopRun(runID, "stopped from the web console"); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
 			"error": err.Error(),
@@ -1364,6 +1456,7 @@ func (s *Server) streamPayload() streamUpdate {
 	payload.Snapshot.ActiveRunCount = len(snapshot.ActiveRuns)
 	payload.Snapshot.RetryCount = len(snapshot.Retries)
 	payload.Snapshot.ApprovalCount = len(snapshot.PendingApprovals)
+	payload.Snapshot.ApprovalCount += len(snapshot.PendingMessages)
 	payload.Snapshot.RecentEventCount = len(snapshot.RecentEvents)
 	return payload
 }
@@ -1383,8 +1476,10 @@ func encodeSnapshot(snapshot orchestrator.Snapshot) snapshotJSON {
 		ClaimedCount:     snapshot.ClaimedCount,
 		RetryCount:       snapshot.RetryCount,
 		PendingApprovals: encodeApprovals(snapshot.PendingApprovals),
+		PendingMessages:  encodeMessages(snapshot.PendingMessages),
 		Retries:          encodeRetries(snapshot.Retries),
 		ApprovalHistory:  encodeApprovalHistory(snapshot.ApprovalHistory),
+		MessageHistory:   encodeMessageHistory(snapshot.MessageHistory),
 		ActiveRun:        activeRun,
 		ActiveRuns:       runs,
 		RunOutputs:       outputs,
@@ -1407,6 +1502,7 @@ func encodeSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJS
 			RetryCount:       item.RetryCount,
 			ActiveRunCount:   item.ActiveRunCount,
 			PendingApprovals: item.PendingApprovals,
+			PendingMessages:  item.PendingMessages,
 		})
 	}
 	return out
@@ -1527,6 +1623,46 @@ func encodeApprovalHistory(items []orchestrator.ApprovalHistoryEntry) []approval
 			Reason:          item.Reason,
 			RequestedAt:     item.RequestedAt,
 			DecidedAt:       item.DecidedAt,
+			Outcome:         item.Outcome,
+		})
+	}
+	return out
+}
+
+func encodeMessages(items []orchestrator.MessageView) []messageJSON {
+	out := make([]messageJSON, 0, len(items))
+	for _, item := range items {
+		out = append(out, messageJSON{
+			RequestID:       item.RequestID,
+			RunID:           item.RunID,
+			IssueID:         item.IssueID,
+			IssueIdentifier: item.IssueIdentifier,
+			AgentName:       item.AgentName,
+			Kind:            item.Kind,
+			Summary:         item.Summary,
+			Body:            item.Body,
+			RequestedAt:     item.RequestedAt,
+			Resolvable:      item.Resolvable,
+		})
+	}
+	return out
+}
+
+func encodeMessageHistory(items []orchestrator.MessageHistoryEntry) []messageHistoryJSON {
+	out := make([]messageHistoryJSON, 0, len(items))
+	for _, item := range items {
+		out = append(out, messageHistoryJSON{
+			RequestID:       item.RequestID,
+			RunID:           item.RunID,
+			IssueID:         item.IssueID,
+			IssueIdentifier: item.IssueIdentifier,
+			AgentName:       item.AgentName,
+			Kind:            item.Kind,
+			Summary:         item.Summary,
+			Body:            item.Body,
+			Reply:           item.Reply,
+			RequestedAt:     item.RequestedAt,
+			RepliedAt:       item.RepliedAt,
 			Outcome:         item.Outcome,
 		})
 	}

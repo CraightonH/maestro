@@ -8,6 +8,7 @@ import (
 
 func (s *Service) Run(ctx context.Context) error {
 	s.startApprovalWatcher(ctx)
+	s.startMessageWatcher(ctx)
 	if err := s.tick(ctx); err != nil {
 		s.recordEvent("error", "initial poll failed: %v", err)
 	}

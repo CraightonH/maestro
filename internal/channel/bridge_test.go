@@ -24,6 +24,7 @@ type fakeRuntime struct {
 	snapshot          orchestrator.Snapshot
 	mu                sync.Mutex
 	approvalDecisions []string
+	messageReplies    []string
 	stopRequests      []string
 }
 
@@ -45,6 +46,13 @@ func (f *fakeRuntime) StopRun(runID string, reason string) error {
 	return nil
 }
 
+func (f *fakeRuntime) ResolveMessage(requestID string, reply string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messageReplies = append(f.messageReplies, requestID+":"+reply)
+	return nil
+}
+
 type fakeSlackClient struct {
 	channelID string
 	posts     []fakeSlackPost
@@ -55,6 +63,7 @@ type fakeSlackPost struct {
 	channelID string
 	threadTS  string
 	text      string
+	blocks    []any
 }
 
 type fakeSlackUpdate struct {
@@ -67,11 +76,12 @@ func (f *fakeSlackClient) ResolveChannel(context.Context) (string, error) {
 	return f.channelID, nil
 }
 
-func (f *fakeSlackClient) PostMessage(_ context.Context, channelID string, threadTS string, text string, _ []any) (slackPostedMessage, error) {
+func (f *fakeSlackClient) PostMessage(_ context.Context, channelID string, threadTS string, text string, blocks []any) (slackPostedMessage, error) {
 	f.posts = append(f.posts, fakeSlackPost{
 		channelID: channelID,
 		threadTS:  threadTS,
 		text:      text,
+		blocks:    blocks,
 	})
 	return slackPostedMessage{
 		ChannelID: channelID,
@@ -88,7 +98,7 @@ func (f *fakeSlackClient) UpdateMessage(_ context.Context, channelID string, mes
 	return nil
 }
 
-func (f *fakeSlackClient) RunSocketMode(context.Context, func(blockActionPayload)) error {
+func (f *fakeSlackClient) RunSocketMode(context.Context, func(slackInboundEnvelope)) error {
 	return nil
 }
 
@@ -211,6 +221,150 @@ func TestBridgeHandleStopAction(t *testing.T) {
 	}
 }
 
+func TestBridgeHandleBeforeWorkDenyAction(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+
+	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
+		Type: "block_actions",
+		Channel: struct {
+			ID string `json:"id"`
+		}{ID: "D123"},
+		Container: struct {
+			MessageTS string `json:"message_ts"`
+		}{MessageTS: "ts-1"},
+		Actions: []struct {
+			ActionID string `json:"action_id"`
+			Value    string `json:"value"`
+		}{
+			{ActionID: "maestro_message_deny", Value: "run-9"},
+		},
+	})
+
+	if len(runtime.stopRequests) != 1 || runtime.stopRequests[0] != "run-9:denied in Slack before work began" {
+		t.Fatalf("stop requests = %+v, want Slack deny reason", runtime.stopRequests)
+	}
+	if len(client.updates) != 1 || !strings.Contains(client.updates[0].text, "Before-work review denied") {
+		t.Fatalf("updates = %+v", client.updates)
+	}
+}
+
+func TestBridgePostsBeforeWorkMessageWithSlackActions(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+
+	snapshot := orchestrator.Snapshot{
+		ActiveRuns: []domain.AgentRun{{
+			ID:         "run-1",
+			AgentName:  "coder",
+			AgentType:  "code-pr",
+			SourceName: "gitlab-platform",
+			Issue: domain.Issue{
+				Identifier: "APP-42",
+				Title:      "Fix workflow header",
+				URL:        "https://example.com/APP-42",
+			},
+		}},
+		PendingMessages: []orchestrator.MessageView{{
+			RequestID:       "msg-1",
+			RunID:           "run-1",
+			IssueIdentifier: "APP-42",
+			AgentName:       "coder",
+			Kind:            "before_work",
+			Summary:         "Before work: APP-42",
+			Body:            "Review this issue before the agent begins work.",
+			RequestedAt:     time.Now().UTC(),
+			Resolvable:      true,
+		}},
+	}
+
+	if err := bridge.reconcile(context.Background(), snapshot); err != nil {
+		t.Fatalf("reconcile pending message: %v", err)
+	}
+	if len(client.posts) != 2 {
+		t.Fatalf("posts = %d, want 2", len(client.posts))
+	}
+	body := encodeJSON(t, client.posts[1].blocks)
+	for _, want := range []string{"Approve and start", "Deny and stop", "View issue", "Before work review"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("message blocks missing %q:\n%s", want, body)
+		}
+	}
+	if !strings.Contains(body, "maestro_message_deny") {
+		t.Fatalf("message blocks missing deny action id:\n%s", body)
+	}
+}
+
+func TestBridgeHandleBeforeWorkStartAction(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+	bridge.state.Messages["msg-1"] = slackMessageRef{
+		ChannelName: "slack-dm",
+		ChannelID:   "D123",
+		MessageTS:   "ts-1",
+		ThreadTS:    "thread-1",
+	}
+
+	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
+		Type: "block_actions",
+		Channel: struct {
+			ID string `json:"id"`
+		}{ID: "D123"},
+		Container: struct {
+			MessageTS string `json:"message_ts"`
+		}{MessageTS: "ts-1"},
+		Actions: []struct {
+			ActionID string `json:"action_id"`
+			Value    string `json:"value"`
+		}{
+			{ActionID: "maestro_message_start", Value: "msg-1"},
+		},
+	})
+
+	if len(runtime.messageReplies) != 1 || runtime.messageReplies[0] != "msg-1:start" {
+		t.Fatalf("message replies = %+v, want msg-1:start", runtime.messageReplies)
+	}
+	if len(client.updates) != 1 || !strings.Contains(client.updates[0].text, "Before-work review approved") {
+		t.Fatalf("updates = %+v", client.updates)
+	}
+}
+
 func TestSlackHTTPClientSocketModeEndToEndApproval(t *testing.T) {
 	server := newFakeSlackServer(t)
 	defer server.Close()
@@ -267,8 +421,8 @@ func TestSlackHTTPClientSocketModeEndToEndApproval(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- client.RunSocketMode(ctx, func(payload blockActionPayload) {
-			bridge.handleAction(context.Background(), "slack-dm", payload)
+		done <- client.RunSocketMode(ctx, func(envelope slackInboundEnvelope) {
+			bridge.handleInbound(context.Background(), "slack-dm", envelope)
 		})
 	}()
 
@@ -311,6 +465,111 @@ func TestSlackHTTPClientSocketModeEndToEndApproval(t *testing.T) {
 	cancel()
 	<-done
 	t.Fatalf("approval decisions = %+v, want req-1:approve", runtime.approvalDecisions)
+}
+
+func TestSlackHTTPClientSocketModeEndToEndMessageReply(t *testing.T) {
+	server := newFakeSlackServer(t)
+	defer server.Close()
+
+	runtime := &fakeRuntime{}
+	client := &slackHTTPClient{
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		http:       server.Client(),
+		dialer:     websocket.DefaultDialer,
+		config:     slackChannelConfig{Mode: "dm", BotToken: "xoxb-test", AppToken: "xapp-test", UserID: "U123"},
+		apiBaseURL: server.apiBaseURL(),
+	}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+
+	now := time.Now().UTC()
+	snapshot := orchestrator.Snapshot{
+		ActiveRuns: []domain.AgentRun{{
+			ID:         "run-1",
+			AgentName:  "coder",
+			AgentType:  "code-pr",
+			SourceName: "gitlab-platform",
+			Issue: domain.Issue{
+				Identifier: "APP-42",
+				Title:      "Fix workflow header",
+				URL:        "https://example.com/APP-42",
+			},
+		}},
+		PendingMessages: []orchestrator.MessageView{{
+			RequestID:       "msg-1",
+			RunID:           "run-1",
+			IssueIdentifier: "APP-42",
+			AgentName:       "coder",
+			Summary:         "Need clarification",
+			Body:            "Should I update the API contract too?",
+			RequestedAt:     now,
+		}},
+	}
+
+	if err := bridge.reconcile(context.Background(), snapshot); err != nil {
+		t.Fatalf("reconcile pending message: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.RunSocketMode(ctx, func(envelope slackInboundEnvelope) {
+			bridge.handleInbound(context.Background(), "slack-dm", envelope)
+		})
+	}()
+
+	ref := bridge.state.Messages["msg-1"]
+	server.sendEvent(slackEventCallbackPayload{
+		Type: "event_callback",
+		Event: slackMessageEvent{
+			Type:     "message",
+			Channel:  ref.ChannelID,
+			ThreadTS: ref.ThreadTS,
+			TS:       "ts-human",
+			User:     "U777",
+			Text:     "Yes, update the API contract too.",
+		},
+	})
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.mu.Lock()
+		replies := append([]string(nil), runtime.messageReplies...)
+		runtime.mu.Unlock()
+		if len(replies) == 1 && replies[0] == "msg-1:Yes, update the API contract too." {
+			cancel()
+			<-done
+			if !server.sawEnvelopeAck() {
+				t.Fatal("socket mode envelope ack was not observed")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	cancel()
+	<-done
+	t.Fatalf("message replies = %+v, want resolved thread reply", runtime.messageReplies)
+}
+
+func encodeJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal json: %v", err)
+	}
+	return string(raw)
 }
 
 type fakeSlackServer struct {
@@ -434,17 +693,28 @@ func (s *fakeSlackServer) handleSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *fakeSlackServer) sendAction(payload blockActionPayload) {
+	s.sendEnvelope(map[string]any{
+		"envelope_id": "env-1",
+		"type":        "interactive",
+		"payload":     payload,
+	})
+}
+
+func (s *fakeSlackServer) sendEvent(payload slackEventCallbackPayload) {
+	s.sendEnvelope(map[string]any{
+		"envelope_id": "env-2",
+		"type":        "events_api",
+		"payload":     payload,
+	})
+}
+
+func (s *fakeSlackServer) sendEnvelope(envelope map[string]any) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		s.mu.Lock()
 		conn := s.conn
 		s.mu.Unlock()
 		if conn != nil {
-			envelope := map[string]any{
-				"envelope_id": "env-1",
-				"type":        "interactive",
-				"payload":     payload,
-			}
 			if err := conn.WriteJSON(envelope); err != nil {
 				s.t.Fatalf("write socket envelope: %v", err)
 			}

@@ -1,6 +1,7 @@
 /logs/
 /state/
 /workspaces/
+.envrc
 bin/
 dist/
 .claude/

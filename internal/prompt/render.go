@@ -9,12 +9,13 @@ import (
 )
 
 type Data struct {
-	Issue     any
-	User      any
-	Agent     any
-	Source    any
-	Attempt   int
-	AgentName string
+	Issue               any
+	User                any
+	Agent               any
+	Source              any
+	Attempt             int
+	AgentName           string
+	OperatorInstruction string
 }
 
 const systemPreamble = `## System
@@ -45,6 +46,14 @@ func RenderFile(path string, data Data) (string, error) {
 	}
 
 	rendered := strings.TrimSpace(buf.String())
+	if strings.TrimSpace(data.OperatorInstruction) != "" {
+		operatorSection := strings.TrimSpace(fmt.Sprintf("## Operator Guidance\n%s", data.OperatorInstruction))
+		if rendered == "" {
+			rendered = operatorSection
+		} else {
+			rendered = rendered + "\n\n" + operatorSection
+		}
+	}
 	if rendered == "" {
 		return strings.TrimSpace(systemPreamble), nil
 	}

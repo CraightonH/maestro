@@ -52,10 +52,45 @@ func (s *Service) restoreState() error {
 			Outcome:         approval.Outcome,
 		})
 	}
+	s.messages = make(map[string]MessageView, len(snapshot.PendingMessages))
+	s.messageOrder = s.messageOrder[:0]
+	for _, message := range snapshot.PendingMessages {
+		view := MessageView{
+			RequestID:       message.RequestID,
+			RunID:           message.RunID,
+			IssueID:         message.IssueID,
+			IssueIdentifier: message.IssueIdentifier,
+			AgentName:       message.AgentName,
+			Kind:            message.Kind,
+			Summary:         message.Summary,
+			Body:            message.Body,
+			RequestedAt:     message.RequestedAt,
+			Resolvable:      message.Resolvable,
+		}
+		s.messages[view.RequestID] = view
+		s.messageOrder = append(s.messageOrder, view.RequestID)
+	}
+	s.messageHistory = s.messageHistory[:0]
+	for _, message := range snapshot.MessageHistory {
+		s.messageHistory = append(s.messageHistory, MessageHistoryEntry{
+			RequestID:       message.RequestID,
+			RunID:           message.RunID,
+			IssueID:         message.IssueID,
+			IssueIdentifier: message.IssueIdentifier,
+			AgentName:       message.AgentName,
+			Kind:            message.Kind,
+			Summary:         message.Summary,
+			Body:            message.Body,
+			Reply:           message.Reply,
+			RequestedAt:     message.RequestedAt,
+			RepliedAt:       message.RepliedAt,
+			Outcome:         message.Outcome,
+		})
+	}
 	s.mu.Unlock()
 
 	if snapshot.ActiveRun == nil {
-		if s.expirePendingApprovals("restart without active run") {
+		if s.expirePendingApprovals("restart without active run") || s.expirePendingMessages("restart without active run") {
 			return s.saveStateBestEffort()
 		}
 		return nil
@@ -75,6 +110,7 @@ func (s *Service) restoreState() error {
 		}
 		s.mu.Unlock()
 		_ = s.expirePendingApprovals("restart after interrupted run")
+		_ = s.expirePendingMessages("restart after interrupted run")
 		s.recordEvent("warn", "recovered active run %s but max attempts reached", snapshot.ActiveRun.RunID)
 		return s.saveStateBestEffort()
 	}
@@ -91,6 +127,7 @@ func (s *Service) restoreState() error {
 	s.mu.Unlock()
 
 	_ = s.expirePendingApprovals("restart after interrupted run")
+	_ = s.expirePendingMessages("restart after interrupted run")
 	s.recordEvent("warn", "recovered active run %s as retry attempt %d", snapshot.ActiveRun.RunID, nextAttempt)
 	return s.saveStateBestEffort()
 }
@@ -149,6 +186,38 @@ func (s *Service) snapshotState() state.Snapshot {
 			Outcome:         entry.Outcome,
 		})
 	}
+	for _, requestID := range s.messageOrder {
+		if message, ok := s.messages[requestID]; ok {
+			snapshot.PendingMessages = append(snapshot.PendingMessages, state.PersistedMessageRequest{
+				RequestID:       message.RequestID,
+				RunID:           message.RunID,
+				IssueID:         message.IssueID,
+				IssueIdentifier: message.IssueIdentifier,
+				AgentName:       message.AgentName,
+				Kind:            message.Kind,
+				Summary:         message.Summary,
+				Body:            message.Body,
+				RequestedAt:     message.RequestedAt,
+				Resolvable:      message.Resolvable,
+			})
+		}
+	}
+	for _, entry := range s.messageHistory {
+		snapshot.MessageHistory = append(snapshot.MessageHistory, state.PersistedMessageReply{
+			RequestID:       entry.RequestID,
+			RunID:           entry.RunID,
+			IssueID:         entry.IssueID,
+			IssueIdentifier: entry.IssueIdentifier,
+			AgentName:       entry.AgentName,
+			Kind:            entry.Kind,
+			Summary:         entry.Summary,
+			Body:            entry.Body,
+			Reply:           entry.Reply,
+			RequestedAt:     entry.RequestedAt,
+			RepliedAt:       entry.RepliedAt,
+			Outcome:         entry.Outcome,
+		})
+	}
 	if s.activeRun != nil {
 		snapshot.ActiveRun = &state.PersistedRun{
 			RunID:          s.activeRun.ID,
@@ -193,6 +262,38 @@ func (s *Service) expirePendingApprovals(reason string) bool {
 	}
 	s.approvals = map[string]ApprovalView{}
 	s.approvalOrder = nil
+	s.mu.Unlock()
+	return true
+}
+
+func (s *Service) expirePendingMessages(reason string) bool {
+	s.mu.Lock()
+	if len(s.messageOrder) == 0 {
+		s.mu.Unlock()
+		return false
+	}
+	for _, requestID := range s.messageOrder {
+		message, ok := s.messages[requestID]
+		if !ok {
+			continue
+		}
+		s.appendMessageHistory(MessageHistoryEntry{
+			RequestID:       message.RequestID,
+			RunID:           message.RunID,
+			IssueID:         message.IssueID,
+			IssueIdentifier: message.IssueIdentifier,
+			AgentName:       message.AgentName,
+			Kind:            message.Kind,
+			Summary:         message.Summary,
+			Body:            message.Body,
+			Reply:           "",
+			RequestedAt:     message.RequestedAt,
+			RepliedAt:       time.Now(),
+			Outcome:         "stale_restart",
+		})
+	}
+	s.messages = map[string]MessageView{}
+	s.messageOrder = nil
 	s.mu.Unlock()
 	return true
 }

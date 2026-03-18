@@ -72,6 +72,34 @@ type ApprovalHistoryEntry struct {
 	Outcome         string
 }
 
+type MessageView struct {
+	RequestID       string
+	RunID           string
+	IssueID         string
+	IssueIdentifier string
+	AgentName       string
+	Kind            string
+	Summary         string
+	Body            string
+	RequestedAt     time.Time
+	Resolvable      bool
+}
+
+type MessageHistoryEntry struct {
+	RequestID       string
+	RunID           string
+	IssueID         string
+	IssueIdentifier string
+	AgentName       string
+	Kind            string
+	Summary         string
+	Body            string
+	Reply           string
+	RequestedAt     time.Time
+	RepliedAt       time.Time
+	Outcome         string
+}
+
 type RetryView struct {
 	IssueID         string
 	IssueIdentifier string
@@ -101,6 +129,7 @@ type SourceSummary struct {
 	RetryCount       int
 	ActiveRunCount   int
 	PendingApprovals int
+	PendingMessages  int
 }
 
 type Snapshot struct {
@@ -111,8 +140,10 @@ type Snapshot struct {
 	ClaimedCount     int
 	RetryCount       int
 	PendingApprovals []ApprovalView
+	PendingMessages  []MessageView
 	Retries          []RetryView
 	ApprovalHistory  []ApprovalHistoryEntry
+	MessageHistory   []MessageHistoryEntry
 	ActiveRun        *domain.AgentRun
 	ActiveRuns       []domain.AgentRun
 	RunOutputs       []RunOutputView
@@ -152,6 +183,10 @@ type Service struct {
 	approvals       map[string]ApprovalView
 	approvalOrder   []string
 	approvalHistory []ApprovalHistoryEntry
+	messages        map[string]MessageView
+	messageOrder    []string
+	messageHistory  []MessageHistoryEntry
+	messageWaiters  map[string]chan string
 	runOutputs      map[string]*runOutputBuffer
 }
 
@@ -210,21 +245,23 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 	}
 
 	svc := &Service{
-		cfg:          cfg,
-		logger:       logger,
-		source:       cfg.Sources[0],
-		agent:        cfg.AgentTypes[0],
-		tracker:      deps.Tracker,
-		harness:      deps.Harness,
-		workspace:    deps.Workspace,
-		claimed:      map[string]struct{}{},
-		finished:     map[string]state.TerminalIssue{},
-		retryQueue:   map[string]state.RetryEntry{},
-		stateStore:   deps.StateStore,
-		limiter:      deps.Limiter,
-		pendingStops: map[string]pendingStop{},
-		approvals:    map[string]ApprovalView{},
-		runOutputs:   map[string]*runOutputBuffer{},
+		cfg:            cfg,
+		logger:         logger,
+		source:         cfg.Sources[0],
+		agent:          cfg.AgentTypes[0],
+		tracker:        deps.Tracker,
+		harness:        deps.Harness,
+		workspace:      deps.Workspace,
+		claimed:        map[string]struct{}{},
+		finished:       map[string]state.TerminalIssue{},
+		retryQueue:     map[string]state.RetryEntry{},
+		stateStore:     deps.StateStore,
+		limiter:        deps.Limiter,
+		pendingStops:   map[string]pendingStop{},
+		approvals:      map[string]ApprovalView{},
+		messages:       map[string]MessageView{},
+		messageWaiters: map[string]chan string{},
+		runOutputs:     map[string]*runOutputBuffer{},
 	}
 	if err := svc.restoreState(); err != nil {
 		logger.Warn("restore state failed", "error", err)
@@ -250,6 +287,13 @@ func (s *Service) Snapshot() Snapshot {
 		}
 	}
 	history := append([]ApprovalHistoryEntry(nil), s.approvalHistory...)
+	pendingMessages := make([]MessageView, 0, len(s.messageOrder))
+	for _, requestID := range s.messageOrder {
+		if request, ok := s.messages[requestID]; ok {
+			pendingMessages = append(pendingMessages, request)
+		}
+	}
+	messageHistory := append([]MessageHistoryEntry(nil), s.messageHistory...)
 	retries := make([]RetryView, 0, len(s.retryQueue))
 	for _, retry := range s.retryQueue {
 		retries = append(retries, RetryView{
@@ -302,12 +346,14 @@ func (s *Service) Snapshot() Snapshot {
 		ClaimedCount:     len(s.claimed),
 		RetryCount:       len(s.retryQueue),
 		PendingApprovals: pendingApprovals,
+		PendingMessages:  pendingMessages,
 		Retries:          retries,
 		ApprovalHistory:  history,
+		MessageHistory:   messageHistory,
 		ActiveRun:        activeRun,
 		ActiveRuns:       activeRuns(activeRun),
 		RunOutputs:       runOutputs,
-		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals))},
+		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
 		RecentEvents:     events,
 	}
 }
@@ -319,7 +365,7 @@ func activeRuns(run *domain.AgentRun) []domain.AgentRun {
 	return []domain.AgentRun{*run}
 }
 
-func sourceSummaryForSnapshot(source config.SourceConfig, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int) SourceSummary {
+func sourceSummaryForSnapshot(source config.SourceConfig, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
 	return SourceSummary{
 		Name:             source.Name,
 		DisplayGroup:     source.DisplayGroup,
@@ -331,6 +377,7 @@ func sourceSummaryForSnapshot(source config.SourceConfig, lastPollAt time.Time, 
 		RetryCount:       retryCount,
 		ActiveRunCount:   activeRunCount,
 		PendingApprovals: pendingApprovals,
+		PendingMessages:  pendingMessages,
 	}
 }
 
@@ -395,13 +442,14 @@ func parseLevel(level string) slog.Level {
 	}
 }
 
-func (s *Service) renderPrompt(issue domain.Issue, agentName string, attempt int) (string, error) {
+func (s *Service) renderPrompt(issue domain.Issue, agentName string, attempt int, operatorInstruction string) (string, error) {
 	return prompt.RenderFile(s.agent.Prompt, prompt.Data{
-		Issue:     issue,
-		User:      s.cfg.User,
-		Agent:     s.agent,
-		Source:    s.source,
-		Attempt:   attempt,
-		AgentName: agentName,
+		Issue:               issue,
+		User:                s.cfg.User,
+		Agent:               s.agent,
+		Source:              s.source,
+		Attempt:             attempt,
+		AgentName:           agentName,
+		OperatorInstruction: operatorInstruction,
 	})
 }

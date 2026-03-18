@@ -9,6 +9,8 @@ test("operator smoke covers overview, workflow, and config studio", async ({ pag
   await page.getByRole("button", { name: /gitlab-platform/i }).first().click();
   await expect(page).toHaveURL(/\/workflows\/gitlab-platform$/);
   await expect(page.getByRole("link", { name: "platform/app#42" })).toBeVisible();
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByText(/operator guidance received/i)).toBeVisible();
   await expect(page.getByRole("heading", { name: "Live output" })).toBeVisible();
 
   await page.getByRole("button", { name: /settings/i }).click();
