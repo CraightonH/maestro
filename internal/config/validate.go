@@ -151,6 +151,11 @@ func ValidateMVP(cfg *Config) error {
 	if strings.Contains(cfg.Controls.BeforeWork.Prompt, "{{") {
 		return fmt.Errorf("controls.before_work.prompt must be plain text for v0.1")
 	}
+	switch strings.TrimSpace(cfg.Controls.BeforeWork.Mode) {
+	case "", "review", "reply":
+	default:
+		return fmt.Errorf("controls.before_work.mode must be one of: review, reply")
+	}
 	if cfg.Logging.MaxFiles < 0 {
 		return fmt.Errorf("logging.max_files must be zero or greater")
 	}

@@ -164,7 +164,11 @@ func (s *Service) runBeforeWorkGate(ctx context.Context, run *domain.AgentRun) (
 		body = fmt.Sprintf("Review %s before work begins. Reply with any operator instructions or simply say start.", run.Issue.Identifier)
 	}
 	summary := fmt.Sprintf("Before work: %s", run.Issue.Identifier)
-	view, replyCh := s.createControlMessage(run, summary, body)
+	kind := "before_work_review"
+	if strings.EqualFold(strings.TrimSpace(s.cfg.Controls.BeforeWork.Mode), "reply") {
+		kind = "before_work_reply"
+	}
+	view, replyCh := s.createControlMessage(run, kind, summary, body)
 	defer s.cancelControlMessage(view.RequestID, "cancelled")
 
 	s.recordRunEvent(run, "info", "waiting for before_work confirmation for %s", run.Issue.Identifier)

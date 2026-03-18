@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { Approval, ConfigSourceSummary, EventItem, Message, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
+import type { Approval, ConfigSourceSummary, EventItem, Message, MessageHistoryEntry, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
 import { sourceScopeHref, type SourceDraft } from "../lib/helpers";
 import { Control, EmptyState, PanelHeader, Pill } from "./ui";
 
@@ -12,6 +12,7 @@ export function WorkflowWorkspace({
   retries,
   approvals,
   messages,
+  messageHistory,
   events,
   sourceDraft,
   showEditor,
@@ -33,6 +34,7 @@ export function WorkflowWorkspace({
   retries: RetryEntry[];
   approvals: Approval[];
   messages: Message[];
+  messageHistory: MessageHistoryEntry[];
   events: EventItem[];
   sourceDraft: SourceDraft;
   showEditor: boolean;
@@ -97,47 +99,6 @@ export function WorkflowWorkspace({
                 )}
                 {(workflow.tags || []).map((tag) => <Pill key={tag}>{tag}</Pill>)}
               </div>
-              {messages.length ? (
-                <div className="stack compactStack">
-                  {messages.map((message) => (
-                    <article key={message.request_id} className="detailCard inlineMessageCard">
-                      <div className="detailCardHeader">
-                        <div>
-                          <strong>{message.summary || "Operator control"}</strong>
-                          <span>{message.kind === "before_work" ? "Before work gate" : "Agent message"}</span>
-                        </div>
-                        <Pill tone="warn">{message.requested_at ? "waiting" : "pending"}</Pill>
-                      </div>
-                      <p className="message">{message.body || "Reply to continue."}</p>
-                      <div className="messageComposer">
-                        <input
-                          value={messageReplies[message.request_id] || ""}
-                          onChange={(event) =>
-                            setMessageReplies((current) => ({
-                              ...current,
-                              [message.request_id]: event.target.value,
-                            }))
-                          }
-                          placeholder={message.kind === "before_work" ? "Reply with start or add operator guidance" : "Reply to the agent"}
-                        />
-                        <div className="buttonRow">
-                          {message.kind === "before_work" ? (
-                            <button className="actionButton primary" onClick={() => void onResolveMessage(message.request_id, "start")}>
-                              Start
-                            </button>
-                          ) : null}
-                          <button
-                            className="actionButton"
-                            onClick={() => void onResolveMessage(message.request_id, messageReplies[message.request_id] || "")}
-                          >
-                            Send reply
-                          </button>
-                        </div>
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : null}
             </div>
             <div className="workflowSideRail">
               <div className="workflowTopBar">
@@ -180,6 +141,72 @@ export function WorkflowWorkspace({
             }
           />
           <pre className="logBlock">{logText}</pre>
+        </section>
+
+        <section className="panel spanTwo">
+          <PanelHeader title="Controls and conversation" copy="" meta={`${messages.length} waiting · ${messageHistory.length} recent`} />
+          <div className="conversationGrid">
+            <div className="stack">
+              {messages.map((message) => (
+                <article key={message.request_id} className="detailCard inlineMessageCard">
+                  <div className="detailCardHeader">
+                    <div>
+                      <strong>{message.summary || "Operator control"}</strong>
+                      <span>{messageKindLabel(message.kind)} · {message.issue_identifier || workflow.name}</span>
+                    </div>
+                    <Pill tone="warn">{message.requested_at ? "waiting" : "pending"}</Pill>
+                  </div>
+                  <p className="message">{message.body || "Reply to continue."}</p>
+                  <div className="messageComposer">
+                    <input
+                      value={messageReplies[message.request_id] || ""}
+                      onChange={(event) =>
+                        setMessageReplies((current) => ({
+                          ...current,
+                          [message.request_id]: event.target.value,
+                        }))
+                      }
+                      placeholder={message.kind === "before_work_reply" ? "Reply with the answer" : "Reply with start or operator guidance"}
+                    />
+                    <div className="buttonRow">
+                      {message.kind === "before_work" || message.kind === "before_work_review" ? (
+                        <button className="actionButton primary" onClick={() => void onResolveMessage(message.request_id, "start")}>
+                          Start
+                        </button>
+                      ) : null}
+                      <button
+                        className="actionButton"
+                        onClick={() => void onResolveMessage(message.request_id, messageReplies[message.request_id] || "")}
+                      >
+                        Send reply
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ))}
+              {!messages.length ? <EmptyState copy="No pending control messages for this workflow." /> : null}
+            </div>
+            <div className="stack">
+              {messageHistory.map((entry) => (
+                <article key={`${entry.request_id}-${entry.replied_at || entry.requested_at || ""}`} className="detailCard inlineHistoryCard">
+                  <div className="detailCardHeader">
+                    <div>
+                      <strong>{messageKindLabel(entry.kind)}</strong>
+                      <span>{entry.issue_identifier || workflow.name}</span>
+                    </div>
+                    <Pill tone={entry.outcome === "resolved" ? "info" : "warn"}>{entry.resolved_via || "maestro"}</Pill>
+                  </div>
+                  {entry.summary ? <p className="message">{entry.summary}</p> : null}
+                  {entry.reply ? <pre className="miniLogBlock">{entry.reply}</pre> : null}
+                  <div className="pills">
+                    <Pill>{entry.outcome || "recorded"}</Pill>
+                    <Pill>{entry.replied_at || entry.requested_at || "unknown time"}</Pill>
+                  </div>
+                </article>
+              ))}
+              {!messageHistory.length ? <EmptyState copy="No recent control history for this workflow yet." /> : null}
+            </div>
+          </div>
         </section>
 
         <section className="panel">
@@ -298,4 +325,18 @@ function workflowStatus(runtime?: SourceSummary) {
   if (runtime.retry_count > 0) return "retrying";
   if (runtime.active_run_count > 0) return "active";
   return "idle";
+}
+
+function messageKindLabel(kind?: string) {
+  switch (kind) {
+    case "before_work":
+    case "before_work_review":
+      return "Before work gate";
+    case "before_work_reply":
+      return "Before work question";
+    case "agent_message":
+      return "Agent message";
+    default:
+      return kind || "Operator control";
+  }
 }

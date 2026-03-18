@@ -34,7 +34,7 @@ var embeddedFrontend embed.FS
 type runtimeView interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
-	ResolveMessage(requestID string, reply string) error
+	ResolveMessage(requestID string, reply string, resolvedVia string) error
 	StopRun(runID string, reason string) error
 }
 
@@ -240,6 +240,7 @@ type messageJSON struct {
 	RunID           string    `json:"run_id,omitempty"`
 	IssueID         string    `json:"issue_id,omitempty"`
 	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	SourceName      string    `json:"source_name,omitempty"`
 	AgentName       string    `json:"agent_name,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
@@ -253,11 +254,13 @@ type messageHistoryJSON struct {
 	RunID           string    `json:"run_id,omitempty"`
 	IssueID         string    `json:"issue_id,omitempty"`
 	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	SourceName      string    `json:"source_name,omitempty"`
 	AgentName       string    `json:"agent_name,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
 	Body            string    `json:"body,omitempty"`
 	Reply           string    `json:"reply,omitempty"`
+	ResolvedVia     string    `json:"resolved_via,omitempty"`
 	RequestedAt     time.Time `json:"requested_at,omitempty"`
 	RepliedAt       time.Time `json:"replied_at,omitempty"`
 	Outcome         string    `json:"outcome,omitempty"`
@@ -982,7 +985,7 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requestID := parts[0]
-	if err := s.runtime.ResolveMessage(requestID, payload.Reply); err != nil {
+	if err := s.runtime.ResolveMessage(requestID, payload.Reply, "web"); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":      false,
 			"error":   err.Error(),
@@ -1637,6 +1640,7 @@ func encodeMessages(items []orchestrator.MessageView) []messageJSON {
 			RunID:           item.RunID,
 			IssueID:         item.IssueID,
 			IssueIdentifier: item.IssueIdentifier,
+			SourceName:      item.SourceName,
 			AgentName:       item.AgentName,
 			Kind:            item.Kind,
 			Summary:         item.Summary,
@@ -1656,11 +1660,13 @@ func encodeMessageHistory(items []orchestrator.MessageHistoryEntry) []messageHis
 			RunID:           item.RunID,
 			IssueID:         item.IssueID,
 			IssueIdentifier: item.IssueIdentifier,
+			SourceName:      item.SourceName,
 			AgentName:       item.AgentName,
 			Kind:            item.Kind,
 			Summary:         item.Summary,
 			Body:            item.Body,
 			Reply:           item.Reply,
+			ResolvedVia:     item.ResolvedVia,
 			RequestedAt:     item.RequestedAt,
 			RepliedAt:       item.RepliedAt,
 			Outcome:         item.Outcome,

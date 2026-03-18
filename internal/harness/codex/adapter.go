@@ -22,6 +22,7 @@ type Adapter struct {
 	mu        sync.Mutex
 	procs     map[string]*codexRun
 	approvals chan harness.ApprovalRequest
+	messages  chan harness.MessageRequest
 }
 
 type codexRun struct {
@@ -40,6 +41,9 @@ type codexRun struct {
 	approvalMu      sync.Mutex
 	pendingApproval map[string]pendingApproval
 
+	messageMu      sync.Mutex
+	pendingMessage map[string]pendingMessage
+
 	doneCh    chan error
 	processCh chan error
 	stopOnce  sync.Once
@@ -48,6 +52,11 @@ type codexRun struct {
 type pendingApproval struct {
 	approved rpcEnvelope
 	rejected rpcEnvelope
+}
+
+type pendingMessage struct {
+	response  rpcEnvelope
+	questions []toolRequestUserInputQuestion
 }
 
 type activeRun struct {
@@ -104,6 +113,27 @@ type agentMessageDeltaNotification struct {
 	Delta string `json:"delta"`
 }
 
+type toolRequestUserInputParams struct {
+	ThreadID  string                         `json:"threadId"`
+	TurnID    string                         `json:"turnId"`
+	ItemID    string                         `json:"itemId"`
+	Questions []toolRequestUserInputQuestion `json:"questions"`
+}
+
+type toolRequestUserInputQuestion struct {
+	ID       string                       `json:"id"`
+	Header   string                       `json:"header"`
+	Question string                       `json:"question"`
+	IsOther  bool                         `json:"isOther"`
+	IsSecret bool                         `json:"isSecret"`
+	Options  []toolRequestUserInputOption `json:"options"`
+}
+
+type toolRequestUserInputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
+}
+
 func NewAdapter() (*Adapter, error) {
 	binary, err := exec.LookPath("codex")
 	if err != nil {
@@ -114,6 +144,7 @@ func NewAdapter() (*Adapter, error) {
 		binary:    binary,
 		procs:     map[string]*codexRun{},
 		approvals: make(chan harness.ApprovalRequest, 32),
+		messages:  make(chan harness.MessageRequest, 32),
 	}, nil
 }
 
@@ -147,6 +178,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		stdout:          stdout,
 		pending:         map[int64]chan rpcResponse{},
 		pendingApproval: map[string]pendingApproval{},
+		pendingMessage:  map[string]pendingMessage{},
 		doneCh:          make(chan error, 1),
 		processCh:       make(chan error, 1),
 	}
@@ -162,7 +194,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	go func() {
 		_, _ = io.Copy(writerOrDiscard(cfg.Stderr), stderr)
 	}()
-	go run.readLoop(a.approvals, writerOrDiscard(cfg.Stdout))
+	go run.readLoop(a.approvals, a.messages, writerOrDiscard(cfg.Stdout))
 	go func() {
 		err := cmd.Wait()
 		run.processCh <- err
@@ -228,11 +260,19 @@ func (a *Adapter) Approve(ctx context.Context, decision harness.ApprovalDecision
 }
 
 func (a *Adapter) Messages() <-chan harness.MessageRequest {
-	return nil
+	return a.messages
 }
 
 func (a *Adapter) Reply(ctx context.Context, reply harness.MessageReply) error {
-	return harness.ErrMessagesUnsupported
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	for _, run := range a.procs {
+		if err := run.reply(reply); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("message request %q not found", reply.RequestID)
 }
 
 func (r *activeRun) RunID() string {
@@ -308,7 +348,7 @@ func (r *codexRun) startTurn(threadID string, cwd string, prompt string) (string
 	return resp.Turn.ID, nil
 }
 
-func (r *codexRun) readLoop(approvalCh chan<- harness.ApprovalRequest, stdout io.Writer) {
+func (r *codexRun) readLoop(approvalCh chan<- harness.ApprovalRequest, messageCh chan<- harness.MessageRequest, stdout io.Writer) {
 	decoder := json.NewDecoder(bufio.NewReader(r.stdout))
 	for {
 		var msg rpcEnvelope
@@ -323,7 +363,7 @@ func (r *codexRun) readLoop(approvalCh chan<- harness.ApprovalRequest, stdout io
 		case msg.ID != nil && msg.Method == "":
 			r.resolve(*msg.ID, rpcResponse{Result: msg.Result, Error: msg.Error})
 		case msg.ID != nil && msg.Method != "":
-			r.handleServerRequest(*msg.ID, msg.Method, msg.Params, approvalCh)
+			r.handleServerRequest(*msg.ID, msg.Method, msg.Params, approvalCh, messageCh)
 		case msg.Method != "":
 			r.handleNotification(msg.Method, msg.Params, stdout)
 		}
@@ -358,7 +398,7 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 	}
 }
 
-func (r *codexRun) handleServerRequest(id int64, method string, params json.RawMessage, approvalCh chan<- harness.ApprovalRequest) {
+func (r *codexRun) handleServerRequest(id int64, method string, params json.RawMessage, approvalCh chan<- harness.ApprovalRequest, messageCh chan<- harness.MessageRequest) {
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval":
 		requestID, approved, rejected, approval, err := buildApprovalRequest(r.runID, r.approvalPolicy, id, method, params)
@@ -381,6 +421,25 @@ func (r *codexRun) handleServerRequest(id int64, method string, params json.RawM
 		r.approvalMu.Unlock()
 
 		approvalCh <- approval
+		return
+	case "item/tool/requestUserInput":
+		requestID, pending, request, err := buildMessageRequest(r.runID, id, params)
+		if err != nil {
+			_ = r.write(rpcEnvelope{
+				ID: &id,
+				Error: &rpcError{
+					Code:    -32602,
+					Message: err.Error(),
+				},
+			})
+			return
+		}
+
+		r.messageMu.Lock()
+		r.pendingMessage[requestID] = pending
+		r.messageMu.Unlock()
+
+		messageCh <- request
 		return
 	}
 	_ = r.write(rpcEnvelope{
@@ -414,6 +473,26 @@ func (r *codexRun) approve(decision harness.ApprovalDecision) error {
 		return r.write(pending.approved)
 	}
 	return r.write(pending.rejected)
+}
+
+func (r *codexRun) reply(reply harness.MessageReply) error {
+	r.messageMu.Lock()
+	pending, ok := r.pendingMessage[reply.RequestID]
+	if ok {
+		delete(r.pendingMessage, reply.RequestID)
+	}
+	r.messageMu.Unlock()
+	if !ok {
+		return fmt.Errorf("message request %q not found", reply.RequestID)
+	}
+
+	answers, err := buildMessageAnswers(pending.questions, reply.Reply)
+	if err != nil {
+		return err
+	}
+	msg := pending.response
+	msg.Result = mustMarshalRaw(map[string]any{"answers": answers})
+	return r.write(msg)
 }
 
 func (r *codexRun) request(method string, params any, out any) error {
@@ -593,6 +672,118 @@ func buildApprovalRequest(runID string, approvalPolicy string, rpcID int64, meth
 	default:
 		return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, fmt.Errorf("unsupported approval method %s", method)
 	}
+}
+
+func buildMessageRequest(runID string, rpcID int64, params json.RawMessage) (string, pendingMessage, harness.MessageRequest, error) {
+	var payload toolRequestUserInputParams
+	if err := json.Unmarshal(params, &payload); err != nil {
+		return "", pendingMessage{}, harness.MessageRequest{}, err
+	}
+	if len(payload.Questions) == 0 {
+		return "", pendingMessage{}, harness.MessageRequest{}, fmt.Errorf("requestUserInput contained no questions")
+	}
+
+	requestID := fmt.Sprintf("%s:%d", runID, rpcID)
+	request := harness.MessageRequest{
+		RequestID:   requestID,
+		RunID:       runID,
+		Kind:        "agent_question",
+		Summary:     firstNonEmpty(payload.Questions[0].Header, payload.Questions[0].Question, "Question from Codex"),
+		Body:        formatMessageBody(payload.Questions),
+		RequestedAt: time.Now(),
+	}
+	return requestID, pendingMessage{
+		response:  rpcEnvelope{ID: &rpcID},
+		questions: payload.Questions,
+	}, request, nil
+}
+
+func formatMessageBody(questions []toolRequestUserInputQuestion) string {
+	parts := make([]string, 0, len(questions)+1)
+	for _, question := range questions {
+		label := strings.TrimSpace(firstNonEmpty(question.Header, question.ID, "Question"))
+		body := strings.TrimSpace(question.Question)
+		block := fmt.Sprintf("%s\n%s", label, body)
+		if len(question.Options) > 0 {
+			opts := make([]string, 0, len(question.Options))
+			for _, option := range question.Options {
+				if strings.TrimSpace(option.Description) != "" {
+					opts = append(opts, fmt.Sprintf("- %s: %s", option.Label, option.Description))
+				} else {
+					opts = append(opts, fmt.Sprintf("- %s", option.Label))
+				}
+			}
+			block += "\nOptions:\n" + strings.Join(opts, "\n")
+		}
+		if question.IsOther {
+			block += "\nOther input allowed."
+		}
+		if question.IsSecret {
+			block += "\nAnswer privately."
+		}
+		parts = append(parts, block)
+	}
+	if len(questions) > 1 {
+		parts = append(parts, "Reply with one line per answer in the form `question_id: answer`.")
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func buildMessageAnswers(questions []toolRequestUserInputQuestion, reply string) (map[string]any, error) {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return nil, fmt.Errorf("message reply cannot be empty")
+	}
+
+	if len(questions) == 1 {
+		return map[string]any{
+			questions[0].ID: map[string]any{"answers": []string{reply}},
+		}, nil
+	}
+
+	lines := strings.Split(reply, "\n")
+	answerMap := map[string]string{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+		if key == "" || value == "" {
+			continue
+		}
+		answerMap[key] = value
+	}
+
+	answers := map[string]any{}
+	missing := make([]string, 0, len(questions))
+	for _, question := range questions {
+		value, ok := answerMap[question.ID]
+		if !ok {
+			missing = append(missing, question.ID)
+			continue
+		}
+		answers[question.ID] = map[string]any{"answers": []string{value}}
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("reply must include answers for: %s", strings.Join(missing, ", "))
+	}
+	return answers, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func writerOrDiscard(w io.Writer) io.Writer {

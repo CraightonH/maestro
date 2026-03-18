@@ -128,9 +128,10 @@ export function OverviewPage({
             {messageHistory.map((entry) => (
               <article key={`${entry.request_id}-${entry.replied_at || ""}`} className="listCard staticCard">
                 <strong>{entry.issue_identifier || entry.run_id || "message"}</strong>
-                <span>{entry.kind === "before_work" ? "before work" : "message"} · {entry.reply || "replied"}</span>
+                <span>{entry.kind === "before_work" || entry.kind === "before_work_reply" ? "before work" : "message"} · {entry.reply || "replied"}</span>
                 <div className="pills">
                   <Pill tone="info">{entry.outcome || "resolved"}</Pill>
+                  <Pill>{entry.resolved_via || "maestro"}</Pill>
                   <Pill>{formatDate(entry.replied_at || entry.requested_at)}</Pill>
                 </div>
               </article>

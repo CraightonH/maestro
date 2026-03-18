@@ -76,6 +76,7 @@ type PersistedMessageRequest struct {
 	RunID           string    `json:"run_id"`
 	IssueID         string    `json:"issue_id,omitempty"`
 	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	SourceName      string    `json:"source_name,omitempty"`
 	AgentName       string    `json:"agent_name,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
@@ -89,11 +90,13 @@ type PersistedMessageReply struct {
 	RunID           string    `json:"run_id"`
 	IssueID         string    `json:"issue_id,omitempty"`
 	IssueIdentifier string    `json:"issue_identifier,omitempty"`
+	SourceName      string    `json:"source_name,omitempty"`
 	AgentName       string    `json:"agent_name,omitempty"`
 	Kind            string    `json:"kind,omitempty"`
 	Summary         string    `json:"summary,omitempty"`
 	Body            string    `json:"body,omitempty"`
 	Reply           string    `json:"reply,omitempty"`
+	ResolvedVia     string    `json:"resolved_via,omitempty"`
 	RequestedAt     time.Time `json:"requested_at,omitempty"`
 	RepliedAt       time.Time `json:"replied_at"`
 	Outcome         string    `json:"outcome,omitempty"`

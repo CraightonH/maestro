@@ -184,6 +184,7 @@ type ControlsConfig struct {
 
 type BeforeWorkControlConfig struct {
 	Enabled bool   `yaml:"enabled"`
+	Mode    string `yaml:"mode"`
 	Prompt  string `yaml:"prompt"`
 }
 

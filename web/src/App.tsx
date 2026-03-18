@@ -254,9 +254,9 @@ function App() {
     return run?.source_name === selectedSource?.config.name;
   });
   const selectedSourceMessages = messages.filter((message) => {
-    const run = runs.find((item) => item.id === message.run_id);
-    return run?.source_name === selectedSource?.config.name;
+    return message.source_name === selectedSource?.config.name;
   });
+  const selectedSourceMessageHistory = messageHistory.filter((entry) => entry.source_name === selectedSource?.config.name);
   const selectedSourceEvents = events.filter((event) => event.source === selectedSource?.config.name);
   const selectedAgentApprovals = approvals.filter((approval) => approval.agent_name === selectedAgent?.name);
   const selectedAgentEvents = events.filter((event) => event.run_id === currentRun?.id || event.source === currentRun?.source_name);
@@ -641,6 +641,7 @@ function App() {
               retries={selectedSourceRetries}
               approvals={selectedSourceApprovals}
               messages={selectedSourceMessages}
+              messageHistory={selectedSourceMessageHistory}
               events={selectedSourceEvents}
               sourceDraft={sourceDraft}
               showEditor={showWorkflowEditor}

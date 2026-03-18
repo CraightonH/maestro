@@ -51,6 +51,7 @@ func (s *Service) recordMessageView(input MessageView) {
 	view := input
 
 	s.mu.Lock()
+	view.SourceName = s.source.Name
 	if s.activeRun != nil && s.activeRun.ID == view.RunID {
 		view.IssueID = s.activeRun.Issue.ID
 		view.IssueIdentifier = s.activeRun.Issue.Identifier
@@ -66,7 +67,7 @@ func (s *Service) recordMessageView(input MessageView) {
 	_ = s.saveStateBestEffort()
 }
 
-func (s *Service) ResolveMessage(requestID string, reply string) error {
+func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia string) error {
 	s.mu.RLock()
 	request, ok := s.messages[requestID]
 	s.mu.RUnlock()
@@ -78,6 +79,10 @@ func (s *Service) ResolveMessage(requestID string, reply string) error {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		return fmt.Errorf("message reply cannot be empty")
+	}
+	resolvedVia = strings.TrimSpace(resolvedVia)
+	if resolvedVia == "" {
+		resolvedVia = "operator"
 	}
 
 	s.mu.RLock()
@@ -101,11 +106,13 @@ func (s *Service) ResolveMessage(requestID string, reply string) error {
 		RunID:           request.RunID,
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
+		SourceName:      request.SourceName,
 		AgentName:       request.AgentName,
 		Kind:            request.Kind,
 		Summary:         request.Summary,
 		Body:            request.Body,
 		Reply:           reply,
+		ResolvedVia:     resolvedVia,
 		RequestedAt:     request.RequestedAt,
 		RepliedAt:       now,
 		Outcome:         "resolved",
@@ -130,18 +137,21 @@ func (s *Service) ResolveMessage(requestID string, reply string) error {
 		close(waiter)
 	}
 
-	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply received for %s", messageKindLabel(request.Kind), request.RunID)
+	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply received for %s via %s", messageKindLabel(request.Kind), request.RunID, resolvedVia)
 	_ = s.saveStateBestEffort()
 	return nil
 }
 
-func (s *Service) createControlMessage(run *domain.AgentRun, summary string, body string) (MessageView, <-chan string) {
+func (s *Service) createControlMessage(run *domain.AgentRun, kind string, summary string, body string) (MessageView, <-chan string) {
 	now := time.Now()
 	requestID := "control-before-work:" + run.ID
+	if strings.TrimSpace(kind) == "" {
+		kind = "before_work_review"
+	}
 	view := MessageView{
 		RequestID:   requestID,
 		RunID:       run.ID,
-		Kind:        "before_work",
+		Kind:        kind,
 		Summary:     summary,
 		Body:        body,
 		RequestedAt: now,
@@ -172,11 +182,13 @@ func (s *Service) cancelControlMessage(requestID string, outcome string) {
 		RunID:           request.RunID,
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
+		SourceName:      request.SourceName,
 		AgentName:       request.AgentName,
 		Kind:            request.Kind,
 		Summary:         request.Summary,
 		Body:            request.Body,
 		Reply:           "",
+		ResolvedVia:     "maestro",
 		RequestedAt:     request.RequestedAt,
 		RepliedAt:       time.Now(),
 		Outcome:         outcome,
@@ -204,8 +216,10 @@ func (s *Service) appendMessageHistory(entry MessageHistoryEntry) {
 
 func messageKindLabel(kind string) string {
 	switch strings.TrimSpace(kind) {
-	case "before_work":
+	case "before_work", "before_work_review":
 		return "before_work gate"
+	case "before_work_reply":
+		return "before_work question"
 	case "", "agent_message":
 		return "agent message"
 	default:

@@ -15,7 +15,7 @@ import (
 type snapshotProvider interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
-	ResolveMessage(requestID string, reply string) error
+	ResolveMessage(requestID string, reply string, resolvedVia string) error
 }
 
 type tickMsg time.Time
@@ -103,7 +103,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.notice = "message reply cannot be empty"
 					return m, nil
 				}
-				err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, reply)
+				err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, reply, "tui")
 				if err != nil {
 					m.notice = "message reply failed: " + err.Error()
 				} else {
@@ -267,7 +267,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.focus == focusMessages {
 				pending := m.filteredPendingMessages()
 				if len(pending) > 0 {
-					err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, "start")
+					err := m.service.ResolveMessage(pending[m.selectedMessage].RequestID, "start", "tui")
 					if err != nil {
 						m.notice = "message reply failed: " + err.Error()
 					} else {
@@ -613,7 +613,11 @@ func (m Model) View() string {
 		if !m.matchesSearch(entry.AgentName, entry.IssueIdentifier, entry.Summary, entry.Reply, entry.Outcome) {
 			continue
 		}
-		b.WriteString(fmt.Sprintf("  %s on %s (%s)\n", messageLabel(entry.Kind), entry.IssueIdentifier, entry.Outcome))
+		via := strings.TrimSpace(entry.ResolvedVia)
+		if via == "" {
+			via = "operator"
+		}
+		b.WriteString(fmt.Sprintf("  %s on %s (%s via %s)\n", messageLabel(entry.Kind), entry.IssueIdentifier, entry.Outcome, via))
 		historyCount++
 	}
 	if historyCount == 0 {

@@ -408,6 +408,7 @@ func NewDemoRuntime() *DemoRuntime {
 				RunID:           run1.ID,
 				IssueID:         run1.Issue.ID,
 				IssueIdentifier: run1.Issue.Identifier,
+				SourceName:      run1.SourceName,
 				AgentName:       run1.AgentName,
 				Kind:            "before_work",
 				Summary:         "Before work: platform/app#42",
@@ -566,7 +567,7 @@ func (d *DemoRuntime) ResolveApproval(requestID string, decision string) error {
 	return nil
 }
 
-func (d *DemoRuntime) ResolveMessage(requestID string, reply string) error {
+func (d *DemoRuntime) ResolveMessage(requestID string, reply string, resolvedVia string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -590,11 +591,13 @@ func (d *DemoRuntime) ResolveMessage(requestID string, reply string) error {
 		RunID:           request.RunID,
 		IssueID:         request.IssueID,
 		IssueIdentifier: request.IssueIdentifier,
+		SourceName:      request.SourceName,
 		AgentName:       request.AgentName,
 		Kind:            request.Kind,
 		Summary:         request.Summary,
 		Body:            request.Body,
 		Reply:           reply,
+		ResolvedVia:     resolvedVia,
 		RequestedAt:     request.RequestedAt,
 		RepliedAt:       now,
 		Outcome:         "resolved",

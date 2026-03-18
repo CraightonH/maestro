@@ -31,7 +31,7 @@ The current build is a working POC. It is intentionally narrow in surface area, 
 - Codex manual approval is wired in code but the current local app-server build does not emit approval requests in this environment
 - Shell hook support is currently limited to `after_create`, `before_run`, and `after_run`
 - Maestro control points currently include `controls.before_work` plus runtime approvals and operator message replies
-- Slack currently covers status updates plus approval buttons, not general threaded conversation back into the run
+- Slack supports status updates, approval buttons, `before_work` control prompts, and typed thread replies for pending Maestro control messages
 - Dynamic config reload and tracker-specific completion workflows are still out of scope
 
 ## Quick Start
@@ -127,7 +127,7 @@ These keep logs, state, and workspaces under `demo/*/var/` so you can inspect an
 - `display_group` and `tags` let you organize source-heavy configs in the TUI without affecting dispatch behavior.
 - `server.enabled` starts a local web/API surface on `server.host:server.port` with a built-in dashboard and approval actions.
 - `agent_types[].communication` can route a run into a named channel such as Slack.
-- Slack channels currently support DM or fixed-channel threads, approval buttons, and status updates.
+- Slack channels currently support DM or fixed-channel threads, approval buttons, typed replies for pending control prompts, and status updates.
 - Slack requires a bot token plus an app-level token for Socket Mode. Use `channels[].config.token_env` and `channels[].config.app_token_env`.
 - The TUI supports `tab` to switch focus between sources, active runs, retries, and approvals, `/` for search, `f` to cycle source groups, `u` for attention-only filtering, `w` for awaiting-approval filtering, `c` to clear filters, `o` and `O` to change sort order, and `v` to toggle compact mode.
 - The source pane now includes a selected-source detail view with tracker, group, tags, poll stats, visible work counts, and recent source events.
@@ -169,12 +169,14 @@ Current scope:
 
 - open a DM thread or use a fixed channel thread for a workflow
 - post approval requests with `Approve` and `Reject` buttons
+- post `controls.before_work` prompts and keep the original question intact in the thread
+- accept typed Slack thread replies for pending Maestro control messages and runtime message requests
 - post status updates for completion, failure, retry scheduling, and stops
 - allow `Stop workflow` directly from the Slack thread
 
 Current limits:
 
-- no free-form Slack thread reply loop back into the run yet
+- no broad free-form agent chat surface yet; replies are routed into explicit pending Maestro controls or runtime message requests
 - no Teams equivalent yet
 - no live Slack workspace test in the default repo test matrix yet
 
@@ -196,7 +198,16 @@ channels:
       user_id_env: MAESTRO_SLACK_USER_ID
 ```
 
-This requires a Slack app with Socket Mode enabled.
+This requires a Slack app with:
+
+- `chat:write`
+- `im:write`
+- `im:history`
+- Socket Mode enabled with an app token that has `connections:write`
+- Interactivity enabled
+- Event Subscriptions enabled with bot event `message.im`
+- the Messages tab setting that allows users to send messages to the app
+- a reinstall after scope or event changes
 
 ## Docs
 

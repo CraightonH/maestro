@@ -151,6 +151,20 @@ Required Slack config:
 - a bot token in `channels[].config.token_env`
 - an app-level Socket Mode token in `channels[].config.app_token_env`
 
+Slack app setup checklist:
+
+- enable Socket Mode
+- create an app token with `connections:write`
+- add bot scopes:
+  - `chat:write`
+  - `im:write`
+  - `im:history`
+- enable Interactivity
+- enable Event Subscriptions
+- subscribe to bot event `message.im`
+- enable the Messages tab setting that allows users to send messages to the app
+- reinstall the app after changing scopes or subscriptions
+
 For DM routing, set either:
 
 - `channels[].config.user_id`

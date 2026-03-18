@@ -493,6 +493,23 @@ select {
   color: var(--text-muted);
 }
 
+.conversationGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.92fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.miniLogBlock {
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--panel-muted);
+  color: var(--text-soft);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
 .agentPreview {
   display: grid;
   gap: 6px;
@@ -1206,6 +1223,10 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .conversationGrid {
+    grid-template-columns: 1fr;
+  }
+
   .sourceDetailGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1249,6 +1270,7 @@ select {
   .settingsGrid,
   .workflowGrid,
   .agentTabGrid,
+  .conversationGrid,
   .routeGrid,
   .promptGrid,
   .builderGrid,

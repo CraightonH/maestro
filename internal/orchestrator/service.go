@@ -77,6 +77,7 @@ type MessageView struct {
 	RunID           string
 	IssueID         string
 	IssueIdentifier string
+	SourceName      string
 	AgentName       string
 	Kind            string
 	Summary         string
@@ -90,11 +91,13 @@ type MessageHistoryEntry struct {
 	RunID           string
 	IssueID         string
 	IssueIdentifier string
+	SourceName      string
 	AgentName       string
 	Kind            string
 	Summary         string
 	Body            string
 	Reply           string
+	ResolvedVia     string
 	RequestedAt     time.Time
 	RepliedAt       time.Time
 	Outcome         string

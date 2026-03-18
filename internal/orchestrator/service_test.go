@@ -681,7 +681,7 @@ func TestServiceTracksAndResolvesMessageRequests(t *testing.T) {
 		return len(snapshot.PendingMessages) == 1 && snapshot.ActiveRun != nil && snapshot.ActiveRun.Status == domain.RunStatusAwaiting
 	})
 
-	if err := svc.ResolveMessage("msg-1", "Update the API contract too."); err != nil {
+	if err := svc.ResolveMessage("msg-1", "Update the API contract too.", "test"); err != nil {
 		t.Fatalf("resolve message: %v", err)
 	}
 

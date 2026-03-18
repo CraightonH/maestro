@@ -46,10 +46,10 @@ func (f *fakeRuntime) StopRun(runID string, reason string) error {
 	return nil
 }
 
-func (f *fakeRuntime) ResolveMessage(requestID string, reply string) error {
+func (f *fakeRuntime) ResolveMessage(requestID string, reply string, resolvedVia string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.messageReplies = append(f.messageReplies, requestID+":"+reply)
+	f.messageReplies = append(f.messageReplies, requestID+":"+reply+":"+resolvedVia)
 	return nil
 }
 
@@ -256,8 +256,8 @@ func TestBridgeHandleBeforeWorkDenyAction(t *testing.T) {
 	if len(runtime.stopRequests) != 1 || runtime.stopRequests[0] != "run-9:denied in Slack before work began" {
 		t.Fatalf("stop requests = %+v, want Slack deny reason", runtime.stopRequests)
 	}
-	if len(client.updates) != 1 || !strings.Contains(client.updates[0].text, "Before-work review denied") {
-		t.Fatalf("updates = %+v", client.updates)
+	if len(client.updates) != 0 {
+		t.Fatalf("updates = %+v, want none", client.updates)
 	}
 }
 
@@ -357,11 +357,63 @@ func TestBridgeHandleBeforeWorkStartAction(t *testing.T) {
 		},
 	})
 
-	if len(runtime.messageReplies) != 1 || runtime.messageReplies[0] != "msg-1:start" {
-		t.Fatalf("message replies = %+v, want msg-1:start", runtime.messageReplies)
+	if len(runtime.messageReplies) != 1 || runtime.messageReplies[0] != "msg-1:start:slack" {
+		t.Fatalf("message replies = %+v, want msg-1:start:slack", runtime.messageReplies)
 	}
-	if len(client.updates) != 1 || !strings.Contains(client.updates[0].text, "Before-work review approved") {
-		t.Fatalf("updates = %+v", client.updates)
+	if len(client.updates) != 0 {
+		t.Fatalf("updates = %+v, want none", client.updates)
+	}
+}
+
+func TestBridgePostsMessageHistoryAsThreadReply(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+	bridge.state.Messages["msg-1"] = slackMessageRef{
+		ChannelName: "slack-dm",
+		ChannelID:   "D123",
+		MessageTS:   "ts-question",
+		ThreadTS:    "thread-1",
+	}
+
+	err := bridge.applyMessageHistory(context.Background(), orchestrator.MessageHistoryEntry{
+		RequestID:       "msg-1",
+		RunID:           "run-1",
+		IssueIdentifier: "APP-42",
+		Kind:            "before_work_reply",
+		Summary:         "What is the favorite animal?",
+		Reply:           "cat",
+		Outcome:         "resolved",
+		RepliedAt:       time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("apply message history: %v", err)
+	}
+	if len(client.updates) != 0 {
+		t.Fatalf("updates = %+v, want none", client.updates)
+	}
+	if len(client.posts) != 1 {
+		t.Fatalf("posts = %+v, want 1 thread reply", client.posts)
+	}
+	if client.posts[0].threadTS != "thread-1" {
+		t.Fatalf("thread ts = %q, want thread-1", client.posts[0].threadTS)
+	}
+	body := encodeJSON(t, client.posts[0].blocks)
+	for _, want := range []string{"Before-work question answered", "What is the favorite animal?", "cat"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("thread reply missing %q:\n%s", want, body)
+		}
 	}
 }
 
@@ -547,7 +599,7 @@ func TestSlackHTTPClientSocketModeEndToEndMessageReply(t *testing.T) {
 		runtime.mu.Lock()
 		replies := append([]string(nil), runtime.messageReplies...)
 		runtime.mu.Unlock()
-		if len(replies) == 1 && replies[0] == "msg-1:Yes, update the API contract too." {
+		if len(replies) == 1 && replies[0] == "msg-1:Yes, update the API contract too.:slack" {
 			cancel()
 			<-done
 			if !server.sawEnvelopeAck() {

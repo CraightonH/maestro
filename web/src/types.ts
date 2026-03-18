@@ -57,6 +57,7 @@ export interface Message {
   run_id?: string;
   issue_id?: string;
   issue_identifier?: string;
+  source_name?: string;
   agent_name?: string;
   kind?: string;
   summary?: string;
@@ -85,11 +86,13 @@ export interface MessageHistoryEntry {
   run_id?: string;
   issue_id?: string;
   issue_identifier?: string;
+  source_name?: string;
   agent_name?: string;
   kind?: string;
   summary?: string;
   body?: string;
   reply?: string;
+  resolved_via?: string;
   requested_at?: string;
   replied_at?: string;
   outcome?: string;

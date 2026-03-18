@@ -102,3 +102,59 @@ func TestLiveCodexManualApproval(t *testing.T) {
 		t.Fatalf("approval file content = %q", string(content))
 	}
 }
+
+func TestLiveCodexMessageRequest(t *testing.T) {
+	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CODEX")
+	if _, err := exec.LookPath("codex"); err != nil {
+		t.Skipf("skipping live test; codex binary not found: %v", err)
+	}
+
+	adapter, err := NewAdapter()
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var stdout strings.Builder
+	run, err := adapter.Start(ctx, harness.RunConfig{
+		RunID: "live-codex-question-run",
+		Prompt: strings.Join([]string{
+			"Before doing any work, use request_user_input to ask one concise question about scope.",
+			"Ask whether you should update the API contract too.",
+			"After you receive the answer `yes`, reply with exactly MAESTRO_CODEX_QUESTION_OK.",
+		}, " "),
+		Workdir: t.TempDir(),
+		Stdout:  &stdout,
+	})
+	if err != nil {
+		t.Fatalf("start harness: %v", err)
+	}
+
+	var request harness.MessageRequest
+	select {
+	case request = <-adapter.Messages():
+	case <-time.After(60 * time.Second):
+		t.Skip("codex did not emit a request_user_input message within 60s")
+	}
+
+	if !strings.Contains(strings.ToLower(request.Body), "api") {
+		t.Fatalf("unexpected message body: %q", request.Body)
+	}
+	if err := adapter.Reply(ctx, harness.MessageReply{
+		RequestID: request.RequestID,
+		Kind:      request.Kind,
+		Reply:     "yes",
+		RepliedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("reply message request: %v", err)
+	}
+
+	if err := run.Wait(); err != nil {
+		t.Fatalf("wait harness: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "MAESTRO_CODEX_QUESTION_OK") {
+		t.Fatalf("unexpected live codex output: %q", stdout.String())
+	}
+}

@@ -35,8 +35,8 @@ func (f *fakeRuntime) ResolveApproval(requestID string, decision string) error {
 	return nil
 }
 
-func (f *fakeRuntime) ResolveMessage(requestID string, reply string) error {
-	f.replies = append(f.replies, requestID+":"+reply)
+func (f *fakeRuntime) ResolveMessage(requestID string, reply string, resolvedVia string) error {
+	f.replies = append(f.replies, requestID+":"+reply+":"+resolvedVia)
 	return nil
 }
 
@@ -227,7 +227,7 @@ func TestMessageReplyEndpointResolvesReply(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status code = %d, want 200", recorder.Code)
 	}
-	if got := strings.Join(runtime.replies, ","); got != "message-1:start" {
+	if got := strings.Join(runtime.replies, ","); got != "message-1:start:web" {
 		t.Fatalf("replies = %q", got)
 	}
 }

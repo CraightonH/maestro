@@ -23,7 +23,7 @@ func (s staticSnapshotProvider) ResolveApproval(requestID string, decision strin
 	return nil
 }
 
-func (s staticSnapshotProvider) ResolveMessage(requestID string, reply string) error {
+func (s staticSnapshotProvider) ResolveMessage(requestID string, reply string, resolvedVia string) error {
 	return nil
 }
 

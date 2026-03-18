@@ -213,17 +213,43 @@ channels:
       user_id_env: MAESTRO_SLACK_USER_ID
 ```
 
+If you want Slack to ask a plain question and wait for a typed reply instead of showing `Approve` / `Reject`, enable:
+
+```yaml
+controls:
+  before_work:
+    enabled: true
+    mode: reply
+    prompt: "Ask the operator for the missing detail before work starts."
+```
+
 Current Slack behavior:
 
 - starts a DM thread or fixed-channel thread for the matching workflow
 - posts approval requests with buttons
+- posts `controls.before_work` prompts and preserves the original question in the thread
+- accepts typed Slack thread replies for pending Maestro control messages
 - posts completion, failure, retry, and stop updates
 - allows `Stop workflow` from the Slack thread
 
 Current Slack limits:
 
-- no free-form Slack reply loop into the workflow yet
+- no broad free-form agent chat surface yet; replies are routed into explicit pending control messages
 - no built-in hot reload of Slack channel config
+
+Slack app checklist:
+
+- enable Socket Mode
+- create an app-level token with `connections:write`
+- add bot scopes:
+  - `chat:write`
+  - `im:write`
+  - `im:history`
+- enable Interactivity
+- enable Event Subscriptions
+- subscribe to bot event `message.im`
+- enable the Messages tab setting that allows users to send messages to the app
+- reinstall the app after changing scopes or subscriptions
 
 ## Local Web/API
 

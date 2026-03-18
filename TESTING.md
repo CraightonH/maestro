@@ -55,6 +55,7 @@ The Slack bridge currently has hermetic unit coverage for:
 - thread creation
 - approval message posting
 - approval message resolution updates
+- typed thread replies for pending Maestro control messages
 - stop-from-Slack actions
 - persisted Slack message references
 - Socket Mode approval handling against a fake Slack HTTP + websocket server
@@ -66,6 +67,20 @@ go test ./internal/channel -v
 ```
 
 There is no default live Slack integration test in the repo yet. Live validation requires a Socket Mode-enabled Slack app plus disposable DM or channel targets.
+
+Slack app checklist for live validation:
+
+- enable Socket Mode
+- create an app token with `connections:write`
+- add bot scopes:
+  - `chat:write`
+  - `im:write`
+  - `im:history`
+- enable Interactivity
+- enable Event Subscriptions
+- subscribe to bot event `message.im`
+- enable the Messages tab setting that allows users to send messages to the app
+- reinstall the app after changes
 
 For an opt-in live Slack workspace check, set:
 
@@ -79,6 +94,19 @@ Run:
 ```bash
 go test ./internal/channel -run TestLiveSlackClientDMThreadLifecycle -v
 ```
+
+Typed-reply smoke checklist:
+
+1. Configure `controls.before_work.enabled: true`.
+2. Set `controls.before_work.mode: reply` if you want a plain question instead of approve/deny buttons.
+3. Start Maestro against a disposable tracker issue.
+4. Wait for the Slack DM thread and the separate `Before work question` message.
+5. Reply in the thread as the user.
+6. Verify:
+   - the original question message stays intact
+   - your user reply appears as its own thread message
+   - Maestro posts a separate `Before-work question answered` follow-up
+   - the run continues and completes
 
 ## Live GitLab validation
 
@@ -209,6 +237,7 @@ Run:
 go test ./internal/harness/codex -run TestLiveCodexHarness -v
 go test ./internal/orchestrator -run TestServiceWithLiveCodexHarness -v
 go test ./internal/harness/codex -run TestLiveCodexManualApproval -v
+go test ./internal/harness/codex -run TestLiveCodexMessageRequest -v
 go test ./internal/orchestrator -run TestServiceWithLiveCodexManualApproval -v
 ```
 
@@ -216,6 +245,7 @@ go test ./internal/orchestrator -run TestServiceWithLiveCodexManualApproval -v
 
 - The default `go test ./...` suite now covers persisted `runs.json` state, approval history persistence, failed-run retries, restart recovery of an interrupted active run, tracker-label-based reconciliation stops, and the operator recovery helpers for run inspection, issue reset, and workspace cleanup.
 - The live Codex manual-approval tests currently skip if the installed Codex app-server never emits an approval request under `on-request`. That behavior was observed in the current local environment on March 15, 2026.
+- The live Codex message-request test currently skips if the installed Codex session never emits a native `request_user_input` call for the prompt within 60 seconds.
 - Real binary smoke runs remain manual because they require a configured tracker issue plus an authenticated local CLI session.
 - For a real three-source smoke, use [scripts/smoke_multi_source.sh](scripts/smoke_multi_source.sh) with one GitLab project issue, one GitLab epic-linked child issue, and one Linear issue isolated by dedicated labels.
 - For a fixture-provisioning many-sources smoke, use [scripts/smoke_many_sources.sh](scripts/smoke_many_sources.sh). It creates fresh GitLab project issues, fresh GitLab epics plus linked child issues, and a fresh Linear issue before starting Maestro.

@@ -28,7 +28,7 @@ const slackTickInterval = 2 * time.Second
 type Runtime interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
-	ResolveMessage(requestID string, reply string) error
+	ResolveMessage(requestID string, reply string, resolvedVia string) error
 	StopRun(runID string, reason string) error
 }
 
@@ -512,7 +512,7 @@ func (b *Bridge) applyMessageHistory(ctx context.Context, entry orchestrator.Mes
 	}
 
 	text, blocks := renderMessageHistory(entry)
-	if err := channel.client.UpdateMessage(ctx, messageRef.ChannelID, messageRef.MessageTS, text, blocks); err != nil {
+	if _, err := channel.client.PostMessage(ctx, messageRef.ChannelID, messageRef.ThreadTS, text, blocks); err != nil {
 		return err
 	}
 	return b.saveState()
@@ -541,10 +541,22 @@ func (b *Bridge) postEvent(ctx context.Context, event orchestrator.Event) error 
 
 func (b *Bridge) handleInbound(ctx context.Context, channelName string, envelope slackInboundEnvelope) {
 	if envelope.Action != nil {
+		b.logger.Info("slack inbound action", "channel", channelName, "action_count", len(envelope.Action.Actions), "message_ts", envelope.Action.Container.MessageTS)
 		b.handleAction(ctx, channelName, *envelope.Action)
 		return
 	}
 	if envelope.Message != nil {
+		b.logger.Info(
+			"slack inbound message",
+			"channel", channelName,
+			"type", envelope.Message.Type,
+			"subtype", envelope.Message.Subtype,
+			"thread_ts", envelope.Message.ThreadTS,
+			"ts", envelope.Message.TS,
+			"user", envelope.Message.User,
+			"has_bot_id", strings.TrimSpace(envelope.Message.BotID) != "",
+			"text", redact.String(envelope.Message.Text),
+		)
 		b.handleMessageReply(ctx, channelName, *envelope.Message)
 	}
 }
@@ -603,23 +615,12 @@ func (b *Bridge) handleMessageAction(ctx context.Context, channelName string, pa
 		return
 	}
 
-	text := ""
-	blocks := []any{}
-	if err := b.runtime.ResolveMessage(requestID, reply); err != nil {
-		text = redact.String(fmt.Sprintf("Reply failed: %v", err))
-		blocks = []any{slackSection(fmt.Sprintf("*Reply failed*\n%s", text))}
-	} else {
-		text = "Before-work review approved"
-		blocks = []any{
-			slackSection("*Before-work review approved*"),
-			slackContext(fmt.Sprintf("Reply: %s · %s", redact.String(reply), time.Now().Format(time.RFC3339))),
-		}
-		b.mu.Lock()
-		delete(b.state.Messages, requestID)
-		b.mu.Unlock()
-		_ = b.saveState()
+	if err := b.runtime.ResolveMessage(requestID, reply, "slack"); err != nil {
+		text := redact.String(fmt.Sprintf("Reply failed: %v", err))
+		_, _ = channel.client.PostMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, []any{
+			slackSection(fmt.Sprintf("*Reply failed*\n%s", text)),
+		})
 	}
-	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
 }
 
 func (b *Bridge) handleDenyBeforeWorkAction(ctx context.Context, channelName string, payload blockActionPayload, runID string) {
@@ -628,19 +629,12 @@ func (b *Bridge) handleDenyBeforeWorkAction(ctx context.Context, channelName str
 		return
 	}
 
-	text := ""
-	blocks := []any{}
 	if err := b.runtime.StopRun(runID, "denied in Slack before work began"); err != nil {
-		text = redact.String(fmt.Sprintf("Deny failed: %v", err))
-		blocks = []any{slackSection(fmt.Sprintf("*Deny failed*\n%s", text))}
-	} else {
-		text = "Before-work review denied"
-		blocks = []any{
-			slackSection("*Before-work review denied*"),
-			slackContext(fmt.Sprintf("Workflow stopped · %s", time.Now().Format(time.RFC3339))),
-		}
+		text := redact.String(fmt.Sprintf("Deny failed: %v", err))
+		_, _ = channel.client.PostMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, []any{
+			slackSection(fmt.Sprintf("*Deny failed*\n%s", text)),
+		})
 	}
-	_ = channel.client.UpdateMessage(ctx, payload.Channel.ID, payload.Container.MessageTS, text, blocks)
 }
 
 func (b *Bridge) handleMessageReply(ctx context.Context, channelName string, payload slackMessageEvent) {
@@ -655,7 +649,7 @@ func (b *Bridge) handleMessageReply(ctx context.Context, channelName string, pay
 	if requestID == "" {
 		return
 	}
-	if err := b.runtime.ResolveMessage(requestID, strings.TrimSpace(payload.Text)); err != nil {
+	if err := b.runtime.ResolveMessage(requestID, strings.TrimSpace(payload.Text), "slack"); err != nil {
 		b.logger.Warn("resolve slack message reply failed", "request_id", requestID, "error", err)
 	}
 }
@@ -689,7 +683,7 @@ func renderMessageRequest(meta runContext, request orchestrator.MessageView) (st
 	body = clipSlackText(redact.String(body), 900)
 
 	switch request.Kind {
-	case "before_work":
+	case "before_work", "before_work_review":
 		text := redact.String(fmt.Sprintf("Before work review for %s", request.IssueIdentifier))
 		header := fmt.Sprintf("*Before work review*\n*Issue:* %s", slackIssueLink(meta.IssueURL, request.IssueIdentifier))
 		if strings.TrimSpace(meta.IssueTitle) != "" {
@@ -714,6 +708,27 @@ func renderMessageRequest(meta runContext, request orchestrator.MessageView) (st
 			slackContext("Use the buttons below to start or deny the workflow. Reply in this thread to add operator guidance."),
 			slackActions(actions...),
 		}
+	case "before_work_reply":
+		text := redact.String(fmt.Sprintf("Before work question for %s", request.IssueIdentifier))
+		header := fmt.Sprintf("*Before work question*\n*Issue:* %s", slackIssueLink(meta.IssueURL, request.IssueIdentifier))
+		if strings.TrimSpace(meta.IssueTitle) != "" {
+			header += fmt.Sprintf("\n*Task:* %s", redact.String(meta.IssueTitle))
+		}
+		if strings.TrimSpace(meta.AgentName) != "" {
+			header += fmt.Sprintf("\n*Agent:* %s", meta.AgentName)
+		}
+		if strings.TrimSpace(meta.SourceName) != "" {
+			header += fmt.Sprintf("\n*Workflow:* %s", meta.SourceName)
+		}
+		blocks := []any{
+			slackSection(header),
+			slackSection(body),
+			slackContext("Reply in this thread to answer before work begins."),
+		}
+		if strings.TrimSpace(meta.IssueURL) != "" {
+			blocks = append(blocks, slackActions(slackLinkButton("View issue", meta.IssueURL)))
+		}
+		return text, blocks
 	default:
 		text := redact.String(firstNonEmpty(request.Summary, fmt.Sprintf("Question for %s", request.IssueIdentifier)))
 		blocks := []any{
@@ -730,10 +745,34 @@ func renderMessageRequest(meta runContext, request orchestrator.MessageView) (st
 
 func renderMessageHistory(entry orchestrator.MessageHistoryEntry) (string, []any) {
 	switch entry.Kind {
-	case "before_work":
+	case "before_work", "before_work_review":
 		text := redact.String(firstNonEmpty(entry.Reply, "Before-work review updated"))
+		header := "*Before-work review resolved*"
+		if strings.EqualFold(entry.Outcome, "cancelled") {
+			header = "*Before-work review cancelled*"
+		}
 		blocks := []any{
-			slackSection(fmt.Sprintf("*Before-work review %s*\n*Issue:* %s", entry.Outcome, entry.IssueIdentifier)),
+			slackSection(fmt.Sprintf("%s\n*Issue:* %s", header, entry.IssueIdentifier)),
+		}
+		if strings.TrimSpace(entry.Summary) != "" {
+			blocks = append(blocks, slackSection(redact.String(entry.Summary)))
+		}
+		if strings.TrimSpace(entry.Reply) != "" {
+			blocks = append(blocks, slackSection(redact.String(entry.Reply)))
+		}
+		blocks = append(blocks, slackContext(fmt.Sprintf("%s · %s", strings.ToUpper(entry.Outcome), entry.RepliedAt.Format(time.RFC3339))))
+		return text, blocks
+	case "before_work_reply":
+		text := redact.String(firstNonEmpty(entry.Reply, "Before-work question answered"))
+		header := "*Before-work question answered*"
+		if strings.EqualFold(entry.Outcome, "cancelled") {
+			header = "*Before-work question cancelled*"
+		}
+		blocks := []any{
+			slackSection(fmt.Sprintf("%s\n*Issue:* %s", header, entry.IssueIdentifier)),
+		}
+		if strings.TrimSpace(entry.Summary) != "" {
+			blocks = append(blocks, slackSection(redact.String(entry.Summary)))
 		}
 		if strings.TrimSpace(entry.Reply) != "" {
 			blocks = append(blocks, slackSection(redact.String(entry.Reply)))
@@ -1211,7 +1250,9 @@ func (c *slackHTTPClient) consumeSocket(ctx context.Context, conn *websocket.Con
 		var callback slackEventCallbackPayload
 		if err := json.Unmarshal(envelope.Payload, &callback); err == nil && callback.Type == "event_callback" && callback.Event.Type == "message" {
 			handler(slackInboundEnvelope{Message: &callback.Event})
+			continue
 		}
+		c.logger.Info("slack inbound payload ignored", "envelope_type", envelope.Type, "payload", redact.String(string(envelope.Payload)))
 	}
 }
 
