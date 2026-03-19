@@ -261,3 +261,30 @@ func TestCodexApprovalPolicyAndSandboxSelection(t *testing.T) {
 		t.Fatalf("manual writableRoots = %#v", policy["writableRoots"])
 	}
 }
+
+func TestRequestReturnsMarshalErrorWithoutLeakingPendingState(t *testing.T) {
+	run := &codexRun{
+		pending: map[int64]chan rpcResponse{},
+	}
+
+	err := run.request("initialize", map[string]any{
+		"bad": func() {},
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("request error = %v, want marshal error", err)
+	}
+	if len(run.pending) != 0 {
+		t.Fatalf("pending requests = %d, want 0", len(run.pending))
+	}
+}
+
+func TestNotifyReturnsMarshalError(t *testing.T) {
+	run := &codexRun{}
+
+	err := run.notify("initialized", map[string]any{
+		"bad": func() {},
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("notify error = %v, want marshal error", err)
+	}
+}

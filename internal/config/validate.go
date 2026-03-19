@@ -44,6 +44,7 @@ func ValidateMVP(cfg *Config) error {
 	}
 
 	for i, agent := range cfg.AgentTypes {
+		repoPackPath, hasRepoPack := ParseRepoPackRef(agent.AgentPack)
 		if strings.TrimSpace(agent.Name) == "" {
 			return fmt.Errorf("agent_types[%d].name is required", i)
 		}
@@ -55,8 +56,11 @@ func ValidateMVP(cfg *Config) error {
 		if agent.Harness != "claude-code" && agent.Harness != "codex" {
 			return fmt.Errorf("agent %q requires harness claude-code or codex", agent.Name)
 		}
-		if agent.Workspace != "git-clone" {
-			return fmt.Errorf("agent %q requires workspace git-clone", agent.Name)
+		if !slices.Contains([]string{"git-clone", "none"}, agent.Workspace) {
+			return fmt.Errorf("agent %q requires workspace git-clone or none", agent.Name)
+		}
+		if hasRepoPack && agent.Workspace != "git-clone" {
+			return fmt.Errorf("agent %q requires workspace git-clone for repo pack %q", agent.Name, repoPackPath)
 		}
 		if !slices.Contains([]string{"auto", "manual", "destructive-only"}, agent.ApprovalPolicy) {
 			return fmt.Errorf("agent %q requires approval_policy to be one of auto, manual, destructive-only", agent.Name)
@@ -67,11 +71,13 @@ func ValidateMVP(cfg *Config) error {
 		if agent.StallTimeout.Duration <= 0 {
 			return fmt.Errorf("agent %q stall_timeout must be greater than zero", agent.Name)
 		}
-		if strings.TrimSpace(agent.Prompt) == "" {
-			return fmt.Errorf("agent %q prompt path is required", agent.Name)
-		}
-		if _, err := os.Stat(agent.Prompt); err != nil {
-			return fmt.Errorf("agent %q prompt %q: %w", agent.Name, agent.Prompt, err)
+		if !hasRepoPack {
+			if strings.TrimSpace(agent.Prompt) == "" {
+				return fmt.Errorf("agent %q prompt path is required", agent.Name)
+			}
+			if _, err := os.Stat(agent.Prompt); err != nil {
+				return fmt.Errorf("agent %q prompt %q: %w", agent.Name, agent.Prompt, err)
+			}
 		}
 		if strings.TrimSpace(agent.Communication) != "" {
 			kind, ok := channelKinds[agent.Communication]
@@ -119,18 +125,20 @@ func ValidateMVP(cfg *Config) error {
 		if source.Tracker == "gitlab-epic" && strings.TrimSpace(source.EffectiveEpicFilter().Assignee) != "" {
 			return fmt.Errorf("source %q epic_filter.assignee is unsupported; use issue_filter.assignee for linked issues", source.Name)
 		}
-		if (source.Tracker == "linear" || source.Tracker == "gitlab-epic") && strings.TrimSpace(source.Repo) == "" {
-			return fmt.Errorf("source %q requires repo for git-clone workspace", source.Name)
-		}
-		if err := validateRepoURL(source.Repo); err != nil {
-			return fmt.Errorf("source %q: %w", source.Name, err)
-		}
-
 		if strings.TrimSpace(source.AgentType) == "" {
 			return fmt.Errorf("source %q agent_type is required", source.Name)
 		}
-		if _, ok := agentsByName[source.AgentType]; !ok {
+		agent, ok := agentsByName[source.AgentType]
+		if !ok {
 			return fmt.Errorf("source %q references unknown agent_type %q", source.Name, source.AgentType)
+		}
+		if requiresSourceRepo(agent.Workspace, source.Tracker) && strings.TrimSpace(source.Repo) == "" {
+			return fmt.Errorf("source %q requires repo for git-clone workspace", source.Name)
+		}
+		if strings.TrimSpace(source.Repo) != "" {
+			if err := validateRepoURL(source.Repo); err != nil {
+				return fmt.Errorf("source %q: %w", source.Name, err)
+			}
 		}
 	}
 	if strings.TrimSpace(cfg.State.Dir) == "" {
@@ -207,4 +215,8 @@ func validateRepoURL(raw string) error {
 		return fmt.Errorf("repo urls must not embed credentials; use connection.token_env instead")
 	}
 	return nil
+}
+
+func requiresSourceRepo(workspace string, tracker string) bool {
+	return workspace == "git-clone" && (tracker == "linear" || tracker == "gitlab-epic")
 }

@@ -490,13 +490,21 @@ func (r *codexRun) reply(reply harness.MessageReply) error {
 	if err != nil {
 		return err
 	}
+	result, err := marshalRaw(map[string]any{"answers": answers})
+	if err != nil {
+		return err
+	}
 	msg := pending.response
-	msg.Result = mustMarshalRaw(map[string]any{"answers": answers})
+	msg.Result = result
 	return r.write(msg)
 }
 
 func (r *codexRun) request(method string, params any, out any) error {
 	id := atomic.AddInt64(&r.nextID, 1)
+	rawParams, err := marshalRaw(params)
+	if err != nil {
+		return err
+	}
 	respCh := make(chan rpcResponse, 1)
 
 	r.reqMu.Lock()
@@ -506,7 +514,7 @@ func (r *codexRun) request(method string, params any, out any) error {
 	if err := r.write(rpcEnvelope{
 		ID:     &id,
 		Method: method,
-		Params: mustMarshalRaw(params),
+		Params: rawParams,
 	}); err != nil {
 		r.reqMu.Lock()
 		delete(r.pending, id)
@@ -529,7 +537,11 @@ func (r *codexRun) request(method string, params any, out any) error {
 func (r *codexRun) notify(method string, params any) error {
 	msg := rpcEnvelope{Method: method}
 	if params != nil {
-		msg.Params = mustMarshalRaw(params)
+		rawParams, err := marshalRaw(params)
+		if err != nil {
+			return err
+		}
+		msg.Params = rawParams
 	}
 	return r.write(msg)
 }
@@ -568,12 +580,12 @@ func (r *codexRun) stop() {
 	})
 }
 
-func mustMarshalRaw(v any) json.RawMessage {
+func marshalRaw(v any) (json.RawMessage, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	return raw
+	return raw, nil
 }
 
 func codexApprovalPolicy(policy string) string {
@@ -629,12 +641,20 @@ func buildApprovalRequest(runID string, approvalPolicy string, rpcID int64, meth
 		}
 		approval.ToolName = "command"
 		approval.ToolInput = strings.TrimSpace(payload.Command + "\n" + payload.Reason)
+		approved, err := marshalRaw(map[string]any{"decision": "approved"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
+		rejected, err := marshalRaw(map[string]any{"decision": "denied"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
 		return requestID, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"decision": "approved"}),
+				Result: approved,
 			}, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"decision": "denied"}),
+				Result: rejected,
 			}, approval, nil
 	case "item/fileChange/requestApproval":
 		var payload struct {
@@ -645,12 +665,20 @@ func buildApprovalRequest(runID string, approvalPolicy string, rpcID int64, meth
 		}
 		approval.ToolName = "file-change"
 		approval.ToolInput = payload.Reason
+		approved, err := marshalRaw(map[string]any{"decision": "accept"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
+		rejected, err := marshalRaw(map[string]any{"decision": "decline"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
 		return requestID, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"decision": "accept"}),
+				Result: approved,
 			}, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"decision": "decline"}),
+				Result: rejected,
 			}, approval, nil
 	case "item/permissions/requestApproval":
 		var payload struct {
@@ -662,12 +690,20 @@ func buildApprovalRequest(runID string, approvalPolicy string, rpcID int64, meth
 		}
 		approval.ToolName = "permissions"
 		approval.ToolInput = payload.Reason
+		approved, err := marshalRaw(map[string]any{"permissions": payload.Permissions, "scope": "turn"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
+		rejected, err := marshalRaw(map[string]any{"permissions": map[string]any{}, "scope": "turn"})
+		if err != nil {
+			return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, err
+		}
 		return requestID, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"permissions": payload.Permissions, "scope": "turn"}),
+				Result: approved,
 			}, rpcEnvelope{
 				ID:     &rpcID,
-				Result: mustMarshalRaw(map[string]any{"permissions": map[string]any{}, "scope": "turn"}),
+				Result: rejected,
 			}, approval, nil
 	default:
 		return "", rpcEnvelope{}, rpcEnvelope{}, harness.ApprovalRequest{}, fmt.Errorf("unsupported approval method %s", method)

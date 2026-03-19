@@ -149,8 +149,11 @@ type AgentTypeConfig struct {
 	Skills         []string          `yaml:"skills"`
 	ContextFiles   []string          `yaml:"context_files"`
 
-	PackPath string `yaml:"-"`
-	Context  string `yaml:"-"`
+	PackPath      string `yaml:"-"`
+	RepoPackPath  string `yaml:"-"`
+	PackClaudeDir string `yaml:"-"`
+	PackCodexDir  string `yaml:"-"`
+	Context       string `yaml:"-"`
 }
 
 type ChannelConfig struct {

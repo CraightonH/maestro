@@ -109,6 +109,138 @@ func TestValidateMVPAcceptsLinearCodexSource(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsWorkspaceNoneWithoutRepo(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "ops-linear",
+				Tracker:   "linear",
+				AgentType: "triage",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:           "triage",
+				Harness:        "codex",
+				Workspace:      "none",
+				Prompt:         promptPath,
+				ApprovalPolicy: "auto",
+				MaxConcurrent:  1,
+				StallTimeout:   config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected workspace:none config to validate without repo: %v", err)
+	}
+}
+
+func TestValidateMVPAcceptsRepoPackWithoutPromptFile(t *testing.T) {
+	root := t.TempDir()
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "repo-owned",
+				Tracker:   "linear",
+				Repo:      "https://gitlab.example.com/team/project.git",
+				AgentType: "code-pr",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:           "code-pr",
+				AgentPack:      "repo:.maestro",
+				Harness:        "codex",
+				Workspace:      "git-clone",
+				ApprovalPolicy: "auto",
+				MaxConcurrent:  1,
+				StallTimeout:   config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected repo pack config to validate without prompt file: %v", err)
+	}
+}
+
+func TestValidateMVPRejectsRepoPackWithoutGitCloneWorkspace(t *testing.T) {
+	root := t.TempDir()
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "repo-owned",
+				Tracker:   "linear",
+				AgentType: "ops",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:           "ops",
+				AgentPack:      "repo:.maestro",
+				Harness:        "codex",
+				Workspace:      "none",
+				ApprovalPolicy: "auto",
+				MaxConcurrent:  1,
+				StallTimeout:   config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "requires workspace git-clone") {
+		t.Fatalf("validation error = %v, want repo pack workspace error", err)
+	}
+}
+
 func TestValidateMVPAcceptsClaudeManualApproval(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")

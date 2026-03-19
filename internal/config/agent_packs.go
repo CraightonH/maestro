@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -25,9 +26,13 @@ type AgentPackConfig struct {
 	Skills         []string          `yaml:"skills"`
 	ContextFiles   []string          `yaml:"context_files"`
 
-	Path    string `yaml:"-"`
-	Context string `yaml:"-"`
+	Path      string `yaml:"-"`
+	ClaudeDir string `yaml:"-"`
+	CodexDir  string `yaml:"-"`
+	Context   string `yaml:"-"`
 }
+
+const defaultRepoPackPath = ".maestro"
 
 func resolveAgentPacks(cfg *Config) error {
 	for i := range cfg.AgentTypes {
@@ -40,12 +45,18 @@ func resolveAgentPacks(cfg *Config) error {
 
 func resolveAgentPack(cfg *Config, agent *AgentTypeConfig) error {
 	if strings.TrimSpace(agent.AgentPack) != "" {
+		if repoPath, ok := ParseRepoPackRef(agent.AgentPack); ok {
+			agent.RepoPackPath = repoPath
+			return nil
+		}
 		pack, err := loadAgentPack(cfg, agent.AgentPack)
 		if err != nil {
 			return fmt.Errorf("load agent pack %q: %w", agent.AgentPack, err)
 		}
 		mergeAgentPack(agent, pack)
 		agent.PackPath = pack.Path
+		agent.PackClaudeDir = pack.ClaudeDir
+		agent.PackCodexDir = pack.CodexDir
 	}
 	return nil
 }
@@ -78,23 +89,45 @@ func loadAgentPack(cfg *Config, ref string) (*AgentPackConfig, error) {
 	}
 
 	pack.Path = path
-	packDir := filepath.Dir(path)
-	if pack.Prompt != "" && !filepath.IsAbs(pack.Prompt) {
-		pack.Prompt = filepath.Join(packDir, pack.Prompt)
+	if err := resolveLocalPackAssets(pack, filepath.Dir(path)); err != nil {
+		return nil, err
 	}
-	if pack.Prompt != "" {
-		pack.Prompt = filepath.Clean(pack.Prompt)
-	}
+	return pack, nil
+}
 
-	for i := range pack.ContextFiles {
-		if filepath.IsAbs(pack.ContextFiles[i]) {
-			pack.ContextFiles[i] = filepath.Clean(pack.ContextFiles[i])
-			continue
-		}
-		pack.ContextFiles[i] = filepath.Join(packDir, pack.ContextFiles[i])
-		pack.ContextFiles[i] = filepath.Clean(pack.ContextFiles[i])
+func ResolveRepoPack(workspacePath string, repoPackPath string) (*AgentPackConfig, error) {
+	packDir, err := resolveRepoPackDir(workspacePath, repoPackPath)
+	if err != nil {
+		return nil, err
 	}
-
+	promptPath := filepath.Join(packDir, "prompt.md")
+	if _, err := os.Stat(promptPath); err != nil {
+		return nil, fmt.Errorf("repo pack prompt %q: %w", promptPath, err)
+	}
+	contextFiles, err := collectPackContextFiles(filepath.Join(packDir, "context"))
+	if err != nil {
+		return nil, err
+	}
+	context, err := loadAgentContext(contextFiles)
+	if err != nil {
+		return nil, err
+	}
+	claudeDir, err := resolveOptionalPackDir(packDir, "claude")
+	if err != nil {
+		return nil, err
+	}
+	codexDir, err := resolveOptionalPackDir(packDir, "codex")
+	if err != nil {
+		return nil, err
+	}
+	pack := &AgentPackConfig{
+		Path:         filepath.Join(packDir, "agent.yaml"),
+		Prompt:       filepath.Clean(promptPath),
+		ContextFiles: contextFiles,
+		ClaudeDir:    claudeDir,
+		CodexDir:     codexDir,
+		Context:      context,
+	}
 	return pack, nil
 }
 
@@ -146,6 +179,22 @@ func resolveAgentPackPath(cfg *Config, ref string) (string, error) {
 	return "", fmt.Errorf("no agent pack found for %q", ref)
 }
 
+func ParseRepoPackRef(ref string) (string, bool) {
+	ref = strings.TrimSpace(ref)
+	if !strings.HasPrefix(ref, "repo:") {
+		return "", false
+	}
+	path := strings.TrimSpace(strings.TrimPrefix(ref, "repo:"))
+	if path == "" {
+		path = defaultRepoPackPath
+	}
+	path = filepath.Clean(path)
+	if path == "." {
+		path = defaultRepoPackPath
+	}
+	return path, true
+}
+
 func mergeAgentPack(agent *AgentTypeConfig, pack *AgentPackConfig) {
 	if agent.Name == "" {
 		agent.Name = pack.Name
@@ -178,6 +227,117 @@ func mergeAgentPack(agent *AgentTypeConfig, pack *AgentPackConfig) {
 	agent.Skills = appendUnique(pack.Skills, agent.Skills)
 	agent.ContextFiles = appendUnique(pack.ContextFiles, agent.ContextFiles)
 	agent.Env = mergeStringMap(pack.Env, agent.Env)
+}
+
+func resolveOptionalPackDir(packDir string, name string) (string, error) {
+	path := filepath.Join(packDir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat pack %s dir: %w", name, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("pack %s path %q must be a directory", name, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func resolveLocalPackAssets(pack *AgentPackConfig, packDir string) error {
+	if pack.Prompt != "" && !filepath.IsAbs(pack.Prompt) {
+		pack.Prompt = filepath.Join(packDir, pack.Prompt)
+	}
+	if pack.Prompt != "" {
+		pack.Prompt = filepath.Clean(pack.Prompt)
+	}
+
+	for i := range pack.ContextFiles {
+		if filepath.IsAbs(pack.ContextFiles[i]) {
+			pack.ContextFiles[i] = filepath.Clean(pack.ContextFiles[i])
+			continue
+		}
+		pack.ContextFiles[i] = filepath.Join(packDir, pack.ContextFiles[i])
+		pack.ContextFiles[i] = filepath.Clean(pack.ContextFiles[i])
+	}
+
+	claudeDir, err := resolveOptionalPackDir(packDir, "claude")
+	if err != nil {
+		return err
+	}
+	pack.ClaudeDir = claudeDir
+
+	codexDir, err := resolveOptionalPackDir(packDir, "codex")
+	if err != nil {
+		return err
+	}
+	pack.CodexDir = codexDir
+	return nil
+}
+
+func resolveRepoPackDir(workspacePath string, repoPackPath string) (string, error) {
+	relative := strings.TrimSpace(repoPackPath)
+	if relative == "" {
+		relative = defaultRepoPackPath
+	}
+	relative = filepath.Clean(relative)
+	if relative == "." {
+		relative = defaultRepoPackPath
+	}
+	if filepath.IsAbs(relative) {
+		return "", fmt.Errorf("repo pack path %q must be relative", relative)
+	}
+	if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("repo pack path %q must stay within the workspace", relative)
+	}
+	path := filepath.Join(workspacePath, relative)
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("repo pack dir %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("repo pack path %q must be a directory", path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func collectPackContextFiles(contextDir string) ([]string, error) {
+	info, err := os.Stat(contextDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat pack context dir %q: %w", contextDir, err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("pack context path %q must be a directory", contextDir)
+	}
+	files := []string{}
+	err = filepath.WalkDir(contextDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("pack context path %q must not be a symlink", path)
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("pack context path %q has unsupported file type", path)
+		}
+		files = append(files, filepath.Clean(path))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func mergeStringMap(base map[string]string, override map[string]string) map[string]string {

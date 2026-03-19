@@ -290,12 +290,22 @@ Fields:
 - `workspace` (WorkspaceStrategy)
   - `git-clone`: clone a repo and create a branch.
   - `none`: no workspace (ops/triage agents that use tools/APIs directly).
+- `agent_pack` (string, optional)
+  - Pack reference for agent defaults and harness-native config.
+  - Bare names resolve under `agent_packs_dir`.
+  - Path-like values resolve relative to the config file.
+  - `repo:<path>` defers resolution until after clone and loads agent environment files from the
+    cloned repository at `<path>`.
+  - `repo:` with no path uses `.maestro/`.
 - `tools` (list of strings, optional)
   - CLI tools available to the agent.
 - `mcps` (list of strings, optional)
   - MCP server names available to the agent.
 - `prompt` (string)
-  - Path to the prompt template file, relative to config directory.
+  - Path to the prompt template file, relative to config directory, for local packs and direct
+    config.
+  - For `agent_pack: repo:...`, prompt resolution is deferred until after clone and comes from the
+    repo pack's `prompt.md`.
 - `approval_policy` (string)
   - `auto`: no human approval needed. Agent runs autonomously.
   - `manual`: all tool calls require approval.
@@ -315,6 +325,15 @@ Fields:
   - Maximum agent turns per session. Default: 20.
 - `env` (map of string to string, optional)
   - Additional environment variables to inject into the agent subprocess.
+
+Pack directories:
+
+- Local packs may include `claude/` and `codex/` directories.
+- Repo packs may include `claude/` and `codex/` under the repo pack directory.
+- Maestro copies these into the prepared workspace as `.claude/` and `.codex/` before the harness
+  starts.
+- For repo packs, orchestration fields such as `harness`, `workspace`, `approval_policy`, and
+  `max_concurrent` still come from `maestro.yaml` because they are needed before clone.
 
 #### 4.1.3 Source Definition
 
@@ -680,6 +699,9 @@ Before dispatching work, the orchestrator validates:
   repository identity must be derivable from the GitLab project or issue metadata.
 - If `source.repo` is set for a GitLab source or for a source routed to `workspace: none`, Maestro
   ignores it and may emit a warning.
+- If `agent_pack` uses the `repo:` form, the routed agent type must use `workspace: git-clone`.
+- Local-pack prompt paths are validated at config load time. Repo-pack prompts are validated after
+  clone when the repo pack is resolved.
 - If an agent type's `max_concurrent` exceeds `defaults.max_concurrent_global`, Maestro permits the
   config and treats the global limit as the effective cap.
 - If the sum of all per-agent-type `max_concurrent` values is much higher than

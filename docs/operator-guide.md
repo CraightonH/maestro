@@ -210,7 +210,8 @@ No issues found:
 Run never starts:
 
 - verify the harness binary is installed and authenticated
-- verify the prompt path or `agent_pack` path is valid
+- for local packs, verify the prompt path or `agent_pack` path is valid
+- for repo packs, verify the source repo cloned successfully and the repo contains the expected `.maestro/` pack files
 - verify the source repo metadata is present
 
 Run restarts unexpectedly:

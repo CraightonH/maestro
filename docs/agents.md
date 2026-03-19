@@ -8,13 +8,13 @@ The supported model is:
 
 - define one or more `agent_types`
 - optionally point it at an `agent_pack`
-- let the pack provide the default prompt, context, tools, skills, harness, and approval policy
+- let the pack provide the default prompt, context, tools, skills, harness config, and optional defaults
 - map each source to the agent type it should use
 - override only the fields you want to change in the config
 
 ## Pack Layout
 
-A pack is a directory with an `agent.yaml` plus any referenced files:
+A local pack is a directory with an `agent.yaml` plus any referenced files:
 
 ```text
 agents/
@@ -22,6 +22,10 @@ agents/
     agent.yaml
     prompt.md
     context.md
+    claude/
+      CLAUDE.md
+    codex/
+      skills/
 ```
 
 Example pack file:
@@ -46,9 +50,18 @@ env:
   GOFLAGS: -mod=mod
 ```
 
+Optional pack directories:
+
+- `claude/` is copied into the prepared workspace as `.claude/`
+- `codex/` is copied into the prepared workspace as `.codex/`
+- these directories are where harness-native instructions, skills, and settings live
+
+Repo-embedded packs are also supported for `workspace: git-clone` agents. Instead of resolving from
+`agent_packs_dir`, Maestro can resolve agent environment files from the cloned repository itself.
+
 ## Config Usage
 
-Point the config at a pack root, then reference a pack by name:
+Point the config at a pack root, then reference a local pack by name:
 
 ```yaml
 agent_packs_dir: ../agents
@@ -70,6 +83,39 @@ Resolution rules:
 - if `agent_pack` is a bare name, Maestro resolves it under `agent_packs_dir`
 - if `agent_pack` looks like a path, Maestro resolves it relative to the config file
 - pack-relative `prompt` and `context_files` paths are resolved from the pack directory
+- if `agent_pack` starts with `repo:`, Maestro resolves the pack after clone from that repo-relative path
+- `agent_pack: "repo:"` and `agent_pack: "repo:.maestro"` both use `.maestro/` in the cloned repo
+
+Example repo-embedded pack:
+
+```yaml
+sources:
+  - name: project-a
+    tracker: linear
+    repo: https://gitlab.example.com/team/project.git
+    agent_type: code-pr
+
+agent_types:
+  - name: code-pr
+    agent_pack: "repo:.maestro"
+    harness: codex
+    workspace: git-clone
+    approval_policy: auto
+    max_concurrent: 1
+```
+
+With a matching repository layout:
+
+```text
+.maestro/
+  prompt.md
+  context/
+    rules.md
+  claude/
+    CLAUDE.md
+  codex/
+    skills/
+```
 
 ## Merge Rules
 
@@ -93,6 +139,18 @@ Pack and config values are combined for:
 - `context_files`
 
 Loaded context file contents are concatenated into `.Agent.Context` for prompt templates.
+
+For repo-embedded packs, resolution happens in two phases:
+
+1. Maestro reads orchestration fields from `maestro.yaml` before clone.
+2. After clone, Maestro reads `prompt.md`, `context/`, `claude/`, and `codex/` from the repo pack.
+
+That means these fields must stay in `maestro.yaml` for repo packs:
+
+- `harness`
+- `workspace`
+- `approval_policy`
+- `max_concurrent`
 
 ## Prompt Template Data
 
@@ -153,6 +211,9 @@ Example configs:
 4. Add one or more `context_files` if the agent needs durable repo or domain guidance.
 5. Point `agent_packs_dir` at that root and set `agent_pack` in the config.
 6. Override only the fields that should differ for a specific deployment.
+
+If you want agent behavior versioned with application code, put the pack in the repo under
+`.maestro/` and set `agent_pack: "repo:.maestro"` instead.
 
 ## Practical Recommendation
 

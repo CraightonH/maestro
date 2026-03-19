@@ -99,6 +99,147 @@ func TestServiceRunsIssueOncePerProcess(t *testing.T) {
 	}
 }
 
+func TestServiceRunsWorkspaceNoneWithoutRepoMetadata(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AgentTypes[0].Workspace = "none"
+	packClaudeDir := filepath.Join(t.TempDir(), "claude")
+	if err := os.MkdirAll(packClaudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir claude dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packClaudeDir, "CLAUDE.md"), []byte("pack instructions"), 0o644); err != nil {
+		t.Fatalf("write claude instructions: %v", err)
+	}
+	cfg.AgentTypes[0].PackClaudeDir = packClaudeDir
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "linear:OPS-42",
+				Identifier:  "OPS-42",
+				Title:       "Runbook check",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "linear",
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun == nil
+	})
+
+	workdir := fakeHarness.StartedRuns[0].Workdir
+	if workdir == "" {
+		t.Fatal("expected non-empty workdir")
+	}
+	entries, err := os.ReadDir(workdir)
+	if err != nil {
+		t.Fatalf("read workspace: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != ".claude" {
+		t.Fatalf("workspace entries = %v, want [.claude]", entries)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, ".claude", "CLAUDE.md")); err != nil {
+		t.Fatalf("expected pack claude config in workspace: %v", err)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceResolvesRepoEmbeddedPackAfterClone(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AgentTypes[0].AgentPack = "repo:.maestro"
+
+	localPrompt := filepath.Join(t.TempDir(), "local-prompt.md")
+	if err := os.WriteFile(localPrompt, []byte("LOCAL_PROMPT"), 0o644); err != nil {
+		t.Fatalf("write local prompt: %v", err)
+	}
+	cfg.AgentTypes[0].Prompt = localPrompt
+
+	repoURL := createGitRepoWithFiles(t, map[string]string{
+		".maestro/prompt.md":        "REPO_PROMPT {{.Issue.Identifier}}\n{{.Agent.Context}}",
+		".maestro/context/rules.md": "Repo context",
+		".maestro/claude/CLAUDE.md": "Repo claude config",
+		"README.md":                 "hello\n",
+	})
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#501",
+				Identifier:  "team/project#501",
+				Title:       "Use repo pack",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta: map[string]string{
+					"repo_url": repoURL,
+				},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun == nil
+	})
+
+	started := fakeHarness.StartedRuns[0]
+	if !strings.Contains(started.Prompt, "REPO_PROMPT team/project#501") {
+		t.Fatalf("prompt = %q, want repo prompt", started.Prompt)
+	}
+	if strings.Contains(started.Prompt, "LOCAL_PROMPT") {
+		t.Fatalf("prompt = %q, want repo pack to override local prompt", started.Prompt)
+	}
+	if !strings.Contains(started.Prompt, "Repo context") {
+		t.Fatalf("prompt = %q, want repo context", started.Prompt)
+	}
+	if _, err := os.Stat(filepath.Join(started.Workdir, ".claude", "CLAUDE.md")); err != nil {
+		t.Fatalf("expected repo claude config in workspace: %v", err)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func TestServiceRetriesFailedRunAndIncrementsAttempt(t *testing.T) {
 	cfg := testConfig(t)
 	repoURL := createGitRepo(t)
@@ -1065,13 +1206,27 @@ func waitFor(t *testing.T, timeout time.Duration, check func() bool) {
 func createGitRepo(t *testing.T) string {
 	t.Helper()
 
+	return createGitRepoWithFiles(t, map[string]string{
+		"README.md": "hello\n",
+	})
+}
+
+func createGitRepoWithFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello\n"), 0o644); err != nil {
-		t.Fatalf("write readme: %v", err)
+	for path, contents := range files {
+		fullPath := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(fullPath, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
 	}
 
 	runGit(t, root, "init")
-	runGit(t, root, "add", "README.md")
+	runGit(t, root, "add", ".")
 	runGit(t, root, "-c", "user.name=Test User", "-c", "user.email=test@example.com", "commit", "-m", "init")
 	bare := filepath.Join(t.TempDir(), "repo.git")
 	runGit(t, root, "clone", "--bare", root, bare)

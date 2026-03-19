@@ -1,0 +1,24 @@
+name: query-optimizer
+description: Multi-engine query optimization agent. Diagnoses slow queries across PostgreSQL, MySQL/Aurora, and ScyllaDB/Cassandra. Proposes evidence-backed improvements and generates safe migration files.
+instance_name: query-optimizer
+harness: claude-code
+workspace: git-clone
+prompt: prompt.md
+approval_policy: auto
+max_concurrent: 2
+tools:
+  - database read-only connection (PostgreSQL, MySQL, or ScyllaDB)
+  - EXPLAIN / EXPLAIN ANALYZE / TRACING
+  - performance catalog queries
+  - nodetool (ScyllaDB)
+skills:
+  - execution plan interpretation (all engines)
+  - index design (B-tree, LSM-tree, secondary indexes)
+  - engine internals (PostgreSQL planner/MVCC, InnoDB buffer pool, Scylla compaction/partitioning)
+  - safe DDL generation (online schema changes, lock estimation)
+  - evidence-chain reasoning
+context_files:
+  - context/operating-rules.md
+  - context/antipatterns-postgresql.md
+  - context/antipatterns-mysql.md
+  - context/antipatterns-scylla.md

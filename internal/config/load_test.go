@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,6 +282,18 @@ func TestLoadMergesAgentPackDefaultsAndOverrides(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(packsDir, "context.md"), []byte("Run the narrowest verification."), 0o644); err != nil {
 		t.Fatalf("write context: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(packsDir, "claude"), 0o755); err != nil {
+		t.Fatalf("mkdir claude dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packsDir, "claude", "CLAUDE.md"), []byte("Pack-specific claude instructions"), 0o644); err != nil {
+		t.Fatalf("write claude instructions: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(packsDir, "codex"), 0o755); err != nil {
+		t.Fatalf("mkdir codex dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packsDir, "codex", "config.toml"), []byte("model = \"gpt-5\""), 0o644); err != nil {
+		t.Fatalf("write codex config: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(packsDir, "agent.yaml"), []byte(`
 name: repo-maintainer
 description: Maintains repositories.
@@ -343,6 +356,12 @@ logging:
 	if agent.PackPath != filepath.Join(root, "agent-packs", "repo-maintainer", "agent.yaml") {
 		t.Fatalf("pack path = %q", agent.PackPath)
 	}
+	if agent.PackClaudeDir != filepath.Join(root, "agent-packs", "repo-maintainer", "claude") {
+		t.Fatalf("pack claude dir = %q", agent.PackClaudeDir)
+	}
+	if agent.PackCodexDir != filepath.Join(root, "agent-packs", "repo-maintainer", "codex") {
+		t.Fatalf("pack codex dir = %q", agent.PackCodexDir)
+	}
 	if agent.Harness != "codex" {
 		t.Fatalf("harness = %q, want codex", agent.Harness)
 	}
@@ -366,6 +385,64 @@ logging:
 	}
 	if got := agent.Context; got != "Run the narrowest verification." {
 		t.Fatalf("context = %q", got)
+	}
+}
+
+func TestLoadDefersRepoPackResolution(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+user:
+  name: TJ
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    agent_pack: "repo:"
+    harness: claude-code
+    workspace: git-clone
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.RepoPackPath != ".maestro" {
+		t.Fatalf("repo pack path = %q, want .maestro", agent.RepoPackPath)
+	}
+	if agent.PackPath != "" {
+		t.Fatalf("pack path = %q, want empty", agent.PackPath)
+	}
+	if agent.Prompt != "" {
+		t.Fatalf("prompt = %q, want empty pre-clone", agent.Prompt)
+	}
+}
+
+func TestResolveRepoPackErrorsWhenDirectoryMissing(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := config.ResolveRepoPack(root, ".maestro")
+	if err == nil || !strings.Contains(err.Error(), "repo pack dir") {
+		t.Fatalf("resolve repo pack error = %v, want missing dir error", err)
 	}
 }
 

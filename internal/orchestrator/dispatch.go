@@ -7,10 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 	"github.com/tjohnson/maestro/internal/state"
 	trackerbase "github.com/tjohnson/maestro/internal/tracker"
+	"github.com/tjohnson/maestro/internal/workspace"
 )
 
 func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
@@ -83,9 +85,16 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		r.LastActivityAt = time.Now()
 	})
 
-	prepared, err := s.workspace.Prepare(ctx, run.Issue, run.AgentName)
+	prepared, err := s.prepareWorkspace(ctx, run)
 	if err != nil {
 		return fmt.Errorf("prepare workspace: %w", err)
+	}
+	runtimeAgent, err := s.resolveRuntimeAgent(prepared.Path)
+	if err != nil {
+		return fmt.Errorf("resolve runtime agent: %w", err)
+	}
+	if err := s.workspace.PopulateHarnessConfig(prepared.Path, runtimeAgent.PackClaudeDir, runtimeAgent.PackCodexDir); err != nil {
+		return fmt.Errorf("populate harness config: %w", err)
 	}
 
 	s.updateRun(run.ID, func(r *domain.AgentRun) {
@@ -100,7 +109,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		return err
 	}
 
-	renderedPrompt, err := s.renderPrompt(run.Issue, run.AgentName, run.Attempt, operatorInstruction)
+	renderedPrompt, err := s.renderPrompt(runtimeAgent, run.Issue, run.AgentName, run.Attempt, operatorInstruction)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
 	}
@@ -125,7 +134,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		Prompt:         renderedPrompt,
 		Workdir:        prepared.Path,
 		ApprovalPolicy: run.ApprovalPolicy,
-		Env:            s.agent.Env,
+		Env:            runtimeAgent.Env,
 		Stdout:         stdoutWriter,
 		Stderr:         stderrWriter,
 	})
@@ -152,6 +161,39 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 	s.runHookBestEffort(context.Background(), s.cfg.Hooks.AfterRun, prepared.Path, run, "after_run")
 	s.completeRun(run.ID)
 	return nil
+}
+
+func (s *Service) prepareWorkspace(ctx context.Context, run *domain.AgentRun) (workspace.Prepared, error) {
+	switch s.agent.Workspace {
+	case "git-clone":
+		return s.workspace.PrepareClone(ctx, run.Issue, run.AgentName)
+	case "none":
+		return s.workspace.PrepareEmpty(run.Issue)
+	default:
+		return workspace.Prepared{}, fmt.Errorf("unsupported workspace strategy %q", s.agent.Workspace)
+	}
+}
+
+func (s *Service) resolveRuntimeAgent(workspacePath string) (config.AgentTypeConfig, error) {
+	agent := s.agent
+	if strings.TrimSpace(agent.RepoPackPath) == "" {
+		if repoPackPath, ok := config.ParseRepoPackRef(agent.AgentPack); ok {
+			agent.RepoPackPath = repoPackPath
+		}
+	}
+	if strings.TrimSpace(agent.RepoPackPath) == "" {
+		return agent, nil
+	}
+	pack, err := config.ResolveRepoPack(workspacePath, agent.RepoPackPath)
+	if err != nil {
+		return config.AgentTypeConfig{}, err
+	}
+	agent.Prompt = pack.Prompt
+	agent.ContextFiles = append([]string(nil), pack.ContextFiles...)
+	agent.Context = pack.Context
+	agent.PackClaudeDir = pack.ClaudeDir
+	agent.PackCodexDir = pack.CodexDir
+	return agent, nil
 }
 
 func (s *Service) runBeforeWorkGate(ctx context.Context, run *domain.AgentRun) (string, error) {
