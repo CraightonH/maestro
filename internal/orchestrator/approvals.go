@@ -83,17 +83,16 @@ func (s *Service) recordApprovalRequest(request harness.ApprovalRequest) {
 }
 
 func (s *Service) ResolveApproval(requestID string, decision string) error {
-	s.mu.RLock()
-	request, ok := s.approvals[requestID]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("approval request %q not found", requestID)
+	request, err := s.claimApprovalResolution(requestID)
+	if err != nil {
+		return err
 	}
 
 	if err := s.harness.Approve(context.Background(), harness.ApprovalDecision{
 		RequestID: requestID,
 		Decision:  decision,
 	}); err != nil {
+		s.restoreApprovalResolution(requestID)
 		s.recordRunEventByFields("error", s.source.Name, request.RunID, request.IssueIdentifier, "approval %s for %s failed: %v", decision, request.RunID, err)
 		return err
 	}
@@ -134,6 +133,34 @@ func (s *Service) ResolveApproval(requestID string, decision string) error {
 	return nil
 }
 
+func (s *Service) claimApprovalResolution(requestID string) (ApprovalView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	request, ok := s.approvals[requestID]
+	if !ok {
+		return ApprovalView{}, fmt.Errorf("approval request %q not found", requestID)
+	}
+	if !request.Resolvable {
+		return ApprovalView{}, fmt.Errorf("approval request %q is already being resolved", requestID)
+	}
+	request.Resolvable = false
+	s.approvals[requestID] = request
+	return request, nil
+}
+
+func (s *Service) restoreApprovalResolution(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	request, ok := s.approvals[requestID]
+	if !ok {
+		return
+	}
+	request.Resolvable = true
+	s.approvals[requestID] = request
+}
+
 func (s *Service) expireTimedOutApprovals(now time.Time) []ApprovalView {
 	timeout := s.agent.ApprovalTimeout.Duration
 	if timeout <= 0 {
@@ -152,6 +179,10 @@ func (s *Service) expireTimedOutApprovals(now time.Time) []ApprovalView {
 	for _, requestID := range s.approvalOrder {
 		approval, ok := s.approvals[requestID]
 		if !ok {
+			continue
+		}
+		if !approval.Resolvable {
+			kept = append(kept, requestID)
 			continue
 		}
 		if approval.RequestedAt.IsZero() || now.Before(approval.RequestedAt.Add(timeout)) {

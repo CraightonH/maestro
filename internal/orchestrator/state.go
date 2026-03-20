@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,7 +12,15 @@ import (
 func (s *Service) restoreState() error {
 	snapshot, err := s.stateStore.Load()
 	if err != nil {
-		return err
+		var corruptErr *state.CorruptStateError
+		if !errors.As(err, &corruptErr) {
+			return err
+		}
+		if corruptErr.ArchivedPath != "" {
+			s.logger.Warn("state file unreadable; archived and continuing with empty recovery metadata", "path", corruptErr.Path, "archived_path", corruptErr.ArchivedPath, "error", corruptErr.Err)
+		} else {
+			s.logger.Warn("state file unreadable; continuing with empty recovery metadata", "path", corruptErr.Path, "error", corruptErr.Err)
+		}
 	}
 	now := time.Now()
 
@@ -32,6 +41,9 @@ func (s *Service) restoreState() error {
 			ApprovalPolicy:  approval.ApprovalPolicy,
 			RequestedAt:     approval.RequestedAt,
 			Resolvable:      approval.Resolvable,
+		}
+		if !view.Resolvable {
+			view.Resolvable = true
 		}
 		s.approvals[view.RequestID] = view
 		s.approvalOrder = append(s.approvalOrder, view.RequestID)
@@ -199,7 +211,7 @@ func (s *Service) snapshotState() state.Snapshot {
 				ToolInput:       approval.ToolInput,
 				ApprovalPolicy:  approval.ApprovalPolicy,
 				RequestedAt:     approval.RequestedAt,
-				Resolvable:      approval.Resolvable,
+				Resolvable:      true,
 			})
 		}
 	}

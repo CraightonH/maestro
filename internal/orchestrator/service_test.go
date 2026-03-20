@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -853,6 +854,9 @@ func TestServiceKeepsApprovalPendingWhenApprovalFails(t *testing.T) {
 	if len(snapshot.PendingApprovals) != 1 {
 		t.Fatalf("pending approvals = %d, want 1", len(snapshot.PendingApprovals))
 	}
+	if !snapshot.PendingApprovals[0].Resolvable {
+		t.Fatal("expected failed approval request to remain resolvable")
+	}
 	if len(snapshot.ApprovalHistory) != 0 {
 		t.Fatalf("approval history = %d, want 0", len(snapshot.ApprovalHistory))
 	}
@@ -861,6 +865,96 @@ func TestServiceKeepsApprovalPendingWhenApprovalFails(t *testing.T) {
 	cancel()
 	if err := <-errCh; err != nil {
 		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceRejectsConcurrentApprovalResolve(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.AgentTypes[0].ApprovalPolicy = "manual"
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#56b", "team/project#56b"),
+	}
+	fakeHarness := &blockingApproveHarness{
+		FakeHarness: &testutil.FakeHarness{
+			WaitBlock:  make(chan struct{}),
+			ApprovalCh: make(chan harness.ApprovalRequest, 1),
+		},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun != nil
+	})
+
+	runID := svc.Snapshot().ActiveRun.ID
+	fakeHarness.ApprovalCh <- harness.ApprovalRequest{
+		RequestID:      "req-race",
+		RunID:          runID,
+		ToolName:       "shell",
+		ToolInput:      "echo hi",
+		ApprovalPolicy: "manual",
+		RequestedAt:    time.Now(),
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(svc.Snapshot().PendingApprovals) == 1
+	})
+
+	firstErrCh := make(chan error, 1)
+	go func() {
+		firstErrCh <- svc.ResolveApproval("req-race", "approve")
+	}()
+
+	<-fakeHarness.started
+
+	secondErr := svc.ResolveApproval("req-race", "approve")
+	if secondErr == nil || !strings.Contains(secondErr.Error(), "already being resolved") {
+		t.Fatalf("second resolve error = %v, want already being resolved", secondErr)
+	}
+
+	snapshot := svc.Snapshot()
+	if len(snapshot.PendingApprovals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(snapshot.PendingApprovals))
+	}
+	if snapshot.PendingApprovals[0].Resolvable {
+		t.Fatal("expected approval to be marked non-resolvable while first resolve is in progress")
+	}
+
+	close(fakeHarness.release)
+	if err := <-firstErrCh; err != nil {
+		t.Fatalf("first resolve approval: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return len(snapshot.PendingApprovals) == 0 && len(snapshot.ApprovalHistory) == 1
+	})
+
+	close(fakeHarness.WaitBlock)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+	if len(fakeHarness.Decisions) != 1 {
+		t.Fatalf("approval decisions = %+v, want exactly 1", fakeHarness.Decisions)
 	}
 }
 
@@ -1128,6 +1222,47 @@ func TestServiceFailsRecoveredRunWhenApprovalAlreadyTimedOut(t *testing.T) {
 	}
 	if !strings.Contains(finished.Error, "approval timeout") {
 		t.Fatalf("finished error = %q, want approval timeout", finished.Error)
+	}
+}
+
+func TestServiceStartsWithEmptyRecoveryStateWhenRunsFileIsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	cfg := testConfigWithRoot(t, root)
+	if err := os.MkdirAll(cfg.State.Dir, 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	runsPath := filepath.Join(cfg.State.Dir, "runs.json")
+	if err := os.WriteFile(runsPath, []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:    &testutil.FakeTracker{},
+		Harness:    &testutil.FakeHarness{},
+		Workspace:  workspace.NewManager(cfg.Workspace.Root),
+		StateStore: state.NewStore(cfg.State.Dir),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	snapshot := svc.Snapshot()
+	if snapshot.ActiveRun != nil {
+		t.Fatalf("active run = %+v, want nil", snapshot.ActiveRun)
+	}
+	if len(snapshot.Retries) != 0 || len(snapshot.PendingApprovals) != 0 {
+		t.Fatalf("snapshot = %+v, want empty recovery state", snapshot)
+	}
+
+	archived, err := filepath.Glob(runsPath + ".corrupt.*")
+	if err != nil {
+		t.Fatalf("glob corrupt archive: %v", err)
+	}
+	if len(archived) != 1 {
+		t.Fatalf("archived runs files = %v, want 1", archived)
+	}
+	if _, statErr := os.Stat(runsPath); !os.IsNotExist(statErr) {
+		t.Fatalf("runs.json stat error = %v, want not exists", statErr)
 	}
 }
 
@@ -1585,4 +1720,17 @@ func (f *failingLifecycleTracker) PostOperationalComment(ctx context.Context, is
 		return f.commentErr
 	}
 	return f.FakeTracker.PostOperationalComment(ctx, issueID, body)
+}
+
+type blockingApproveHarness struct {
+	*testutil.FakeHarness
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingApproveHarness) Approve(ctx context.Context, decision harness.ApprovalDecision) error {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.FakeHarness.Approve(ctx, decision)
 }

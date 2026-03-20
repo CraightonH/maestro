@@ -3,6 +3,8 @@ package state
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -11,6 +13,30 @@ import (
 )
 
 const currentVersion = 3
+const backupCount = 2
+
+type CorruptStateError struct {
+	Path         string
+	ArchivedPath string
+	Err          error
+}
+
+func (e *CorruptStateError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.ArchivedPath != "" {
+		return fmt.Sprintf("state file %s is unreadable or invalid; archived at %s: %v", e.Path, e.ArchivedPath, e.Err)
+	}
+	return fmt.Sprintf("state file %s is unreadable or invalid: %v", e.Path, e.Err)
+}
+
+func (e *CorruptStateError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
 
 type TerminalIssue struct {
 	IssueID        string           `json:"issue_id"`
@@ -131,12 +157,23 @@ func (s *Store) Load() (Snapshot, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return emptySnapshot(), nil
 		}
-		return Snapshot{}, err
+		return emptySnapshot(), &CorruptStateError{Path: s.path, Err: err}
 	}
 
 	snapshot := emptySnapshot()
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		return Snapshot{}, err
+		archivedPath, archiveErr := s.archiveCorruptFile()
+		if archiveErr != nil {
+			return emptySnapshot(), &CorruptStateError{
+				Path: s.path,
+				Err:  fmt.Errorf("decode state: %w; archive corrupt file: %v", err, archiveErr),
+			}
+		}
+		return emptySnapshot(), &CorruptStateError{
+			Path:         s.path,
+			ArchivedPath: archivedPath,
+			Err:          fmt.Errorf("decode state: %w", err),
+		}
 	}
 	if snapshot.Version == 0 {
 		snapshot.Version = currentVersion
@@ -198,6 +235,9 @@ func (s *Store) Save(snapshot Snapshot) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	if err := s.rotateBackups(); err != nil {
+		return err
+	}
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		return err
 	}
@@ -215,4 +255,57 @@ func emptySnapshot() Snapshot {
 		PendingMessages:  []PersistedMessageRequest{},
 		MessageHistory:   []PersistedMessageReply{},
 	}
+}
+
+func (s *Store) rotateBackups() error {
+	if _, err := os.Stat(s.path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	lastBackup := s.backupPath(backupCount)
+	if err := os.Remove(lastBackup); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for i := backupCount - 1; i >= 1; i-- {
+		current := s.backupPath(i)
+		next := s.backupPath(i + 1)
+		if err := os.Rename(current, next); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return copyFile(s.path, s.backupPath(1))
+}
+
+func (s *Store) archiveCorruptFile() (string, error) {
+	archivedPath := fmt.Sprintf("%s.corrupt.%d", s.path, time.Now().UTC().UnixNano())
+	if err := os.Rename(s.path, archivedPath); err != nil {
+		return "", err
+	}
+	return archivedPath, nil
+}
+
+func (s *Store) backupPath(index int) string {
+	return fmt.Sprintf("%s.%d", s.path, index)
+}
+
+func copyFile(source string, destination string) error {
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer output.Close()
+
+	if _, err := io.Copy(output, input); err != nil {
+		return err
+	}
+	return output.Close()
 }
