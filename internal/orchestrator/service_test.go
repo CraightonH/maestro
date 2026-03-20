@@ -345,6 +345,51 @@ func TestServiceStopsRetryingAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestServiceUsesSourceRetryMaxAttemptsOverride(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.State.MaxAttempts = 5
+	cfg.Sources[0].MaxAttempts = 2
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#100b", "team/project#100b"),
+	}
+	fakeHarness := &testutil.FakeHarness{
+		WaitErrs: []error{errors.New("boom"), errors.New("boom again")},
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 2 && svc.Snapshot().ActiveRun == nil
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	if got := len(fakeHarness.StartedRuns); got != 2 {
+		t.Fatalf("started runs = %d, want 2", got)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func TestServiceStopsActiveRunOnShutdown(t *testing.T) {
 	cfg := testConfig(t)
 	repoURL := createGitRepo(t)

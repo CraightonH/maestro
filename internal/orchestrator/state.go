@@ -392,7 +392,7 @@ func (s *Service) takeAttempt(issue domain.Issue) int {
 
 func (s *Service) scheduleRetry(run *domain.AgentRun, err error) bool {
 	nextAttempt := run.Attempt + 1
-	if nextAttempt >= s.cfg.State.MaxAttempts {
+	if nextAttempt >= s.source.EffectiveMaxAttempts(s.cfg.State) {
 		return false
 	}
 
@@ -412,11 +412,11 @@ func (s *Service) retryBackoff(attempt int) time.Duration {
 		return 0
 	}
 
-	backoff := s.cfg.State.RetryBase.Duration
+	backoff := s.source.EffectiveRetryBase(s.cfg.State)
 	for i := 1; i < attempt; i++ {
 		backoff *= 2
-		if backoff >= s.cfg.State.MaxRetryBackoff.Duration {
-			return s.cfg.State.MaxRetryBackoff.Duration
+		if backoff >= s.source.EffectiveMaxRetryBackoff(s.cfg.State) {
+			return s.source.EffectiveMaxRetryBackoff(s.cfg.State)
 		}
 	}
 	return backoff

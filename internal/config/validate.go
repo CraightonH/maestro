@@ -148,6 +148,15 @@ func ValidateMVP(cfg *Config) error {
 				return fmt.Errorf("source %q: %w", source.Name, err)
 			}
 		}
+		if source.EffectiveRetryBase(cfg.State) <= 0 {
+			return fmt.Errorf("source %q retry_base must be greater than zero", source.Name)
+		}
+		if source.EffectiveMaxRetryBackoff(cfg.State) < source.EffectiveRetryBase(cfg.State) {
+			return fmt.Errorf("source %q max_retry_backoff must be at least retry_base", source.Name)
+		}
+		if source.EffectiveMaxAttempts(cfg.State) < 1 {
+			return fmt.Errorf("source %q max_attempts must be at least 1", source.Name)
+		}
 	}
 	if strings.TrimSpace(cfg.State.Dir) == "" {
 		return fmt.Errorf("state dir is required")

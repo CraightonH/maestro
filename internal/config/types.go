@@ -69,13 +69,16 @@ type SourceDefaultsConfig struct {
 }
 
 type SourceDefaultsEntry struct {
-	Connection   SourceConnection `yaml:"connection"`
-	Repo         string           `yaml:"repo"`
-	Filter       FilterConfig     `yaml:"filter"`
-	EpicFilter   FilterConfig     `yaml:"epic_filter"`
-	IssueFilter  FilterConfig     `yaml:"issue_filter"`
-	AgentType    string           `yaml:"agent_type"`
-	PollInterval Duration         `yaml:"poll_interval"`
+	Connection      SourceConnection `yaml:"connection"`
+	Repo            string           `yaml:"repo"`
+	Filter          FilterConfig     `yaml:"filter"`
+	EpicFilter      FilterConfig     `yaml:"epic_filter"`
+	IssueFilter     FilterConfig     `yaml:"issue_filter"`
+	AgentType       string           `yaml:"agent_type"`
+	PollInterval    Duration         `yaml:"poll_interval"`
+	RetryBase       Duration         `yaml:"retry_base"`
+	MaxRetryBackoff Duration         `yaml:"max_retry_backoff"`
+	MaxAttempts     int              `yaml:"max_attempts"`
 }
 
 type AgentDefaultsConfig struct {
@@ -102,17 +105,20 @@ type UserConfig struct {
 }
 
 type SourceConfig struct {
-	Name         string           `yaml:"name"`
-	DisplayGroup string           `yaml:"display_group"`
-	Tags         []string         `yaml:"tags"`
-	Tracker      string           `yaml:"tracker"`
-	Connection   SourceConnection `yaml:"connection"`
-	Repo         string           `yaml:"repo"`
-	Filter       FilterConfig     `yaml:"filter"`
-	EpicFilter   FilterConfig     `yaml:"epic_filter"`
-	IssueFilter  FilterConfig     `yaml:"issue_filter"`
-	AgentType    string           `yaml:"agent_type"`
-	PollInterval Duration         `yaml:"poll_interval"`
+	Name            string           `yaml:"name"`
+	DisplayGroup    string           `yaml:"display_group"`
+	Tags            []string         `yaml:"tags"`
+	Tracker         string           `yaml:"tracker"`
+	Connection      SourceConnection `yaml:"connection"`
+	Repo            string           `yaml:"repo"`
+	Filter          FilterConfig     `yaml:"filter"`
+	EpicFilter      FilterConfig     `yaml:"epic_filter"`
+	IssueFilter     FilterConfig     `yaml:"issue_filter"`
+	AgentType       string           `yaml:"agent_type"`
+	PollInterval    Duration         `yaml:"poll_interval"`
+	RetryBase       Duration         `yaml:"retry_base"`
+	MaxRetryBackoff Duration         `yaml:"max_retry_backoff"`
+	MaxAttempts     int              `yaml:"max_attempts"`
 }
 
 type SourceConnection struct {
@@ -203,6 +209,27 @@ type LoggingConfig struct {
 	Level    string `yaml:"level"`
 	Dir      string `yaml:"dir"`
 	MaxFiles int    `yaml:"max_files"`
+}
+
+func (s SourceConfig) EffectiveRetryBase(state StateConfig) time.Duration {
+	if s.RetryBase.Duration > 0 {
+		return s.RetryBase.Duration
+	}
+	return state.RetryBase.Duration
+}
+
+func (s SourceConfig) EffectiveMaxRetryBackoff(state StateConfig) time.Duration {
+	if s.MaxRetryBackoff.Duration > 0 {
+		return s.MaxRetryBackoff.Duration
+	}
+	return state.MaxRetryBackoff.Duration
+}
+
+func (s SourceConfig) EffectiveMaxAttempts(state StateConfig) int {
+	if s.MaxAttempts > 0 {
+		return s.MaxAttempts
+	}
+	return state.MaxAttempts
 }
 
 func expandPath(path string) (string, error) {

@@ -370,6 +370,12 @@ Fields:
   - Name of the agent type definition to use for issues from this source.
 - `poll_interval` (duration string, optional)
   - Override the global poll interval for this source. Examples: `30s`, `2m`.
+- `retry_base` (duration string, optional)
+  - Override the global failure retry base delay for this source.
+- `max_retry_backoff` (duration string, optional)
+  - Override the global maximum failure retry backoff for this source.
+- `max_attempts` (integer, optional)
+  - Override the global maximum number of attempts for issues from this source.
 
 #### 4.1.4 Channel Definition
 
@@ -551,6 +557,7 @@ sources:
       assignee: $MAESTRO_USER
     agent_type: firewall
     poll_interval: 30s
+    max_attempts: 2
 
   - name: platform-dev
     tracker: gitlab
@@ -562,6 +569,8 @@ sources:
       labels: [ready-for-dev]
     agent_type: code-pr
     poll_interval: 60s
+    retry_base: 30s
+    max_retry_backoff: 10m
 
   - name: personal-linear
     tracker: linear
@@ -922,6 +931,20 @@ Two retry modes:
   a short delay (1-5 seconds) to re-check and potentially start a new session.
 - **Failure retry**: agent failed, timed out, or stalled. Retry with exponential backoff:
   `base * 2^(attempt-1)`, capped at `max_retry_backoff`. Default base: 10s. Default cap: 5m.
+
+Retry policy defaults come from global state config:
+
+- `state.retry_base`
+- `state.max_retry_backoff`
+- `state.max_attempts`
+
+Each source may override those values with:
+
+- `sources[].retry_base`
+- `sources[].max_retry_backoff`
+- `sources[].max_attempts`
+
+If a source override is omitted, Maestro falls back to the corresponding global state value.
 
 Retry scheduling adds the issue to the retry queue with a `due_at` timestamp. The retry timer
 fires on the next tick after `due_at`.

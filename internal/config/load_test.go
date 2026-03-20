@@ -384,6 +384,95 @@ logging:
 	}
 }
 
+func TestLoadAppliesSourceRetryDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	promptPath := filepath.Join(promptDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+source_defaults:
+  gitlab:
+    retry_base: 30s
+    max_retry_backoff: 10m
+    max_attempts: 4
+user:
+  name: TJ
+  gitlab_username: tj
+sources:
+  - name: inherited
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+  - name: override
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    retry_base: 45s
+    max_retry_backoff: 15m
+    max_attempts: 5
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: manual
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got, want := cfg.Sources[0].RetryBase.Duration, 30*time.Second; got != want {
+		t.Fatalf("source retry base = %s, want %s", got, want)
+	}
+	if got, want := cfg.Sources[0].MaxRetryBackoff.Duration, 10*time.Minute; got != want {
+		t.Fatalf("source max retry backoff = %s, want %s", got, want)
+	}
+	if got, want := cfg.Sources[0].MaxAttempts, 4; got != want {
+		t.Fatalf("source max attempts = %d, want %d", got, want)
+	}
+	if got, want := cfg.Sources[1].RetryBase.Duration, 45*time.Second; got != want {
+		t.Fatalf("override retry base = %s, want %s", got, want)
+	}
+	if got, want := cfg.Sources[1].MaxRetryBackoff.Duration, 15*time.Minute; got != want {
+		t.Fatalf("override max retry backoff = %s, want %s", got, want)
+	}
+	if got, want := cfg.Sources[1].MaxAttempts, 5; got != want {
+		t.Fatalf("override max attempts = %d, want %d", got, want)
+	}
+}
+
 func TestLoadMergesAgentPackDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "secret-token")
 

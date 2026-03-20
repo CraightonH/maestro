@@ -130,6 +130,9 @@ For larger configs, prefer:
 - `agent_defaults`
 
 Those defaults fill missing fields on each source or agent type without overriding explicit entries.
+That includes per-source retry policy fields like `retry_base`, `max_retry_backoff`, and
+`max_attempts`, so you can set global state defaults and only override the workflows that need
+different retry behavior.
 
 For large configs, `display_group` and `tags` are useful optional source metadata for the TUI and status views.
 

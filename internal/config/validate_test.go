@@ -652,6 +652,57 @@ func TestValidateMVPRejectsMalformedPromptTemplate(t *testing.T) {
 	}
 }
 
+func TestValidateMVPRejectsInvalidSourceRetryPolicy(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: config.DefaultsConfig{MaxConcurrentGlobal: 1, StallTimeout: config.Duration{Duration: time.Minute}},
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: 10 * time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:            "platform-dev",
+				Tracker:         "gitlab",
+				AgentType:       "triage",
+				RetryBase:       config.Duration{Duration: 2 * time.Minute},
+				MaxRetryBackoff: config.Duration{Duration: time.Minute},
+				Connection: config.SourceConnection{
+					BaseURL: "https://gitlab.example.com",
+					Project: "team/project",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:            "triage",
+				Harness:         "claude-code",
+				Workspace:       "git-clone",
+				Prompt:          promptPath,
+				ApprovalPolicy:  "manual",
+				ApprovalTimeout: config.Duration{Duration: time.Hour},
+				MaxConcurrent:   1,
+				StallTimeout:    config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "max_retry_backoff") {
+		t.Fatalf("validation error = %v, want source max_retry_backoff error", err)
+	}
+}
+
 func TestValidateMVPAcceptsMultipleSourcesAndAgents(t *testing.T) {
 	root := t.TempDir()
 	firstPrompt := filepath.Join(root, "prompt-1.md")

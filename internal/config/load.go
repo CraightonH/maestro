@@ -189,6 +189,15 @@ func mergeSourceDefaults(target *SourceConfig, defaults SourceDefaultsEntry) {
 	if target.PollInterval.Duration == 0 {
 		target.PollInterval = defaults.PollInterval
 	}
+	if target.RetryBase.Duration == 0 {
+		target.RetryBase = defaults.RetryBase
+	}
+	if target.MaxRetryBackoff.Duration == 0 {
+		target.MaxRetryBackoff = defaults.MaxRetryBackoff
+	}
+	if target.MaxAttempts == 0 {
+		target.MaxAttempts = defaults.MaxAttempts
+	}
 }
 
 func mergeFilterDefaults(target FilterConfig, defaults FilterConfig) FilterConfig {
