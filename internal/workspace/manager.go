@@ -52,6 +52,22 @@ func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentNam
 		return Prepared{}, err
 	}
 
+	branch := BranchName(agentName, issue.Identifier)
+
+	// Reuse existing workspace if it contains a valid git repo.
+	if isGitRepo(path) {
+		if !isGitRepoHealthy(ctx, path) {
+			// Repo is corrupt — safe to remove and re-clone.
+			_ = os.RemoveAll(path)
+		} else if err := reuseWorkspace(ctx, path, branch); err != nil {
+			// Repo is healthy but fetch/checkout failed (network, auth, conflict).
+			// Preserve the workspace and return the error — don't destroy local work.
+			return Prepared{}, fmt.Errorf("reuse workspace %s: %w", path, err)
+		} else {
+			return Prepared{Path: path, Branch: branch}, nil
+		}
+	}
+
 	repoURL := issue.Meta["repo_url"]
 	if strings.TrimSpace(repoURL) == "" {
 		return Prepared{}, fmt.Errorf("issue %q missing repo_url metadata", issue.Identifier)
@@ -71,13 +87,36 @@ func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentNam
 		return Prepared{}, err
 	}
 
-	branch := BranchName(agentName, issue.Identifier)
 	if err := runGit(ctx, path, "checkout", "-b", branch); err != nil {
 		return Prepared{}, err
 	}
 
 	cleanupOnError = false
 	return Prepared{Path: path, Branch: branch}, nil
+}
+
+func isGitRepo(path string) bool {
+	info, err := os.Stat(filepath.Join(path, ".git"))
+	return err == nil && info.IsDir()
+}
+
+func isGitRepoHealthy(ctx context.Context, path string) bool {
+	return runGit(ctx, path, "rev-parse", "--git-dir") == nil
+}
+
+func reuseWorkspace(ctx context.Context, path string, branch string) error {
+	// Fetch latest from all remotes.
+	if err := runGit(ctx, path, "fetch", "--all", "--prune"); err != nil {
+		return err
+	}
+
+	// If the agent branch exists locally, check it out.
+	if err := runGit(ctx, path, "rev-parse", "--verify", branch); err == nil {
+		return runGit(ctx, path, "checkout", branch)
+	}
+
+	// Branch doesn't exist locally — create it.
+	return runGit(ctx, path, "checkout", "-b", branch)
 }
 
 func (m *Manager) PrepareEmpty(issue domain.Issue) (Prepared, error) {
@@ -100,10 +139,10 @@ func (m *Manager) PrepareEmpty(issue domain.Issue) (Prepared, error) {
 }
 
 func (m *Manager) PopulateHarnessConfig(workspacePath string, claudeDir string, codexDir string) error {
-	if err := copyOptionalDir(claudeDir, filepath.Join(workspacePath, ".claude")); err != nil {
+	if err := copyOptionalDirIfMissing(claudeDir, filepath.Join(workspacePath, ".claude")); err != nil {
 		return err
 	}
-	if err := copyOptionalDir(codexDir, filepath.Join(workspacePath, ".codex")); err != nil {
+	if err := copyOptionalDirIfMissing(codexDir, filepath.Join(workspacePath, ".codex")); err != nil {
 		return err
 	}
 	return nil
@@ -147,6 +186,17 @@ func resetWorkspacePath(path string) error {
 		}
 	}
 	return nil
+}
+
+func copyOptionalDirIfMissing(source string, destination string) error {
+	if strings.TrimSpace(source) == "" {
+		return nil
+	}
+	// Skip if destination already exists (workspace reuse).
+	if _, err := os.Stat(destination); err == nil {
+		return nil
+	}
+	return copyOptionalDir(source, destination)
 }
 
 func copyOptionalDir(source string, destination string) error {

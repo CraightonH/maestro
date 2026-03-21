@@ -55,6 +55,7 @@ type RetryEntry struct {
 	DueAt          time.Time `json:"due_at"`
 	Error          string    `json:"error,omitempty"`
 	IssueUpdatedAt time.Time `json:"issue_updated_at,omitempty"`
+	WorkspacePath  string    `json:"workspace_path,omitempty"`
 }
 
 type PersistedRun struct {

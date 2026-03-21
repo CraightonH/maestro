@@ -403,6 +403,7 @@ func (s *Service) scheduleRetry(run *domain.AgentRun, err error) bool {
 		DueAt:          time.Now().Add(s.retryBackoff(nextAttempt)),
 		Error:          sanitizeOutput(err.Error()),
 		IssueUpdatedAt: run.Issue.UpdatedAt,
+		WorkspacePath:  run.WorkspacePath,
 	}
 	return true
 }

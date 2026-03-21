@@ -157,7 +157,7 @@ func TestPopulateHarnessConfigCopiesClaudeAndCodexDirs(t *testing.T) {
 	}
 }
 
-func TestPopulateHarnessConfigRejectsExistingDestination(t *testing.T) {
+func TestPopulateHarnessConfigSkipsExistingDestination(t *testing.T) {
 	root := t.TempDir()
 	manager := workspace.NewManager(filepath.Join(root, "workspaces"))
 	prepared, err := manager.PrepareEmpty(domain.Issue{Identifier: "OPS-100"})
@@ -169,16 +169,33 @@ func TestPopulateHarnessConfigRejectsExistingDestination(t *testing.T) {
 	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		t.Fatalf("mkdir claude dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("claude"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(claudeDir, "CLAUDE.md"), []byte("new-content"), 0o644); err != nil {
 		t.Fatalf("write claude file: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(prepared.Path, ".claude"), 0o755); err != nil {
+
+	// Pre-create destination with existing content.
+	existingClaude := filepath.Join(prepared.Path, ".claude")
+	if err := os.MkdirAll(existingClaude, 0o755); err != nil {
 		t.Fatalf("mkdir destination: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(existingClaude, "existing.md"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
 
-	err = manager.PopulateHarnessConfig(prepared.Path, claudeDir, "")
-	if err == nil || !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("populate error = %v, want existing destination error", err)
+	// Should succeed without overwriting existing content.
+	if err := manager.PopulateHarnessConfig(prepared.Path, claudeDir, ""); err != nil {
+		t.Fatalf("populate harness config: %v", err)
+	}
+
+	// Existing content preserved.
+	content, err := os.ReadFile(filepath.Join(existingClaude, "existing.md"))
+	if err != nil || string(content) != "old" {
+		t.Fatalf("existing file content = %q, err = %v; want 'old'", content, err)
+	}
+
+	// New content was NOT copied over (skip, not merge).
+	if _, err := os.Stat(filepath.Join(existingClaude, "CLAUDE.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected new file to NOT be copied into existing dir, stat err = %v", err)
 	}
 }
 
@@ -230,6 +247,119 @@ func TestPopulateHarnessConfigRejectsSymlinkSource(t *testing.T) {
 	err = manager.PopulateHarnessConfig(prepared.Path, linkPath, "")
 	if err == nil || !strings.Contains(err.Error(), "must not be a symlink") {
 		t.Fatalf("populate error = %v, want symlink error", err)
+	}
+}
+
+func TestPrepareCloneReusesExistingWorkspace(t *testing.T) {
+	repoURL := createSeedRepo(t)
+	root := t.TempDir()
+	manager := workspace.NewManager(filepath.Join(root, "workspaces"))
+
+	issue := domain.Issue{
+		Identifier: "team/project#50",
+		Meta:       map[string]string{"repo_url": repoURL},
+	}
+
+	// First prepare: fresh clone.
+	first, err := manager.Prepare(context.Background(), issue, "coder")
+	if err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+
+	// Simulate agent work: commit a file on the branch.
+	runGitForWorkspace(t, first.Path, "-c", "user.name=Agent", "-c", "user.email=a@test.com",
+		"commit", "--allow-empty", "-m", "agent work")
+	firstHead := gitOutput(t, first.Path, "rev-parse", "HEAD")
+
+	// Second prepare: should reuse workspace and preserve the commit.
+	second, err := manager.Prepare(context.Background(), issue, "coder")
+	if err != nil {
+		t.Fatalf("second prepare: %v", err)
+	}
+
+	if second.Path != first.Path {
+		t.Fatalf("workspace path changed: %q → %q", first.Path, second.Path)
+	}
+
+	secondHead := gitOutput(t, second.Path, "rev-parse", "HEAD")
+	if secondHead != firstHead {
+		t.Fatalf("HEAD changed on reuse: %q → %q (agent work lost)", firstHead, secondHead)
+	}
+
+	branch := gitOutput(t, second.Path, "branch", "--show-current")
+	if branch != "maestro/coder/team_project_50" {
+		t.Fatalf("branch = %q after reuse", branch)
+	}
+}
+
+func TestPrepareClonePreservesWorkspaceOnTransientReuseFailure(t *testing.T) {
+	repoURL := createSeedRepo(t)
+	root := t.TempDir()
+	manager := workspace.NewManager(filepath.Join(root, "workspaces"))
+
+	issue := domain.Issue{
+		Identifier: "team/project#52",
+		Meta:       map[string]string{"repo_url": repoURL},
+	}
+
+	// First prepare: fresh clone.
+	first, err := manager.Prepare(context.Background(), issue, "coder")
+	if err != nil {
+		t.Fatalf("first prepare: %v", err)
+	}
+
+	// Simulate agent work: commit a file on the branch.
+	runGitForWorkspace(t, first.Path, "-c", "user.name=Agent", "-c", "user.email=a@test.com",
+		"commit", "--allow-empty", "-m", "agent work")
+	agentHead := gitOutput(t, first.Path, "rev-parse", "HEAD")
+
+	// Break the remote so fetch fails (simulates network/auth failure).
+	runGitForWorkspace(t, first.Path, "remote", "set-url", "origin", "https://invalid.example.com/broken.git")
+
+	// Second prepare: should fail but NOT destroy the workspace.
+	_, err = manager.Prepare(context.Background(), issue, "coder")
+	if err == nil {
+		t.Fatal("expected reuse failure due to broken remote")
+	}
+	if !strings.Contains(err.Error(), "reuse workspace") {
+		t.Fatalf("expected reuse workspace error, got: %v", err)
+	}
+
+	// Workspace must still exist with the agent's commit intact.
+	if _, statErr := os.Stat(filepath.Join(first.Path, ".git")); statErr != nil {
+		t.Fatalf("workspace destroyed after transient failure: %v", statErr)
+	}
+	currentHead := gitOutput(t, first.Path, "rev-parse", "HEAD")
+	if currentHead != agentHead {
+		t.Fatalf("agent work lost: HEAD was %s, now %s", agentHead, currentHead)
+	}
+}
+
+func TestPrepareCloneFallsBackOnCorruptGitRepo(t *testing.T) {
+	repoURL := createSeedRepo(t)
+	root := t.TempDir()
+	manager := workspace.NewManager(filepath.Join(root, "workspaces"))
+
+	issue := domain.Issue{
+		Identifier: "team/project#51",
+		Meta:       map[string]string{"repo_url": repoURL},
+	}
+
+	// Create a workspace with a broken .git directory.
+	wsPath := filepath.Join(root, "workspaces", workspace.WorkspaceKey(issue.Identifier))
+	if err := os.MkdirAll(filepath.Join(wsPath, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// Prepare should fall back to fresh clone.
+	prepared, err := manager.Prepare(context.Background(), issue, "coder")
+	if err != nil {
+		t.Fatalf("prepare after corrupt: %v", err)
+	}
+
+	branch := gitOutput(t, prepared.Path, "branch", "--show-current")
+	if branch != "maestro/coder/team_project_51" {
+		t.Fatalf("branch = %q after fallback clone", branch)
 	}
 }
 

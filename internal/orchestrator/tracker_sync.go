@@ -86,6 +86,41 @@ func (s *Service) applyTrackerLifecycle(ctx context.Context, issueID string, add
 	}
 }
 
+// applyDispatchLifecycle applies lifecycle labels and state changes when dispatching an issue.
+// When transition is nil or has no explicit labels, falls back to the default: add {prefix}:active
+// and remove {prefix}:retry/done/failed. When transition provides explicit labels, only those are used.
+func (s *Service) applyDispatchLifecycle(ctx context.Context, issueID string, transition *config.DispatchTransition, prefix string, run *domain.AgentRun) {
+	activeLabel := trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixActive)
+
+	comment := fmt.Sprintf(
+		"Maestro started workflow %s for %s with %s (attempt %d, run %s).",
+		run.SourceName, run.Issue.Identifier, run.AgentName, run.Attempt+1, run.ID,
+	)
+
+	if transition != nil && (transition.AddLabels != nil || transition.RemoveLabels != nil) {
+		add := transition.AddLabels
+		remove := transition.RemoveLabels
+		s.applyTrackerLifecycle(ctx, issueID, add, remove, comment)
+	} else {
+		// Default behavior: add active, remove the other lifecycle labels.
+		s.applyTrackerLifecycle(ctx, issueID,
+			[]string{activeLabel},
+			[]string{
+				trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixRetry),
+				trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixDone),
+				trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixFailed),
+			},
+			comment,
+		)
+	}
+
+	if transition != nil && strings.TrimSpace(transition.State) != "" {
+		if err := s.tracker.UpdateIssueState(ctx, issueID, transition.State); err != nil {
+			s.recordEvent("warn", "update issue state on dispatch for %s failed: %v", issueID, err)
+		}
+	}
+}
+
 // applyTerminalLifecycle applies a configurable lifecycle transition on completion or failure.
 // When transition is nil, it falls back to the default behavior: remove {prefix}:active and
 // add the provided defaultAdd label (typically {prefix}:done or {prefix}:failed).

@@ -19,6 +19,25 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 	if s.limiter != nil && !s.limiter.TryAcquire() {
 		return nil
 	}
+
+	// Re-fetch the issue to verify it's still active before committing to dispatch.
+	refreshed, err := s.tracker.Get(ctx, issue.ID)
+	if err != nil {
+		s.recordSourceEvent("warn", s.source.Name, "dispatch guard refresh failed for %s: %v", issue.Identifier, err)
+		if s.limiter != nil {
+			s.limiter.Release()
+		}
+		return nil
+	}
+	if trackerbase.IsTerminal(refreshed) || !trackerbase.MatchesFilterWithPrefix(refreshed, s.source.EffectiveIssueFilter(), s.labelPrefix()) {
+		s.recordSourceEvent("info", s.source.Name, "dispatch guard: %s no longer eligible", issue.Identifier)
+		if s.limiter != nil {
+			s.limiter.Release()
+		}
+		return nil
+	}
+	issue = refreshed
+
 	attempt := s.takeAttempt(issue)
 	startedAt := time.Now()
 	run := &domain.AgentRun{
@@ -47,27 +66,7 @@ func (s *Service) dispatch(ctx context.Context, issue domain.Issue) error {
 	prefix := s.labelPrefix()
 	dispatchTransition := config.ResolveDispatchTransition(s.cfg.Defaults.OnDispatch, s.source.OnDispatch)
 	s.recordRunEvent(run, "info", "dispatching %s to %s", issue.Identifier, run.AgentName)
-	s.applyTrackerLifecycle(ctx, issue.ID,
-		[]string{trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixActive)},
-		[]string{
-			trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixRetry),
-			trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixDone),
-			trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixFailed),
-		},
-		fmt.Sprintf(
-			"Maestro started workflow %s for %s with %s (attempt %d, run %s).",
-			run.SourceName,
-			run.Issue.Identifier,
-			run.AgentName,
-			run.Attempt+1,
-			run.ID,
-		),
-	)
-	if dispatchTransition != nil && strings.TrimSpace(dispatchTransition.State) != "" {
-		if err := s.tracker.UpdateIssueState(ctx, issue.ID, dispatchTransition.State); err != nil {
-			s.recordEvent("warn", "update issue state on dispatch for %s failed: %v", issue.ID, err)
-		}
-	}
+	s.applyDispatchLifecycle(ctx, issue.ID, dispatchTransition, prefix, run)
 	s.refreshActiveRunIssue(ctx, run.ID)
 
 	s.runWG.Add(1)

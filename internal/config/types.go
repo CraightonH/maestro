@@ -91,7 +91,9 @@ type LifecycleTransition struct {
 }
 
 type DispatchTransition struct {
-	State string `yaml:"state"`
+	AddLabels    []string `yaml:"add_labels"`
+	RemoveLabels []string `yaml:"remove_labels"`
+	State        string   `yaml:"state"`
 }
 
 type SourceDefaultsConfig struct {
@@ -434,6 +436,12 @@ func cloneDispatchTransition(src *DispatchTransition) *DispatchTransition {
 		return nil
 	}
 	cloned := *src
+	if src.AddLabels != nil {
+		cloned.AddLabels = append([]string{}, src.AddLabels...)
+	}
+	if src.RemoveLabels != nil {
+		cloned.RemoveLabels = append([]string{}, src.RemoveLabels...)
+	}
 	return &cloned
 }
 
@@ -461,6 +469,12 @@ func ResolveDispatchTransition(defaults *DispatchTransition, override *DispatchT
 	merged := cloneDispatchTransition(defaults)
 	if override == nil {
 		return merged
+	}
+	if override.AddLabels != nil {
+		merged.AddLabels = append([]string{}, override.AddLabels...)
+	}
+	if override.RemoveLabels != nil {
+		merged.RemoveLabels = append([]string{}, override.RemoveLabels...)
 	}
 	if override.State != "" {
 		merged.State = override.State
