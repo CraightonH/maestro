@@ -87,12 +87,24 @@ func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentNam
 		return Prepared{}, err
 	}
 
-	if err := runGit(ctx, path, "checkout", "-b", branch); err != nil {
+	if err := checkoutOrCreateBranch(ctx, path, branch); err != nil {
 		return Prepared{}, err
 	}
 
 	cleanupOnError = false
 	return Prepared{Path: path, Branch: branch}, nil
+}
+
+// checkoutOrCreateBranch checks out an existing branch (local or remote-tracking)
+// or creates a new one. This handles the case where a different Maestro instance
+// already pushed work on this branch.
+func checkoutOrCreateBranch(ctx context.Context, path string, branch string) error {
+	// Try checking out an existing local or remote-tracking branch.
+	if err := runGit(ctx, path, "checkout", branch); err == nil {
+		return nil
+	}
+	// Branch doesn't exist — create it.
+	return runGit(ctx, path, "checkout", "-b", branch)
 }
 
 func isGitRepo(path string) bool {
@@ -109,14 +121,7 @@ func reuseWorkspace(ctx context.Context, path string, branch string) error {
 	if err := runGit(ctx, path, "fetch", "--all", "--prune"); err != nil {
 		return err
 	}
-
-	// If the agent branch exists locally, check it out.
-	if err := runGit(ctx, path, "rev-parse", "--verify", branch); err == nil {
-		return runGit(ctx, path, "checkout", branch)
-	}
-
-	// Branch doesn't exist locally — create it.
-	return runGit(ctx, path, "checkout", "-b", branch)
+	return checkoutOrCreateBranch(ctx, path, branch)
 }
 
 func (m *Manager) PrepareEmpty(issue domain.Issue) (Prepared, error) {

@@ -63,6 +63,26 @@ query($id: String!) {
   }
 }`
 
+const teamStatesQuery = `
+query($teamId: ID!) {
+  team(id: $teamId) {
+    states {
+      nodes {
+        id
+        name
+        type
+      }
+    }
+  }
+}`
+
+const issueUpdateStateMutation = `
+mutation($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+  }
+}`
+
 const issueLabelsQuery = `
 query($teamId: ID!, $after: String) {
   issueLabels(first: 50, after: $after, filter: { team: { id: { eq: $teamId } } }) {
@@ -117,6 +137,9 @@ type Adapter struct {
 
 	projectID       string
 	projectResolved bool
+
+	// teamStates maps team ID → (normalized state name → state ID).
+	teamStates map[string]map[string]string
 }
 
 type issuesResponse struct {
@@ -300,10 +323,90 @@ func (a *Adapter) RemoveLifecycleLabel(ctx context.Context, issueID string, labe
 	return a.updateLifecycleLabel(ctx, issueID, label, issueRemoveLabelMutation)
 }
 
-// UpdateIssueState is a no-op for Linear; changing workflow states requires
-// looking up team-specific workflow state IDs via GraphQL which is deferred.
-func (a *Adapter) UpdateIssueState(_ context.Context, _ string, _ string) error {
-	return nil
+func (a *Adapter) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
+	externalID, err := parseLinearIssueID(issueID)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the team ID from the issue itself so we always query the
+	// correct team's workflow states, even in multi-team projects.
+	teamID, err := a.resolveTeamIDForIssue(ctx, externalID)
+	if err != nil {
+		return fmt.Errorf("resolve team for issue %s: %w", issueID, err)
+	}
+
+	stateID, err := a.resolveStateID(ctx, teamID, stateName)
+	if err != nil {
+		return fmt.Errorf("resolve state %q: %w", stateName, err)
+	}
+
+	return a.client.query(ctx, issueUpdateStateMutation, map[string]any{
+		"issueId": externalID,
+		"stateId": stateID,
+	}, nil)
+}
+
+func (a *Adapter) resolveTeamIDForIssue(ctx context.Context, externalID string) (string, error) {
+	var resp issueResponse
+	if err := a.client.query(ctx, issueQuery, map[string]any{"id": externalID}, &resp); err != nil {
+		return "", err
+	}
+	if resp.Issue == nil {
+		return "", fmt.Errorf("issue %s not found", externalID)
+	}
+	tid := strings.TrimSpace(resp.Issue.Team.ID)
+	if tid == "" {
+		return "", fmt.Errorf("issue %s has no team", externalID)
+	}
+	return tid, nil
+}
+
+func (a *Adapter) resolveStateID(ctx context.Context, teamID string, stateName string) (string, error) {
+	normalizedName := strings.ToLower(strings.TrimSpace(stateName))
+
+	a.mu.Lock()
+	if cached, ok := a.teamStates[teamID]; ok {
+		a.mu.Unlock()
+		id, found := cached[normalizedName]
+		if !found {
+			return "", fmt.Errorf("workflow state %q not found for team %s", stateName, teamID)
+		}
+		return id, nil
+	}
+	a.mu.Unlock()
+
+	var resp struct {
+		Team struct {
+			States struct {
+				Nodes []struct {
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"nodes"`
+			} `json:"states"`
+		} `json:"team"`
+	}
+	if err := a.client.query(ctx, teamStatesQuery, map[string]any{"teamId": teamID}, &resp); err != nil {
+		return "", fmt.Errorf("fetch team states: %w", err)
+	}
+
+	states := make(map[string]string, len(resp.Team.States.Nodes))
+	for _, s := range resp.Team.States.Nodes {
+		states[strings.ToLower(strings.TrimSpace(s.Name))] = s.ID
+	}
+
+	a.mu.Lock()
+	if a.teamStates == nil {
+		a.teamStates = make(map[string]map[string]string)
+	}
+	a.teamStates[teamID] = states
+	a.mu.Unlock()
+
+	id, ok := states[normalizedName]
+	if !ok {
+		return "", fmt.Errorf("workflow state %q not found for team %s", stateName, teamID)
+	}
+	return id, nil
 }
 
 func (a *Adapter) normalizeIssue(item issueNode) domain.Issue {
