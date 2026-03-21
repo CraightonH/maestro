@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -968,6 +969,7 @@ func (s *Server) handleMessageAction(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Reply string `json:"reply"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
@@ -1042,6 +1044,7 @@ func (s *Server) handlePackSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
 	var req packSaveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, packSaveResponse{
@@ -1287,6 +1290,8 @@ func trimStrings(values []string) []string {
 	return result
 }
 
+var validationEnvMu sync.Mutex
+
 func (s *Server) withValidationEnv(fn func() error) error {
 	type restoreEntry struct {
 		key     string
@@ -1294,6 +1299,10 @@ func (s *Server) withValidationEnv(fn func() error) error {
 		existed bool
 	}
 	restores := []restoreEntry{}
+
+	validationEnvMu.Lock()
+	defer validationEnvMu.Unlock()
+
 	for _, source := range s.configSummary.Sources {
 		key := strings.TrimSpace(source.TokenEnv)
 		if key == "" {
@@ -1329,6 +1338,7 @@ func writeCollection[T any](w http.ResponseWriter, items []T) {
 
 func decodeConfigValidateRequest(w http.ResponseWriter, r *http.Request) (configValidateRequest, bool) {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
 	var req configValidateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{

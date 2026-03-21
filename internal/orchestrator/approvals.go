@@ -251,7 +251,7 @@ func approvalTimeoutFailureReason(approval ApprovalView) string {
 }
 
 func removeApprovalID(order []string, requestID string) []string {
-	out := order[:0]
+	out := make([]string, 0, len(order))
 	for _, candidate := range order {
 		if candidate != requestID {
 			out = append(out, candidate)

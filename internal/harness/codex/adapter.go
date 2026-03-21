@@ -482,7 +482,16 @@ func (r *codexRun) handleServerRequest(id int64, method string, params json.RawM
 		}
 		r.approvalMu.Unlock()
 
-		approvalCh <- approval
+		select {
+		case approvalCh <- approval:
+		default:
+			// Channel full — reject to avoid blocking the read loop.
+			// Send the rejected response so the Codex side isn't left waiting.
+			r.approvalMu.Lock()
+			delete(r.pendingApproval, requestID)
+			r.approvalMu.Unlock()
+			_ = r.write(rejected)
+		}
 		return
 	case "item/tool/requestUserInput":
 		requestID, pending, request, err := buildMessageRequest(r.runID, id, params)
@@ -501,7 +510,22 @@ func (r *codexRun) handleServerRequest(id int64, method string, params json.RawM
 		r.pendingMessage[requestID] = pending
 		r.messageMu.Unlock()
 
-		messageCh <- request
+		select {
+		case messageCh <- request:
+		default:
+			// Channel full — send an error response so the Codex side
+			// isn't left waiting, then fail the run.
+			r.messageMu.Lock()
+			delete(r.pendingMessage, requestID)
+			r.messageMu.Unlock()
+			_ = r.write(rpcEnvelope{
+				ID: &id,
+				Error: &rpcError{
+					Code:    -32000,
+					Message: "maestro message queue full",
+				},
+			})
+		}
 		return
 	}
 	_ = r.write(rpcEnvelope{

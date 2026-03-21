@@ -77,7 +77,7 @@ func (f *FakeTracker) RemoveLifecycleLabel(ctx context.Context, issueID string, 
 		if f.Issues[i].ID != issueID {
 			continue
 		}
-		filtered := f.Issues[i].Labels[:0]
+		filtered := make([]string, 0, len(f.Issues[i].Labels))
 		for _, existing := range f.Issues[i].Labels {
 			if existing != label {
 				filtered = append(filtered, existing)

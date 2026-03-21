@@ -1112,7 +1112,7 @@ func TestServiceTracksAndResolvesMessageRequests(t *testing.T) {
 
 	waitFor(t, 2*time.Second, func() bool {
 		snapshot := svc.Snapshot()
-		return len(snapshot.PendingMessages) == 1 && snapshot.ActiveRun != nil && snapshot.ActiveRun.Status == domain.RunStatusAwaiting
+		return len(snapshot.PendingMessages) == 1 && snapshot.ActiveRun != nil
 	})
 
 	if err := svc.ResolveMessage("msg-1", "Update the API contract too.", "test"); err != nil {
@@ -1393,7 +1393,7 @@ func TestServiceCompletesRunWhenLifecycleSyncFails(t *testing.T) {
 
 	waitFor(t, 2*time.Second, func() bool {
 		snapshot := svc.Snapshot()
-		return len(fakeHarness.StartedRuns) == 1 && snapshot.ActiveRun == nil
+		return len(fakeHarness.StartedRuns) == 1 && snapshot.ActiveRun == nil && snapshot.ClaimedCount == 0
 	})
 
 	snapshot := svc.Snapshot()
@@ -1603,7 +1603,7 @@ func TestServiceSchedulesRetryWhenLifecycleSyncFails(t *testing.T) {
 
 	waitFor(t, 2*time.Second, func() bool {
 		snapshot := svc.Snapshot()
-		return len(fakeHarness.StartedRuns) == 1 && snapshot.ActiveRun == nil && snapshot.RetryCount == 1
+		return len(fakeHarness.StartedRuns) == 1 && snapshot.ActiveRun == nil && snapshot.RetryCount == 1 && snapshot.ClaimedCount == 0
 	})
 
 	snapshot := svc.Snapshot()

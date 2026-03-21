@@ -92,7 +92,13 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		r.LastActivityAt = time.Now()
 	})
 
-	prepared, err := s.prepareWorkspace(ctx, run)
+	// Snapshot issue under lock to avoid data race with reconcileActiveRun
+	// which may mutate s.activeRun.Issue concurrently on the tick goroutine.
+	s.mu.RLock()
+	issue := snapshotIssue(run.Issue)
+	s.mu.RUnlock()
+
+	prepared, err := s.prepareWorkspaceForIssue(ctx, issue, run.AgentName)
 	if err != nil {
 		return fmt.Errorf("prepare workspace: %w", err)
 	}
@@ -116,7 +122,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		return err
 	}
 
-	renderedPrompt, err := s.renderPrompt(runtimeAgent, run.Issue, run.AgentName, run.Attempt, operatorInstruction)
+	renderedPrompt, err := s.renderPrompt(runtimeAgent, issue, run.AgentName, run.Attempt, operatorInstruction)
 	if err != nil {
 		return fmt.Errorf("render prompt: %w", err)
 	}
@@ -147,7 +153,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 	// Build multi-turn continuation function
 	var continuationFunc func(ctx context.Context, turnNumber int) (string, bool, error)
 	if runtimeAgent.Harness == "codex" && maxTurns > 1 {
-		issueID := run.Issue.ID
+		issueID := issue.ID
 		prefix := s.labelPrefix()
 		activeLabel := trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixActive)
 		sourceFilter := s.source.Filter
@@ -212,7 +218,7 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 		r.Status = domain.RunStatusActive
 		r.LastActivityAt = time.Now()
 	})
-	s.recordRunEvent(run, "info", "agent %s started for %s", run.AgentName, run.Issue.Identifier)
+	s.recordRunEvent(run, "info", "agent %s started for %s", run.AgentName, issue.Identifier)
 
 	if err := active.Wait(); err != nil {
 		s.runHookBestEffort(context.Background(), s.cfg.Hooks.AfterRun, prepared.Path, run, "after_run")
@@ -229,12 +235,24 @@ func (s *Service) prepareAndStart(ctx context.Context, run *domain.AgentRun) err
 	return nil
 }
 
-func (s *Service) prepareWorkspace(ctx context.Context, run *domain.AgentRun) (workspace.Prepared, error) {
+func snapshotIssue(issue domain.Issue) domain.Issue {
+	issue.Labels = append([]string(nil), issue.Labels...)
+	if issue.Meta != nil {
+		meta := make(map[string]string, len(issue.Meta))
+		for k, v := range issue.Meta {
+			meta[k] = v
+		}
+		issue.Meta = meta
+	}
+	return issue
+}
+
+func (s *Service) prepareWorkspaceForIssue(ctx context.Context, issue domain.Issue, agentName string) (workspace.Prepared, error) {
 	switch s.agent.Workspace {
 	case "git-clone":
-		return s.workspace.PrepareClone(ctx, run.Issue, run.AgentName)
+		return s.workspace.PrepareClone(ctx, issue, agentName)
 	case "none":
-		return s.workspace.PrepareEmpty(run.Issue)
+		return s.workspace.PrepareEmpty(issue)
 	default:
 		return workspace.Prepared{}, fmt.Errorf("unsupported workspace strategy %q", s.agent.Workspace)
 	}
@@ -375,10 +393,8 @@ func (s *Service) completeRun(runID string) {
 	s.recordRunEventByFields("info", s.source.Name, runID, issueIdentifier, "run %s completed", runID)
 	if issueID != "" {
 		if status == domain.RunStatusFailed {
-			// Stopped with failed status — use on_failure if configured, else default
 			s.applyTerminalLifecycle(context.Background(), issueID, onFailure, prefix, failedLabel, comment)
 		} else {
-			// Success — use on_complete if configured, else default
 			s.applyTerminalLifecycle(context.Background(), issueID, onComplete, prefix, doneLabel, comment)
 		}
 		s.refreshStoredIssueTimestamp(context.Background(), issueID)

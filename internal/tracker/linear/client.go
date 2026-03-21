@@ -55,6 +55,10 @@ func (c *Client) query(ctx context.Context, query string, variables map[string]a
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("linear graphql: unexpected status %d", resp.StatusCode)
+	}
+
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
