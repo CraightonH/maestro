@@ -262,6 +262,10 @@ func validateRepoURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
+	// Accept SCP-style SSH URLs (e.g. git@host:org/repo.git).
+	if isScpStyleURL(raw) {
+		return nil
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid repo url %q: %w", raw, err)
@@ -270,6 +274,12 @@ func validateRepoURL(raw string) error {
 		return fmt.Errorf("repo urls must not embed credentials; use connection.token_env instead")
 	}
 	return nil
+}
+
+// isScpStyleURL returns true for SCP-style git SSH URLs like git@host:org/repo.git.
+func isScpStyleURL(raw string) bool {
+	// Must contain a colon but no scheme (://). The colon separates host from path.
+	return strings.Contains(raw, ":") && !strings.Contains(raw, "://")
 }
 
 func requiresSourceRepo(workspace string, tracker string) bool {
