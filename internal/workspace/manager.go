@@ -59,7 +59,7 @@ func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentNam
 		if !isGitRepoHealthy(ctx, path) {
 			// Repo is corrupt — safe to remove and re-clone.
 			_ = os.RemoveAll(path)
-		} else if err := reuseWorkspace(ctx, path, branch); err != nil {
+		} else if err := reuseWorkspace(ctx, path, branch, m.gitLabHost, m.gitLabToken); err != nil {
 			// Repo is healthy but fetch/checkout failed (network, auth, conflict).
 			// Preserve the workspace and return the error — don't destroy local work.
 			return Prepared{}, fmt.Errorf("reuse workspace %s: %w", path, err)
@@ -116,9 +116,9 @@ func isGitRepoHealthy(ctx context.Context, path string) bool {
 	return runGit(ctx, path, "rev-parse", "--git-dir") == nil
 }
 
-func reuseWorkspace(ctx context.Context, path string, branch string) error {
-	// Fetch latest from all remotes.
-	if err := runGit(ctx, path, "fetch", "--all", "--prune"); err != nil {
+func reuseWorkspace(ctx context.Context, path string, branch string, gitLabHost string, gitLabToken string) error {
+	// Fetch latest from all remotes, with auth if available.
+	if err := runGitWithAuth(ctx, path, gitLabHost, gitLabToken, "fetch", "--all", "--prune"); err != nil {
 		return err
 	}
 	return checkoutOrCreateBranch(ctx, path, branch)
@@ -280,6 +280,24 @@ func copyFile(source string, destination string, mode fs.FileMode) error {
 	return nil
 }
 
+// gitLabAuthArgs returns the -c http.extraHeader args needed for HTTPS auth,
+// or nil if auth is not applicable (no token, non-HTTPS, host mismatch).
+func gitLabAuthArgs(gitLabHost string, gitLabToken string) []string {
+	if strings.TrimSpace(gitLabToken) == "" {
+		return nil
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte("oauth2:" + gitLabToken))
+	return []string{"-c", "http.extraHeader=Authorization: Basic " + auth}
+}
+
+// runGitWithAuth runs a git command with GitLab HTTPS auth injected if available.
+func runGitWithAuth(ctx context.Context, dir string, gitLabHost string, gitLabToken string, args ...string) error {
+	if authArgs := gitLabAuthArgs(gitLabHost, gitLabToken); len(authArgs) > 0 {
+		args = append(authArgs, args...)
+	}
+	return runGit(ctx, dir, args...)
+}
+
 func cloneRepo(ctx context.Context, repoURL string, gitLabHost string, gitLabToken string, path string) error {
 	if strings.TrimSpace(gitLabToken) == "" || !strings.HasPrefix(repoURL, "http") {
 		return runGit(ctx, "", "clone", repoURL, path)
@@ -289,14 +307,5 @@ func cloneRepo(ctx context.Context, repoURL string, gitLabHost string, gitLabTok
 		return runGit(ctx, "", "clone", repoURL, path)
 	}
 
-	auth := base64.StdEncoding.EncodeToString([]byte("oauth2:" + gitLabToken))
-	return runGit(
-		ctx,
-		"",
-		"-c",
-		"http.extraHeader=Authorization: Basic "+auth,
-		"clone",
-		repoURL,
-		path,
-	)
+	return runGitWithAuth(ctx, "", gitLabHost, gitLabToken, "clone", repoURL, path)
 }
