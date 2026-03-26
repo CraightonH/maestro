@@ -145,6 +145,7 @@ type SourceConfig struct {
 	Tracker         string               `yaml:"tracker"`
 	Connection      SourceConnection     `yaml:"connection"`
 	Repo            string               `yaml:"repo"`
+	ProjectURL      string               `yaml:"project_url"`
 	Filter          FilterConfig         `yaml:"filter"`
 	EpicFilter      FilterConfig         `yaml:"epic_filter"`
 	IssueFilter     FilterConfig         `yaml:"issue_filter"`
@@ -508,10 +509,9 @@ func ResolveLifecycleTransition(defaults *LifecycleTransition, override *Lifecyc
 // ResolveCodexConfig merges hardcoded defaults, top-level codex_defaults, and per-agent override.
 func ResolveCodexConfig(defaults *CodexConfig, override *CodexConfig) CodexConfig {
 	base := &CodexConfig{
-		Model:         "gpt-5.4",
-		Reasoning:     "high",
-		MaxTurns:      20,
-		ThreadSandbox: "workspace-write",
+		Model:     "gpt-5.4",
+		Reasoning: "high",
+		MaxTurns:  20,
 	}
 	return *mergeCodexConfig(mergeCodexConfig(base, defaults), override)
 }
@@ -519,7 +519,7 @@ func ResolveCodexConfig(defaults *CodexConfig, override *CodexConfig) CodexConfi
 // ResolveClaudeConfig merges hardcoded defaults, top-level claude_defaults, and per-agent override.
 func ResolveClaudeConfig(defaults *ClaudeConfig, override *ClaudeConfig) ClaudeConfig {
 	base := &ClaudeConfig{
-		Model:     "opus-4.6",
+		Model:     "claude-opus-4-6",
 		Reasoning: "high",
 		MaxTurns:  1,
 	}
