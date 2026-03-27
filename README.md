@@ -140,6 +140,7 @@ sources:
     tags: []                       # optional tags for filtering
 
     tracker: linear                # "gitlab", "gitlab-epic", or "linear"
+    label_prefix: maestro          # optional per-source lifecycle-label prefix override
 
     connection:
       base_url: https://gitlab.com # GitLab only: instance URL
@@ -157,7 +158,7 @@ sources:
     filter:
       states: [todo]               # issue states to match (case-insensitive)
       labels: []                   # required labels (all must match)
-      assignee: ""                 # filter by assignee email/username
+      assignee: ""                 # filter by assignee email/username (GitLab: any assignee may match)
       iids: []                     # GitLab only: specific issue IIDs
 
     # GitLab epic sources support separate filters for epics vs linked issues.

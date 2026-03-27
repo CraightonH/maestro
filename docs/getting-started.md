@@ -161,7 +161,8 @@ Default behavior (no hooks configured):
 - Failure: remove `{prefix}:active`, add `{prefix}:failed`
 - Retry: remove `{prefix}:active`, add `{prefix}:retry`
 
-The label prefix defaults to `maestro` and is configurable via `defaults.label_prefix`.
+The label prefix defaults to `maestro` and is configurable globally via `defaults.label_prefix` or
+per source via `sources[].label_prefix`.
 
 Important distinction:
 

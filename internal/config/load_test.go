@@ -999,6 +999,57 @@ logging:
 	}
 }
 
+func TestLoadAcceptsPerSourceLabelPrefix(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret")
+
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+  label_prefix: maestro
+sources:
+  - name: project-a
+    tracker: gitlab
+    label_prefix: fwr
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project-a
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: ` + promptPath + `
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := cfg.Sources[0].LabelPrefix; got != "fwr" {
+		t.Fatalf("label prefix = %q, want fwr", got)
+	}
+}
+
 func TestResolveLifecycleTransitionsMergesDefaultsAndSourceOverrides(t *testing.T) {
 	dispatch := config.ResolveDispatchTransition(
 		&config.DispatchTransition{State: "In Progress"},

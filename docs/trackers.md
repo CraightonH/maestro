@@ -17,6 +17,7 @@ Maestro’s current GitLab adapter polls:
 ```
 
 That means the supported unit of work is a project issue, filtered by labels, assignee, or state.
+For GitLab issues with multiple assignees, Maestro treats the assignee filter as an any-match.
 
 Use GitLab when:
 
@@ -58,6 +59,7 @@ Important differences from project issues:
 - lifecycle labels and operational comments are written back to the linked issue, not the epic
 - if the epic closes while a linked issue is running, reconciliation stops the run because the bucket became terminal
 - `issue_filter.assignee` and `issue_filter.states` apply to the linked issue
+- for linked issues with multiple assignees, `issue_filter.assignee` matches if any assignee matches
 - if you set both `epic_filter.iids` and `epic_filter.labels`, an epic must satisfy both
 - if you use the legacy `filter` field with `gitlab-epic`, Maestro treats it as an epic bucket filter plus child-issue assignee/state fallback for backward compatibility
 - `repo` must be a plain repo URL without embedded credentials; use `connection.token_env` for auth

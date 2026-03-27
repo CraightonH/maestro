@@ -50,6 +50,55 @@ func TestPollNormalizesProjectIssues(t *testing.T) {
 	}
 }
 
+func TestPollNormalizesProjectIssuesWithMultipleAssignees(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/projects/team/project":
+			_, _ = w.Write([]byte(`{"id":1,"path_with_namespace":"team/project","http_url_to_repo":"https://gitlab.example.com/team/project.git"}`))
+		case "/api/v4/projects/team/project/issues":
+			if got := r.URL.Query().Get("assignee_username"); got != "bob" {
+				t.Fatalf("assignee query = %q", got)
+			}
+			_, _ = w.Write([]byte(`[{"id":101,"iid":42,"title":"Fix bug","description":"Details","state":"opened","web_url":"https://gitlab.example.com/team/project/-/issues/42","labels":["Agent:Ready"],"author":{"username":"tj"},"assignees":[{"username":"alice"},{"username":"bob"}],"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z"}]`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewAdapter(config.SourceConfig{
+		Name:      "gitlab-project",
+		Tracker:   "gitlab",
+		AgentType: "code-pr",
+		Connection: config.SourceConnection{
+			BaseURL: server.URL,
+			Token:   "secret",
+			Project: "team/project",
+		},
+		Filter: config.FilterConfig{
+			Labels:   []string{"agent:ready"},
+			Assignee: "bob",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	issues, err := adapter.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d", len(issues))
+	}
+	if got := issues[0].Assignee; got != "alice" {
+		t.Fatalf("assignee = %q, want first assignee", got)
+	}
+	if got := issues[0].Assignees; len(got) != 2 || got[0] != "alice" || got[1] != "bob" {
+		t.Fatalf("assignees = %v, want [alice bob]", got)
+	}
+}
+
 func TestPollNormalizesEpicChildIssues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -110,6 +159,56 @@ func TestPollNormalizesEpicChildIssues(t *testing.T) {
 	}
 	if !hasLabel(issue.Labels, "agent:ready") || !hasLabel(issue.Labels, "backend") {
 		t.Fatalf("labels = %v", issue.Labels)
+	}
+}
+
+func TestPollNormalizesEpicChildIssuesWithMultipleAssignees(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/groups/team/platform/epics":
+			_, _ = w.Write([]byte(`[{"id":29,"iid":7,"title":"Epic title","description":"Epic body","state":"opened","web_url":"https://gitlab.example.com/groups/team/platform/-/epics/7","labels":["agent:ready"],"author":{"username":"tj"},"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z"}]`))
+		case "/api/v4/groups/team/platform/issues":
+			if got := r.URL.Query().Get("assignee_username"); got != "bob" {
+				t.Fatalf("assignee query = %q", got)
+			}
+			_, _ = w.Write([]byte(`[{"id":101,"iid":42,"project_id":1,"title":"Fix child issue","description":"Child details","state":"opened","web_url":"https://gitlab.example.com/team/platform/repo/-/issues/42","labels":["backend"],"author":{"username":"tj"},"assignees":[{"username":"alice"},{"username":"bob"}],"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z","references":{"full":"team/platform/repo#42"},"epic":{"id":29,"iid":7}}]`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewAdapter(config.SourceConfig{
+		Name:      "gitlab-epic",
+		Tracker:   "gitlab-epic",
+		Repo:      "https://gitlab.example.com/team/platform/repo.git",
+		AgentType: "repo-maintainer",
+		Connection: config.SourceConnection{
+			BaseURL: server.URL,
+			Token:   "secret",
+			Group:   "team/platform",
+		},
+		Filter: config.FilterConfig{
+			Labels:   []string{"agent:ready"},
+			Assignee: "bob",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	issues, err := adapter.Poll(context.Background())
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d", len(issues))
+	}
+	if got := issues[0].Assignee; got != "alice" {
+		t.Fatalf("assignee = %q, want first assignee", got)
+	}
+	if got := issues[0].Assignees; len(got) != 2 || got[0] != "alice" || got[1] != "bob" {
+		t.Fatalf("assignees = %v, want [alice bob]", got)
 	}
 }
 

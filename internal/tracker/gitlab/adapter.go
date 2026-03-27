@@ -27,18 +27,19 @@ type projectResponse struct {
 }
 
 type issueResponse struct {
-	ID          int           `json:"id"`
-	IID         int           `json:"iid"`
-	ProjectID   int           `json:"project_id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	State       string        `json:"state"`
-	WebURL      string        `json:"web_url"`
-	Labels      []string      `json:"labels"`
-	Author      userResponse  `json:"author"`
-	Assignee    *userResponse `json:"assignee"`
-	CreatedAt   string        `json:"created_at"`
-	UpdatedAt   string        `json:"updated_at"`
+	ID          int            `json:"id"`
+	IID         int            `json:"iid"`
+	ProjectID   int            `json:"project_id"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	State       string         `json:"state"`
+	WebURL      string         `json:"web_url"`
+	Labels      []string       `json:"labels"`
+	Author      userResponse   `json:"author"`
+	Assignee    *userResponse  `json:"assignee"`
+	Assignees   []userResponse `json:"assignees"`
+	CreatedAt   string         `json:"created_at"`
+	UpdatedAt   string         `json:"updated_at"`
 	References  struct {
 		Full string `json:"full"`
 	} `json:"references"`
@@ -409,6 +410,7 @@ func (a *Adapter) normalizeProjectIssue(item issueResponse) domain.Issue {
 		State:       normalizeState(item.State),
 		Labels:      normalizeLabels(item.Labels),
 		Assignee:    issueAssignee(item),
+		Assignees:   issueAssignees(item),
 		URL:         item.WebURL,
 		CreatedAt:   trackerbase.ParseTime(item.CreatedAt),
 		UpdatedAt:   trackerbase.ParseTime(item.UpdatedAt),
@@ -451,6 +453,7 @@ func (a *Adapter) normalizeEpicIssue(item issueResponse, epic epicResponse) (dom
 		State:       normalizeState(item.State),
 		Labels:      labels,
 		Assignee:    issueAssignee(item),
+		Assignees:   issueAssignees(item),
 		URL:         item.WebURL,
 		CreatedAt:   trackerbase.ParseTime(item.CreatedAt),
 		UpdatedAt:   trackerbase.ParseTime(item.UpdatedAt),
@@ -502,9 +505,10 @@ func (a *Adapter) matchesEpicIssueFilter(item issueResponse) bool {
 		return true
 	}
 	issue := domain.Issue{
-		State:    normalizeState(item.State),
-		Labels:   normalizeLabels(item.Labels),
-		Assignee: issueAssignee(item),
+		State:     normalizeState(item.State),
+		Labels:    normalizeLabels(item.Labels),
+		Assignee:  issueAssignee(item),
+		Assignees: issueAssignees(item),
 	}
 	return trackerbase.IsCandidateWithPrefix(issue, filter, a.source.LabelPrefix)
 }
@@ -519,9 +523,24 @@ func isZeroGitLabFilter(filter config.FilterConfig) bool {
 
 func issueAssignee(item issueResponse) string {
 	if item.Assignee == nil {
-		return ""
+		assignees := issueAssignees(item)
+		if len(assignees) == 0 {
+			return ""
+		}
+		return assignees[0]
 	}
 	return item.Assignee.Username
+}
+
+func issueAssignees(item issueResponse) []string {
+	values := make([]string, 0, len(item.Assignees)+1)
+	if item.Assignee != nil {
+		values = append(values, item.Assignee.Username)
+	}
+	for _, assignee := range item.Assignees {
+		values = append(values, assignee.Username)
+	}
+	return uniqueStrings(values)
 }
 
 func issueProjectPath(item issueResponse) string {
@@ -604,7 +623,6 @@ func resolveSourceRepoURL(baseURL string, repo string) string {
 	root.Fragment = ""
 	return root.String()
 }
-
 
 func formatGitLabIssueID(project string, iid int) string {
 	return fmt.Sprintf("gitlab:%s#%d", project, iid)

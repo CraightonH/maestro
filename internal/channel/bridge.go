@@ -405,7 +405,7 @@ func (b *Bridge) postApprovalRequest(ctx context.Context, approval orchestrator.
 		return err
 	}
 	channel := b.channels[b.agentChannels[meta.AgentType]]
-	toolInput := clipSlackText(approval.ToolInput, 900)
+	toolInput := clipSlackText(formatApprovalToolInput(approval.ToolInput), 2500)
 	text := redact.String(fmt.Sprintf("Approval needed for %s on %s", approval.ToolName, approval.IssueIdentifier))
 	blocks := []any{
 		slackSection(fmt.Sprintf("*Approval needed*\n*Issue:* %s\n*Agent:* %s\n*Tool:* `%s`", slackIssueLink(meta.IssueURL, approval.IssueIdentifier), meta.AgentName, approval.ToolName)),
@@ -794,7 +794,7 @@ func renderMessageHistory(entry orchestrator.MessageHistoryEntry) (string, []any
 }
 
 func (b *Bridge) ensureThread(ctx context.Context, meta runContext) (slackThreadRef, error) {
-	key := issueKey(meta.SourceName, meta.IssueIdentifier)
+	key := issueKey(meta.IssueURL, meta.IssueIdentifier)
 	b.mu.Lock()
 	if ref, ok := b.state.Threads[key]; ok {
 		b.mu.Unlock()
@@ -875,8 +875,11 @@ func (b *Bridge) lookupMessageRequest(channelName string, channelID string, thre
 	return ""
 }
 
-func issueKey(sourceName string, issueIdentifier string) string {
-	return strings.TrimSpace(sourceName) + "|" + strings.TrimSpace(issueIdentifier)
+func issueKey(issueURL string, issueIdentifier string) string {
+	if strings.TrimSpace(issueURL) != "" {
+		return strings.TrimSpace(issueURL)
+	}
+	return strings.TrimSpace(issueIdentifier)
 }
 
 func historyKey(entry orchestrator.ApprovalHistoryEntry) string {
@@ -913,6 +916,24 @@ func emptySlackState() slackBridgeState {
 		Approvals: map[string]slackMessageRef{},
 		Messages:  map[string]slackMessageRef{},
 	}
+}
+
+func formatApprovalToolInput(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	var value any
+	if err := json.Unmarshal([]byte(trimmed), &value); err != nil {
+		return trimmed
+	}
+
+	formatted, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return trimmed
+	}
+	return string(formatted)
 }
 
 func (b *Bridge) loadState() error {

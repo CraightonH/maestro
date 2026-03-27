@@ -73,3 +73,18 @@ func TestCustomPrefixedActiveLabelBlocksCandidateIntake(t *testing.T) {
 		t.Fatal("expected orch:active to block intake while preserving routing label")
 	}
 }
+
+func TestMatchesFilterAcceptsAnyMatchingAssignee(t *testing.T) {
+	issue := domain.Issue{
+		State:     "todo",
+		Assignee:  "alice",
+		Assignees: []string{"alice", "bob"},
+	}
+
+	if !MatchesFilter(issue, config.FilterConfig{
+		States:   []string{"todo"},
+		Assignee: "bob",
+	}) {
+		t.Fatal("expected any matching assignee to satisfy the filter")
+	}
+}

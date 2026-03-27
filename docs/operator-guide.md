@@ -93,8 +93,9 @@ Important directories:
 - `logging.dir`: log files
 - `logging.max_files`: local log retention cap; older `*.log` files are pruned on startup
 
-Lifecycle labels use a configurable prefix set by `defaults.label_prefix` (default: `maestro`). The
-default labels are `{prefix}:active`, `{prefix}:done`, `{prefix}:failed`, and `{prefix}:retry`.
+Lifecycle labels use a configurable prefix set by `defaults.label_prefix` (default: `maestro`) and
+can be overridden per source with `sources[].label_prefix`. The default labels are
+`{prefix}:active`, `{prefix}:done`, `{prefix}:failed`, and `{prefix}:retry`.
 When `defaults.on_dispatch`, `defaults.on_complete`, or `defaults.on_failure` are configured, those
 hooks apply to every source unless a source overrides the same hook locally. `on_dispatch` supports
 both `add_labels`/`remove_labels` and `state`. When custom labels are provided in `on_complete` or

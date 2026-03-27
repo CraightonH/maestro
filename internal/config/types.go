@@ -158,7 +158,7 @@ type SourceConfig struct {
 	OnComplete      *LifecycleTransition `yaml:"on_complete"`
 	OnFailure       *LifecycleTransition `yaml:"on_failure"`
 
-	LabelPrefix string `yaml:"-"`
+	LabelPrefix string `yaml:"label_prefix"`
 }
 
 type SourceConnection struct {

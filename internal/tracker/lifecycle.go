@@ -146,8 +146,21 @@ func MatchesFilterWithPrefix(issue domain.Issue, filter config.FilterConfig, pre
 		}
 	}
 
-	if assignee := strings.TrimSpace(filter.Assignee); assignee != "" && !strings.EqualFold(issue.Assignee, assignee) {
-		return false
+	if assignee := strings.TrimSpace(filter.Assignee); assignee != "" {
+		if len(issue.Assignees) > 0 {
+			match := false
+			for _, actual := range issue.Assignees {
+				if strings.EqualFold(strings.TrimSpace(actual), assignee) {
+					match = true
+					break
+				}
+			}
+			if !match {
+				return false
+			}
+		} else if !strings.EqualFold(issue.Assignee, assignee) {
+			return false
+		}
 	}
 
 	return true

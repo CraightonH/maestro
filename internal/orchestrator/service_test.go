@@ -1568,6 +1568,115 @@ func TestServiceCodexContinuationStopsWhenActiveLabelIsRemoved(t *testing.T) {
 	}
 }
 
+func TestServiceUsesYamlLoadedSourceLabelPrefixAtRuntime(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GITLAB_TOKEN", "secret")
+
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 20ms
+  max_concurrent_global: 1
+  label_prefix: maestro
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    label_prefix: orchx
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [orchx:coding]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    instance_name: coder
+    harness: claude-code
+    workspace: none
+    prompt: ` + promptPath + `
+    approval_policy: auto
+    approval_timeout: 24h
+    max_concurrent: 1
+    stall_timeout: 1m
+workspace:
+  root: ` + filepath.Join(root, "workspaces") + `
+state:
+  dir: ` + filepath.Join(root, "state") + `
+  retry_base: 20ms
+  max_retry_backoff: 20ms
+  max_attempts: 3
+hooks:
+  timeout: 30s
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#88",
+				Identifier:  "team/project#88",
+				Title:       "Custom prefix",
+				State:       "todo",
+				Labels:      []string{"orchx:coding"},
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun == nil
+	})
+
+	issue, err := fakeTracker.Get(context.Background(), "gitlab:team/project#88")
+	if err != nil {
+		t.Fatalf("get issue: %v", err)
+	}
+	if !slicesContains(issue.Labels, "orchx:done") {
+		t.Fatalf("labels = %v, want orchx:done", issue.Labels)
+	}
+	if slicesContains(issue.Labels, "maestro:done") {
+		t.Fatalf("labels = %v, did not expect maestro:done", issue.Labels)
+	}
+	if slicesContains(issue.Labels, "orchx:active") {
+		t.Fatalf("labels = %v, active label should be removed", issue.Labels)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func TestServiceSchedulesRetryWhenLifecycleSyncFails(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.State.RetryBase = config.Duration{Duration: time.Hour}

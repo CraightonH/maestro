@@ -133,7 +133,9 @@ func (s *Supervisor) Snapshot() Snapshot {
 		merged.ClaimedCount += snap.ClaimedCount
 		merged.RetryCount += snap.RetryCount
 		merged.PendingApprovals = append(merged.PendingApprovals, snap.PendingApprovals...)
+		merged.PendingMessages = append(merged.PendingMessages, snap.PendingMessages...)
 		merged.ApprovalHistory = append(merged.ApprovalHistory, snap.ApprovalHistory...)
+		merged.MessageHistory = append(merged.MessageHistory, snap.MessageHistory...)
 		merged.RecentEvents = append(merged.RecentEvents, snap.RecentEvents...)
 		merged.ActiveRuns = append(merged.ActiveRuns, snap.ActiveRuns...)
 		merged.RunOutputs = append(merged.RunOutputs, snap.RunOutputs...)
@@ -151,6 +153,15 @@ func (s *Supervisor) Snapshot() Snapshot {
 	})
 	if len(merged.ApprovalHistory) > maxApprovalHistory {
 		merged.ApprovalHistory = merged.ApprovalHistory[:maxApprovalHistory]
+	}
+	sort.Slice(merged.PendingMessages, func(i, j int) bool {
+		return merged.PendingMessages[i].RequestedAt.Before(merged.PendingMessages[j].RequestedAt)
+	})
+	sort.Slice(merged.MessageHistory, func(i, j int) bool {
+		return merged.MessageHistory[i].RepliedAt.After(merged.MessageHistory[j].RepliedAt)
+	})
+	if len(merged.MessageHistory) > maxMessageHistory {
+		merged.MessageHistory = merged.MessageHistory[:maxMessageHistory]
 	}
 	sort.Slice(merged.RecentEvents, func(i, j int) bool {
 		return merged.RecentEvents[i].Time.After(merged.RecentEvents[j].Time)

@@ -231,6 +231,45 @@ func TestDifferentAgentsRunConcurrentlyWithinGlobalLimit(t *testing.T) {
 	}
 }
 
+func TestSupervisorSnapshotMergesPendingAndHistoricMessages(t *testing.T) {
+	now := time.Now().UTC()
+	first := &Service{
+		source: config.SourceConfig{Name: "source-a", Tracker: "gitlab"},
+		messages: map[string]MessageView{
+			"msg-1": {RequestID: "msg-1", RequestedAt: now.Add(-2 * time.Minute), IssueIdentifier: "APP-1"},
+		},
+		messageOrder: []string{"msg-1"},
+		messageHistory: []MessageHistoryEntry{
+			{RequestID: "hist-1", RepliedAt: now.Add(-time.Minute), IssueIdentifier: "APP-1"},
+		},
+	}
+	second := &Service{
+		source: config.SourceConfig{Name: "source-b", Tracker: "linear"},
+		messages: map[string]MessageView{
+			"msg-2": {RequestID: "msg-2", RequestedAt: now.Add(-time.Minute), IssueIdentifier: "APP-2"},
+		},
+		messageOrder: []string{"msg-2"},
+		messageHistory: []MessageHistoryEntry{
+			{RequestID: "hist-2", RepliedAt: now, IssueIdentifier: "APP-2"},
+		},
+	}
+
+	snapshot := (&Supervisor{services: []*Service{first, second}}).Snapshot()
+
+	if len(snapshot.PendingMessages) != 2 {
+		t.Fatalf("pending messages = %d, want 2", len(snapshot.PendingMessages))
+	}
+	if snapshot.PendingMessages[0].RequestID != "msg-1" || snapshot.PendingMessages[1].RequestID != "msg-2" {
+		t.Fatalf("pending message order = [%s, %s], want [msg-1, msg-2]", snapshot.PendingMessages[0].RequestID, snapshot.PendingMessages[1].RequestID)
+	}
+	if len(snapshot.MessageHistory) != 2 {
+		t.Fatalf("message history = %d, want 2", len(snapshot.MessageHistory))
+	}
+	if snapshot.MessageHistory[0].RequestID != "hist-2" || snapshot.MessageHistory[1].RequestID != "hist-1" {
+		t.Fatalf("message history order = [%s, %s], want [hist-2, hist-1]", snapshot.MessageHistory[0].RequestID, snapshot.MessageHistory[1].RequestID)
+	}
+}
+
 func TestStoppingOneServiceRunDoesNotStopPeer(t *testing.T) {
 	root := t.TempDir()
 	repoURL := createSupervisorGitRepo(t)

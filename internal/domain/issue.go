@@ -15,6 +15,7 @@ type Issue struct {
 	State       string
 	Labels      []string
 	Assignee    string
+	Assignees   []string
 	URL         string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time

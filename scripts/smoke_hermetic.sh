@@ -438,7 +438,7 @@ sources:
     tracker: gitlab
     connection:
       base_url: http://127.0.0.1:${tracker_port}/gitlab
-      token_env: $SMOKE_GITLAB_TOKEN
+      token_env: \$SMOKE_GITLAB_TOKEN
       project: team/project
     filter:
       labels: [orch:coding]
@@ -449,7 +449,7 @@ sources:
     tracker: gitlab
     connection:
       base_url: http://127.0.0.1:${tracker_port}/gitlab
-      token_env: $SMOKE_GITLAB_TOKEN
+      token_env: \$SMOKE_GITLAB_TOKEN
       project: team/project
     filter:
       labels: [orch:review]
@@ -463,7 +463,7 @@ sources:
     tracker: gitlab
     connection:
       base_url: http://127.0.0.1:${tracker_port}/gitlab
-      token_env: $SMOKE_GITLAB_TOKEN
+      token_env: \$SMOKE_GITLAB_TOKEN
       project: team/project
     filter:
       labels: [repo:ready]
@@ -477,7 +477,7 @@ sources:
     tracker: gitlab-epic
     connection:
       base_url: http://127.0.0.1:${tracker_port}/gitlab
-      token_env: $SMOKE_GITLAB_TOKEN
+      token_env: \$SMOKE_GITLAB_TOKEN
       group: team
     epic_filter:
       labels: [epic:bucket]
@@ -493,7 +493,7 @@ sources:
     tracker: linear
     connection:
       base_url: http://127.0.0.1:${tracker_port}/linear/graphql
-      token_env: $SMOKE_LINEAR_TOKEN
+      token_env: \$SMOKE_LINEAR_TOKEN
       project: Smoke Project
     repo: ${repo_bare}
     filter:

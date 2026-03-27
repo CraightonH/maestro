@@ -136,6 +136,7 @@ func TestBridgePostsApprovalLifecycle(t *testing.T) {
 			IssueIdentifier: "APP-42",
 			AgentName:       "coder",
 			ToolName:        "write_file",
+			ToolInput:       `{"path":"README.md","lines":["a","b"]}`,
 			ApprovalPolicy:  "manual",
 			RequestedAt:     now,
 		}},
@@ -155,6 +156,10 @@ func TestBridgePostsApprovalLifecycle(t *testing.T) {
 	}
 	if _, ok := bridge.state.Approvals["req-1"]; !ok {
 		t.Fatal("approval message ref was not persisted")
+	}
+	body := encodeJSON(t, client.posts[1].blocks)
+	if !strings.Contains(body, "\\n  \\\"path\\\": \\\"README.md\\\"") {
+		t.Fatalf("approval blocks missing pretty-printed JSON:\n%s", body)
 	}
 
 	snapshot.PendingApprovals = nil
@@ -176,6 +181,113 @@ func TestBridgePostsApprovalLifecycle(t *testing.T) {
 	}
 	if _, ok := bridge.state.Approvals["req-1"]; ok {
 		t.Fatal("approval message ref still present after resolution")
+	}
+}
+
+func TestIssueKeyPrefersIssueURL(t *testing.T) {
+	key := issueKey("https://example.com/APP-42", "APP-42")
+	if key != "https://example.com/APP-42" {
+		t.Fatalf("issue key = %q, want issue URL", key)
+	}
+
+	fallback := issueKey("", "APP-42")
+	if fallback != "APP-42" {
+		t.Fatalf("fallback issue key = %q, want issue identifier", fallback)
+	}
+}
+
+func TestFormatApprovalToolInputPrettyPrintsJSON(t *testing.T) {
+	formatted := formatApprovalToolInput(`{"path":"README.md","lines":["a","b"]}`)
+	for _, want := range []string{`{`, `"path": "README.md"`, `"lines": [`} {
+		if !strings.Contains(formatted, want) {
+			t.Fatalf("formatted approval input missing %q:\n%s", want, formatted)
+		}
+	}
+}
+
+func TestFormatApprovalToolInputFallsBackToRawText(t *testing.T) {
+	raw := `not valid json: {oops`
+	if got := formatApprovalToolInput(raw); got != raw {
+		t.Fatalf("formatted input = %q, want raw text", got)
+	}
+}
+
+func TestBridgeReusesSlackThreadAcrossSourcesForSameIssueURL(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"research": "slack-dm", "execute": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+
+	now := time.Now().UTC()
+	snapshot := orchestrator.Snapshot{
+		ActiveRuns: []domain.AgentRun{
+			{
+				ID:         "run-1",
+				AgentName:  "researcher",
+				AgentType:  "research",
+				SourceName: "research-phase",
+				Issue: domain.Issue{
+					Identifier: "APP-42",
+					URL:        "https://example.com/APP-42",
+				},
+			},
+			{
+				ID:         "run-2",
+				AgentName:  "executor",
+				AgentType:  "execute",
+				SourceName: "execute-phase",
+				Issue: domain.Issue{
+					Identifier: "APP-42",
+					URL:        "https://example.com/APP-42",
+				},
+			},
+		},
+		PendingApprovals: []orchestrator.ApprovalView{
+			{
+				RequestID:       "req-1",
+				RunID:           "run-1",
+				IssueIdentifier: "APP-42",
+				AgentName:       "researcher",
+				ToolName:        "read_file",
+				ApprovalPolicy:  "manual",
+				RequestedAt:     now,
+			},
+			{
+				RequestID:       "req-2",
+				RunID:           "run-2",
+				IssueIdentifier: "APP-42",
+				AgentName:       "executor",
+				ToolName:        "write_file",
+				ApprovalPolicy:  "manual",
+				RequestedAt:     now.Add(time.Second),
+			},
+		},
+	}
+
+	if err := bridge.reconcile(context.Background(), snapshot); err != nil {
+		t.Fatalf("reconcile pending approvals: %v", err)
+	}
+	if len(client.posts) != 3 {
+		t.Fatalf("posts = %d, want 3 (1 thread + 2 replies)", len(client.posts))
+	}
+	rootTS := client.posts[0].threadTS
+	if rootTS != "" {
+		t.Fatalf("root thread ts = %q, want empty", rootTS)
+	}
+	if client.posts[1].threadTS != "ts-1" || client.posts[2].threadTS != "ts-1" {
+		t.Fatalf("approval replies should share one thread: %+v", client.posts)
+	}
+	if len(bridge.state.Threads) != 1 {
+		t.Fatalf("thread count = %d, want 1", len(bridge.state.Threads))
 	}
 }
 
