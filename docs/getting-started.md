@@ -73,6 +73,7 @@ server:
   enabled: true
   host: 127.0.0.1
   port: 8742
+  api_key: ""
 ```
 
 Then open [http://127.0.0.1:8742](http://127.0.0.1:8742).
@@ -385,7 +386,7 @@ The first web/API slice is local-only and intentionally narrow. When `server.ena
 - `POST /api/v1/approvals/<request_id>/approve`
 - `POST /api/v1/approvals/<request_id>/reject`
 
-Bind it to `127.0.0.1` unless you have a specific reason to expose it more widely. The built-in dashboard uses Server-Sent Events from `/api/v1/stream` for live updates, defaults to dark theme, and includes a light theme toggle along with browser-side filtering and sorting controls.
+Bind it to `127.0.0.1` unless you have a specific reason to expose it more widely. Loopback binds do not require API auth. If you expose the server on a non-loopback host, set `server.api_key` or let Maestro generate an ephemeral one at startup. API clients then use `Authorization: Bearer <key>`, and the dashboard can be opened once with `?api_key=<key>` so it can store the key in session storage. The built-in dashboard uses Server-Sent Events from `/api/v1/stream` for live updates, defaults to dark theme, and includes a light theme toggle along with browser-side filtering and sorting controls.
 
 For Codex, the config path exists, but the current local app-server build did not emit approval requests during live validation on March 15, 2026.
 

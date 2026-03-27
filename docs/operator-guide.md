@@ -27,6 +27,7 @@ server:
   enabled: true
   host: 127.0.0.1
   port: 8742
+  api_key: ""
 ```
 
 Then open [http://127.0.0.1:8742](http://127.0.0.1:8742).
@@ -180,6 +181,8 @@ The first API slice is read-mostly with approval actions:
 - `POST /api/v1/packs/save`
 
 The built-in dashboard at `/` uses those resource endpoints directly and listens to `/api/v1/stream` over Server-Sent Events so the page refreshes on runtime changes without a fixed polling loop. The browser UI is dark by default, has a light theme toggle, and supports source/run selection, quick filtering, sorting, retries, approvals, and a context-aware event timeline.
+
+Loopback binds (`127.0.0.1`, `localhost`, `::1`) do not require API auth. Non-loopback binds require `server.api_key`. When auth is enabled, API clients must send `Authorization: Bearer <key>`, and the dashboard can be opened once with `?api_key=<key>` so it can store the key in session storage.
 
 ## Slack Operations
 

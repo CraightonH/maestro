@@ -397,9 +397,12 @@ func (r *codexRun) readLoop(approvalCh chan<- harness.ApprovalRequest, messageCh
 	for {
 		var msg rpcEnvelope
 		if err := decoder.Decode(&msg); err != nil {
+			exitErr := fmt.Errorf("codex app-server exited before turn completed")
 			if err != io.EOF {
-				r.finish(fmt.Errorf("decode codex app-server message: %w", err))
+				exitErr = fmt.Errorf("decode codex app-server message: %w", err)
 			}
+			r.failPendingRequests(exitErr)
+			r.finish(exitErr)
 			return
 		}
 
@@ -411,6 +414,24 @@ func (r *codexRun) readLoop(approvalCh chan<- harness.ApprovalRequest, messageCh
 		case msg.Method != "":
 			r.handleNotification(msg.Method, msg.Params, stdout)
 		}
+	}
+}
+
+func (r *codexRun) failPendingRequests(err error) {
+	resp := rpcResponse{
+		Error: &rpcError{
+			Code:    -32000,
+			Message: err.Error(),
+		},
+	}
+
+	r.reqMu.Lock()
+	pending := r.pending
+	r.pending = map[int64]chan rpcResponse{}
+	r.reqMu.Unlock()
+
+	for _, ch := range pending {
+		ch <- resp
 	}
 }
 
@@ -907,7 +928,6 @@ func firstNonEmpty(values ...string) string {
 	}
 	return ""
 }
-
 
 func isExpectedStopError(err error) bool {
 	if err == nil {

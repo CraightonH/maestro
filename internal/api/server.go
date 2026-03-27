@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,7 +17,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/pmezard/go-difflib/difflib"
@@ -42,6 +43,7 @@ type runtimeView interface {
 
 type Server struct {
 	addr          string
+	apiKey        string
 	logger        *slog.Logger
 	runtime       runtimeView
 	configSummary ops.ConfigSummary
@@ -289,8 +291,15 @@ type streamUpdate struct {
 }
 
 func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
+	apiKey := strings.TrimSpace(cfg.Server.APIKey)
+	ephemeralKey := false
+	if apiKey == "" && requiresAPIKey(cfg.Server.Host) {
+		apiKey = generateAPIKey()
+		ephemeralKey = true
+	}
 	server := &Server{
 		addr:          net.JoinHostPort(cfg.Server.Host, fmt.Sprintf("%d", cfg.Server.Port)),
+		apiKey:        apiKey,
 		logger:        logger,
 		runtime:       runtime,
 		configSummary: ops.SummarizeConfig(cfg),
@@ -324,14 +333,65 @@ func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
 
 	server.httpServer = &http.Server{
 		Addr:              server.addr,
-		Handler:           mux,
+		Handler:           server.withAPIAuth(mux),
 		ReadHeaderTimeout: 5 * time.Second,
+	}
+	if ephemeralKey {
+		logger.Info("generated ephemeral api key for web api", "addr", server.addr, "api_key", apiKey)
 	}
 	return server
 }
 
 func (s *Server) Addr() string {
 	return s.addr
+}
+
+func generateAPIKey() string {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return fmt.Sprintf("maestro-%d", time.Now().UTC().UnixNano())
+	}
+	return hex.EncodeToString(raw)
+}
+
+func requiresAPIKey(host string) bool {
+	trimmed := strings.Trim(strings.TrimSpace(host), "[]")
+	if trimmed == "" || strings.EqualFold(trimmed, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(trimmed)
+	if ip != nil {
+		return !ip.IsLoopback()
+	}
+	return true
+}
+
+func (s *Server) withAPIAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/v1/") || r.URL.Path == "/healthz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if s.authorized(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+	})
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	if strings.TrimSpace(s.apiKey) == "" {
+		return true
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(auth, "Bearer ") && strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")) == s.apiKey {
+		return true
+	}
+	if strings.TrimSpace(r.URL.Query().Get("api_key")) == s.apiKey {
+		return true
+	}
+	return false
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -569,14 +629,10 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg *config.Config
-	var err error
-	err = s.withValidationEnv(func() error {
-		cfg, err = config.LoadBytes(s.validationConfigPath(), []byte(req.YAML))
-		if err == nil {
-			err = config.ValidateMVP(cfg)
-		}
-		return err
-	})
+	cfg, err := config.LoadBytesWithEnv(s.validationConfigPath(), []byte(req.YAML), s.validationEnvLookup())
+	if err == nil {
+		err = config.ValidateMVP(cfg)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusOK, configValidateResponse{
 			OK:            false,
@@ -621,13 +677,10 @@ func (s *Server) handleConfigDryRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg *config.Config
-	err = s.withValidationEnv(func() error {
-		cfg, err = config.LoadBytes(s.validationConfigPath(), []byte(req.YAML))
-		if err == nil {
-			err = config.ValidateMVP(cfg)
-		}
-		return err
-	})
+	cfg, err = config.LoadBytesWithEnv(s.validationConfigPath(), []byte(req.YAML), s.validationEnvLookup())
+	if err == nil {
+		err = config.ValidateMVP(cfg)
+	}
 	if err != nil {
 		writeJSON(w, http.StatusOK, configValidateResponse{
 			OK:            false,
@@ -671,14 +724,10 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg *config.Config
-	var err error
-	err = s.withValidationEnv(func() error {
-		cfg, err = config.LoadBytes(s.configSummary.ConfigPath, []byte(req.YAML))
-		if err == nil {
-			err = config.ValidateMVP(cfg)
-		}
-		return err
-	})
+	cfg, err := config.LoadBytesWithEnv(s.configSummary.ConfigPath, []byte(req.YAML), s.validationEnvLookup())
+	if err == nil {
+		err = config.ValidateMVP(cfg)
+	}
 	current, _, currentErr := s.readConfigRaw()
 	if currentErr != nil {
 		current = ""
@@ -812,13 +861,10 @@ func (s *Server) handleConfigBackupDetail(w http.ResponseWriter, r *http.Request
 	current, _, _ := s.readConfigRaw()
 	if r.Method == http.MethodPost {
 		var cfg *config.Config
-		err := s.withValidationEnv(func() error {
-			cfg, err = config.LoadBytes(s.configSummary.ConfigPath, raw)
-			if err == nil {
-				err = config.ValidateMVP(cfg)
-			}
-			return err
-		})
+		cfg, err := config.LoadBytesWithEnv(s.configSummary.ConfigPath, raw, s.validationEnvLookup())
+		if err == nil {
+			err = config.ValidateMVP(cfg)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{
 				"ok":    false,
@@ -1166,13 +1212,15 @@ func (s *Server) savePack(req packSaveRequest) (ops.ConfigSummary, error) {
 	}
 
 	var cfg *config.Config
-	err = s.withValidationEnv(func() error {
-		cfg, err = config.Load(s.configSummary.ConfigPath)
-		if err == nil {
-			err = config.ValidateMVP(cfg)
-		}
-		return err
-	})
+	rawConfig, readErr := os.ReadFile(s.configSummary.ConfigPath)
+	if readErr != nil {
+		restore()
+		return ops.ConfigSummary{}, fmt.Errorf("read config for validation: %w", readErr)
+	}
+	cfg, err = config.LoadBytesWithEnv(s.configSummary.ConfigPath, rawConfig, s.validationEnvLookup())
+	if err == nil {
+		err = config.ValidateMVP(cfg)
+	}
 	if err != nil {
 		restore()
 		return ops.ConfigSummary{}, fmt.Errorf("validate updated pack: %w", err)
@@ -1189,6 +1237,7 @@ func (s *Server) resolvePackPaths(req packSaveRequest) (string, string, string, 
 	if !filepath.IsAbs(base) {
 		base = filepath.Join(filepath.Dir(s.configSummary.ConfigPath), base)
 	}
+	base = filepath.Clean(base)
 
 	for _, agent := range s.configSummary.Agents {
 		if agent.AgentPack == req.OriginalName && strings.TrimSpace(agent.PackPath) != "" {
@@ -1201,8 +1250,26 @@ func (s *Server) resolvePackPaths(req packSaveRequest) (string, string, string, 
 	if name == "" {
 		return "", "", "", "", fmt.Errorf("pack name is required")
 	}
-	dir := filepath.Join(base, name)
+	dir, err := containedPath(base, name)
+	if err != nil {
+		return "", "", "", "", err
+	}
 	return dir, filepath.Join(dir, "agent.yaml"), filepath.Join(dir, "prompt.md"), filepath.Join(dir, "context.md"), nil
+}
+
+func containedPath(base string, relative string) (string, error) {
+	if filepath.IsAbs(relative) {
+		return "", fmt.Errorf("pack name %q must stay within the agent packs directory", relative)
+	}
+	target := filepath.Clean(filepath.Join(base, relative))
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		return "", fmt.Errorf("resolve pack path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("pack name %q must stay within the agent packs directory", relative)
+	}
+	return target, nil
 }
 
 type fileSnapshot struct {
@@ -1291,42 +1358,22 @@ func trimStrings(values []string) []string {
 	return result
 }
 
-var validationEnvMu sync.Mutex
-
-func (s *Server) withValidationEnv(fn func() error) error {
-	type restoreEntry struct {
-		key     string
-		value   string
-		existed bool
-	}
-	restores := []restoreEntry{}
-
-	validationEnvMu.Lock()
-	defer validationEnvMu.Unlock()
-
+func (s *Server) validationEnvLookup() config.EnvLookup {
+	placeholders := map[string]string{}
 	for _, source := range s.configSummary.Sources {
 		key := strings.TrimPrefix(strings.TrimSpace(source.TokenEnv), "$")
 		if key == "" {
 			continue
 		}
-		if _, ok := os.LookupEnv(key); ok {
-			continue
-		}
-		restores = append(restores, restoreEntry{key: key, existed: false})
-		if err := os.Setenv(key, "maestro-ui-validation"); err != nil {
-			return err
-		}
+		placeholders[key] = "maestro-ui-validation"
 	}
-	defer func() {
-		for _, entry := range restores {
-			if entry.existed {
-				_ = os.Setenv(entry.key, entry.value)
-				continue
-			}
-			_ = os.Unsetenv(entry.key)
+	return func(name string) (string, bool) {
+		if value, ok := os.LookupEnv(name); ok {
+			return value, true
 		}
-	}()
-	return fn()
+		value, ok := placeholders[name]
+		return value, ok
+	}
 }
 
 func writeCollection[T any](w http.ResponseWriter, items []T) {

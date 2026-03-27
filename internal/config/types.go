@@ -246,6 +246,7 @@ type ServerConfig struct {
 	Enabled bool   `yaml:"enabled"`
 	Host    string `yaml:"host"`
 	Port    int    `yaml:"port"`
+	APIKey  string `yaml:"api_key"`
 }
 
 type LoggingConfig struct {

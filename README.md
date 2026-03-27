@@ -302,6 +302,7 @@ server:
   enabled: true
   host: 127.0.0.1
   port: 7777
+  api_key: ""                     # optional; required for non-loopback binds
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -508,6 +509,7 @@ server:
   enabled: true
   host: 127.0.0.1
   port: 7777
+  api_key: ""
 ```
 
 ### Endpoints
@@ -538,6 +540,10 @@ server:
 | `POST` | `/api/v1/packs/save` | Save agent pack changes |
 
 Open `http://127.0.0.1:7777` for the built-in dashboard.
+
+When the server binds to loopback (`127.0.0.1`, `localhost`, or `::1`), API auth is optional so local use stays frictionless. If you bind the server to any non-loopback host, Maestro requires an API key. Set `server.api_key` for a stable key, or let Maestro generate an ephemeral one at startup.
+
+When auth is enabled, API clients must send `Authorization: Bearer <key>`. The built-in dashboard can be opened with `?api_key=<key>` once; it stores the key in session storage and removes it from the URL.
 
 ## Trackers
 

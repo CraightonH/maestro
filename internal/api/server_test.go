@@ -16,6 +16,7 @@ import (
 
 	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
+	"github.com/tjohnson/maestro/internal/ops"
 	"github.com/tjohnson/maestro/internal/orchestrator"
 )
 
@@ -43,6 +44,10 @@ func (f *fakeRuntime) ResolveMessage(requestID string, reply string, resolvedVia
 func (f *fakeRuntime) StopRun(runID string, reason string) error {
 	f.stops = append(f.stops, runID+":"+reason)
 	return nil
+}
+
+func authorizeRequest(server *Server, request *http.Request) {
+	request.Header.Set("Authorization", "Bearer "+server.apiKey)
 }
 
 func TestStatusEndpointReturnsSnapshotAndConfig(t *testing.T) {
@@ -81,6 +86,7 @@ func TestStatusEndpointReturnsSnapshotAndConfig(t *testing.T) {
 	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	authorizeRequest(server, request)
 
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
@@ -121,6 +127,7 @@ func TestApprovalActionEndpointResolvesDecision(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/approvals/approval-1/approve", nil)
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -140,6 +147,7 @@ func TestRunStopEndpointStopsRun(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/runs/run-1/stop", nil)
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -195,6 +203,7 @@ func TestResourceEndpointsReturnCollections(t *testing.T) {
 	} {
 		recorder := httptest.NewRecorder()
 		request := httptest.NewRequest(http.MethodGet, test.path, nil)
+		authorizeRequest(server, request)
 		server.httpServer.Handler.ServeHTTP(recorder, request)
 
 		if recorder.Code != http.StatusOK {
@@ -222,6 +231,7 @@ func TestMessageReplyEndpointResolvesReply(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/message-1/reply", strings.NewReader(`{"reply":"start"}`))
 	request.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -242,6 +252,7 @@ func TestMessageReplyEndpointRejectsEmptyReply(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/messages/message-1/reply", strings.NewReader(`{"reply":"   "}`))
 	request.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
@@ -290,7 +301,7 @@ func TestStreamEndpointEmitsInitialUpdate(t *testing.T) {
 	testServer := httptest.NewServer(server.httpServer.Handler)
 	defer testServer.Close()
 
-	resp, err := http.Get(testServer.URL + "/api/v1/stream")
+	resp, err := http.Get(testServer.URL + "/api/v1/stream?api_key=" + server.apiKey)
 	if err != nil {
 		t.Fatalf("stream request: %v", err)
 	}
@@ -408,6 +419,7 @@ server:
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/packs/save", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusOK {
@@ -436,6 +448,71 @@ server:
 	}
 }
 
+func TestPackSaveRejectsPathTraversal(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "maestro.yaml")
+	if err := os.WriteFile(configPath, []byte(strings.TrimSpace(`
+agent_packs_dir: ./agents
+defaults:
+  max_concurrent_global: 1
+sources:
+  - name: demo
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      project: team/project
+    filter:
+      labels:
+        - agent:ready
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: ./prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+state:
+  dir: ./state
+logging:
+  dir: ./logs
+  max_files: 5
+server:
+  enabled: true
+  host: 127.0.0.1
+  port: 8742
+`)), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "prompt.md"), []byte("prompt"), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeRuntime{})
+
+	body := []byte(`{"name":"../../escape","description":"Updated description","instance_name":"escape","harness":"claude-code","workspace":"git-clone","approval_policy":"auto","max_concurrent":1,"tools":[],"skills":[],"env_keys":[],"prompt_body":"Updated prompt","context_body":"Updated context"}`)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/packs/save", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status code = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "must stay within the agent packs directory") {
+		t.Fatalf("expected traversal error, got %s", recorder.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "escape", "agent.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no escaped pack write, stat err = %v", err)
+	}
+}
+
 func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	configPath, raw := testConfigFile(t)
 	cfg := &config.Config{
@@ -452,6 +529,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/config/raw", nil)
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("config raw status code = %d, want 200", recorder.Code)
@@ -463,6 +541,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	validateRecorder := httptest.NewRecorder()
 	validateRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/validate", strings.NewReader(`{"yaml":`+strconvQuote(raw)+`}`))
 	validateRequest.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, validateRequest)
 	server.httpServer.Handler.ServeHTTP(validateRecorder, validateRequest)
 	if validateRecorder.Code != http.StatusOK {
 		t.Fatalf("config validate status code = %d, want 200", validateRecorder.Code)
@@ -475,6 +554,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	saveRecorder := httptest.NewRecorder()
 	saveRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/save", strings.NewReader(`{"yaml":`+strconvQuote(updated)+`}`))
 	saveRequest.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, saveRequest)
 	server.httpServer.Handler.ServeHTTP(saveRecorder, saveRequest)
 	if saveRecorder.Code != http.StatusOK {
 		t.Fatalf("config save status code = %d, want 200", saveRecorder.Code)
@@ -490,6 +570,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	dryRunRecorder := httptest.NewRecorder()
 	dryRunRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/dry-run", strings.NewReader(`{"yaml":`+strconvQuote(strings.Replace(updated, "gitlab-b", "gitlab-c", 1))+`}`))
 	dryRunRequest.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, dryRunRequest)
 	server.httpServer.Handler.ServeHTTP(dryRunRecorder, dryRunRequest)
 	if dryRunRecorder.Code != http.StatusOK {
 		t.Fatalf("config dry-run status code = %d, want 200", dryRunRecorder.Code)
@@ -500,6 +581,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 
 	backupsRecorder := httptest.NewRecorder()
 	backupsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/config/backups", nil)
+	authorizeRequest(server, backupsRequest)
 	server.httpServer.Handler.ServeHTTP(backupsRecorder, backupsRequest)
 	if backupsRecorder.Code != http.StatusOK {
 		t.Fatalf("config backups status code = %d, want 200", backupsRecorder.Code)
@@ -524,6 +606,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	}
 	backupDetailRecorder := httptest.NewRecorder()
 	backupDetailRequest := httptest.NewRequest(http.MethodGet, "/api/v1/config/backups/"+backupName, nil)
+	authorizeRequest(server, backupDetailRequest)
 	server.httpServer.Handler.ServeHTTP(backupDetailRecorder, backupDetailRequest)
 	if backupDetailRecorder.Code != http.StatusOK {
 		t.Fatalf("config backup detail status code = %d, want 200", backupDetailRecorder.Code)
@@ -534,6 +617,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 
 	restoreRecorder := httptest.NewRecorder()
 	restoreRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/backups/"+backupName, nil)
+	authorizeRequest(server, restoreRequest)
 	server.httpServer.Handler.ServeHTTP(restoreRecorder, restoreRequest)
 	if restoreRecorder.Code != http.StatusOK {
 		t.Fatalf("config restore status code = %d, want 200", restoreRecorder.Code)
@@ -548,6 +632,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 
 	createBackupRecorder := httptest.NewRecorder()
 	createBackupRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/backups/create", nil)
+	authorizeRequest(server, createBackupRequest)
 	server.httpServer.Handler.ServeHTTP(createBackupRecorder, createBackupRequest)
 	if createBackupRecorder.Code != http.StatusOK {
 		t.Fatalf("config backup create status code = %d, want 200", createBackupRecorder.Code)
@@ -559,6 +644,7 @@ func TestConfigRawValidateAndSaveEndpoints(t *testing.T) {
 	invalidSaveRecorder := httptest.NewRecorder()
 	invalidSaveRequest := httptest.NewRequest(http.MethodPost, "/api/v1/config/save", strings.NewReader(`{"yaml":"sources:\n  - name: broken\n    tracker: gitlab\n"}`))
 	invalidSaveRequest.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, invalidSaveRequest)
 	server.httpServer.Handler.ServeHTTP(invalidSaveRecorder, invalidSaveRequest)
 	if invalidSaveRecorder.Code != http.StatusOK {
 		t.Fatalf("invalid config save status code = %d, want 200", invalidSaveRecorder.Code)
@@ -580,12 +666,105 @@ func TestConfigValidateRejectsBrokenYAML(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/config/validate", strings.NewReader(`{"yaml":"sources:\n  - name: bad\n    tracker: gitlab\n"}`))
 	request.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, request)
 	server.httpServer.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("broken validate status code = %d, want 200", recorder.Code)
 	}
 	if !strings.Contains(recorder.Body.String(), `"ok": false`) {
 		t.Fatalf("expected failed validation response: %s", recorder.Body.String())
+	}
+}
+
+func TestConfigValidateUsesInjectedTokenLookupWithoutMutatingEnv(t *testing.T) {
+	_ = os.Unsetenv("MISSING_GITLAB_TOKEN")
+	root := t.TempDir()
+	configPath := filepath.Join(root, "maestro.yaml")
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("prompt"), 0o600); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	server := New(&config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeRuntime{})
+	server.configSummary.ConfigPath = configPath
+	server.configSummary.Sources = []ops.ConfigSourceSummary{
+		{Name: "gitlab-a", TokenEnv: "MISSING_GITLAB_TOKEN"},
+	}
+
+	raw := `defaults:
+  poll_interval: 30s
+  stall_timeout: 10m
+  max_concurrent_global: 1
+user:
+  name: Demo Operator
+sources:
+  - name: gitlab-a
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: MISSING_GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: ["agent:ready"]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: ./prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+state:
+  dir: ./state
+logging:
+  dir: ./logs
+`
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/config/validate", strings.NewReader(`{"yaml":`+strconvQuote(raw)+`}`))
+	request.Header.Set("Content-Type", "application/json")
+	authorizeRequest(server, request)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), `"ok": true`) {
+		t.Fatalf("expected successful validation response: %s", recorder.Body.String())
+	}
+	if value := os.Getenv("MISSING_GITLAB_TOKEN"); value != "" {
+		t.Fatalf("token env mutated to %q, want empty", value)
+	}
+}
+
+func TestAPIEndpointsRequireAuthorization(t *testing.T) {
+	server := New(&config.Config{Server: config.ServerConfig{Enabled: true, Host: "0.0.0.0", Port: 8742}}, slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeRuntime{})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status code = %d, want 401", recorder.Code)
+	}
+	if !strings.Contains(recorder.Body.String(), "unauthorized") {
+		t.Fatalf("expected unauthorized body, got %s", recorder.Body.String())
+	}
+}
+
+func TestLoopbackAPIAllowsUnauthenticatedRequests(t *testing.T) {
+	server := New(&config.Config{Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742}}, slog.New(slog.NewTextHandler(io.Discard, nil)), &fakeRuntime{})
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
 	}
 }
 

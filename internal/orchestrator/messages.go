@@ -68,13 +68,6 @@ func (s *Service) recordMessageView(input MessageView) {
 }
 
 func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia string) error {
-	s.mu.RLock()
-	request, ok := s.messages[requestID]
-	s.mu.RUnlock()
-	if !ok {
-		return fmt.Errorf("message request %q not found", requestID)
-	}
-
 	now := time.Now()
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
@@ -85,9 +78,10 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 		resolvedVia = "operator"
 	}
 
-	s.mu.RLock()
-	_, hasWaiter := s.messageWaiters[requestID]
-	s.mu.RUnlock()
+	request, hasWaiter, err := s.claimMessageResolution(requestID)
+	if err != nil {
+		return err
+	}
 
 	if !hasWaiter {
 		if err := s.harness.Reply(context.Background(), harness.MessageReply{
@@ -96,6 +90,7 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 			Reply:     reply,
 			RepliedAt: now,
 		}); err != nil {
+			s.restoreMessageResolution(requestID)
 			s.recordRunEventByFields("error", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply for %s failed: %v", messageKindLabel(request.Kind), request.RunID, err)
 			return err
 		}
@@ -140,6 +135,35 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply received for %s via %s", messageKindLabel(request.Kind), request.RunID, resolvedVia)
 	_ = s.saveStateBestEffort()
 	return nil
+}
+
+func (s *Service) claimMessageResolution(requestID string) (MessageView, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	request, ok := s.messages[requestID]
+	if !ok {
+		return MessageView{}, false, fmt.Errorf("message request %q not found", requestID)
+	}
+	if !request.Resolvable {
+		return MessageView{}, false, fmt.Errorf("message request %q is already being resolved", requestID)
+	}
+	request.Resolvable = false
+	s.messages[requestID] = request
+	_, hasWaiter := s.messageWaiters[requestID]
+	return request, hasWaiter, nil
+}
+
+func (s *Service) restoreMessageResolution(requestID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	request, ok := s.messages[requestID]
+	if !ok {
+		return
+	}
+	request.Resolvable = true
+	s.messages[requestID] = request
 }
 
 func (s *Service) createControlMessage(run *domain.AgentRun, kind string, summary string, body string) (MessageView, <-chan string) {
@@ -196,7 +220,6 @@ func (s *Service) cancelControlMessage(requestID string, outcome string) {
 	s.mu.Unlock()
 	_ = s.saveStateBestEffort()
 }
-
 
 func (s *Service) appendMessageHistory(entry MessageHistoryEntry) {
 	s.messageHistory = append(s.messageHistory, entry)

@@ -10,6 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type EnvLookup func(string) (string, bool)
+
 // Load reads the YAML config, applies defaults, resolves env-backed secrets, and normalizes paths.
 func Load(path string) (*Config, error) {
 	if path == "" {
@@ -35,6 +37,12 @@ func Load(path string) (*Config, error) {
 
 // LoadBytes reads a YAML config payload as if it lived at path.
 func LoadBytes(path string, raw []byte) (*Config, error) {
+	return LoadBytesWithEnv(path, raw, os.LookupEnv)
+}
+
+// LoadBytesWithEnv reads a YAML config payload as if it lived at path, resolving
+// env-backed values with the provided lookup.
+func LoadBytesWithEnv(path string, raw []byte, lookup EnvLookup) (*Config, error) {
 	absPath, err := expandPath(path)
 	if err != nil {
 		return nil, err
@@ -44,10 +52,10 @@ func LoadBytes(path string, raw []byte) (*Config, error) {
 		return nil, err
 	}
 
-	return loadBytesAtPath(absPath, raw)
+	return loadBytesAtPath(absPath, raw, lookup)
 }
 
-func loadBytesAtPath(absPath string, raw []byte) (*Config, error) {
+func loadBytesAtPath(absPath string, raw []byte, lookup EnvLookup) (*Config, error) {
 	cfg := &Config{}
 	if err := yaml.Unmarshal(raw, cfg); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
@@ -70,7 +78,7 @@ func loadBytesAtPath(absPath string, raw []byte) (*Config, error) {
 	if err := resolveAgentContexts(cfg); err != nil {
 		return nil, err
 	}
-	if err := resolveEnv(cfg); err != nil {
+	if err := resolveEnv(cfg, lookup); err != nil {
 		return nil, err
 	}
 
@@ -340,7 +348,10 @@ func resolvePaths(cfg *Config) error {
 	return nil
 }
 
-func resolveEnv(cfg *Config) error {
+func resolveEnv(cfg *Config, lookup EnvLookup) error {
+	if lookup == nil {
+		lookup = os.LookupEnv
+	}
 	for i := range cfg.Sources {
 		resolveFilterAssignee(cfg, &cfg.Sources[i].Filter, cfg.Sources[i].Tracker)
 		resolveFilterAssignee(cfg, &cfg.Sources[i].EpicFilter, cfg.Sources[i].Tracker)
@@ -350,8 +361,9 @@ func resolveEnv(cfg *Config) error {
 		if tokenEnv == "" {
 			continue
 		}
-		value := strings.TrimSpace(os.Getenv(tokenEnv))
-		if value == "" {
+		value, ok := lookup(tokenEnv)
+		value = strings.TrimSpace(value)
+		if !ok || value == "" {
 			return fmt.Errorf("source %q token env %q is unset or empty", cfg.Sources[i].Name, tokenEnv)
 		}
 		cfg.Sources[i].Connection.Token = value

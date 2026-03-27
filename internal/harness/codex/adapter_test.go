@@ -288,3 +288,105 @@ func TestNotifyReturnsMarshalError(t *testing.T) {
 		t.Fatalf("notify error = %v, want marshal error", err)
 	}
 }
+
+func TestAdapterStartFailsIfAppServerExitsBeforeInitializeResponse(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "codex")
+	script := `#!/bin/sh
+if [ "$1" = "app-server" ]; then
+  exit 0
+fi
+echo "unexpected args: $@" >&2
+exit 1
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub codex: %v", err)
+	}
+
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter, err := NewAdapter()
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := adapter.Start(context.Background(), harness.RunConfig{
+			RunID:   "run-init-exit",
+			Prompt:  "hello world",
+			Workdir: tmp,
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "codex app-server exited before turn completed") {
+			t.Fatalf("start error = %v, want app-server exit error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for start failure")
+	}
+}
+
+func TestAdapterWaitFailsIfAppServerExitsBeforeTurnCompleted(t *testing.T) {
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "codex")
+	script := `#!/bin/sh
+if [ "$1" = "app-server" ]; then
+  while IFS= read -r line; do
+    case "$line" in
+      *'"method":"initialize"'*)
+        printf '%s\n' '{"id":1,"result":{"userAgent":"stub"}}'
+        ;;
+      *'"method":"initialized"'*)
+        ;;
+      *'"method":"thread/start"'*)
+        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
+        ;;
+      *'"method":"turn/start"'*)
+        printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}'
+        exit 0
+        ;;
+    esac
+  done
+  exit 0
+fi
+echo "unexpected args: $@" >&2
+exit 1
+`
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub codex: %v", err)
+	}
+
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	adapter, err := NewAdapter()
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	run, err := adapter.Start(context.Background(), harness.RunConfig{
+		RunID:   "run-eof-before-complete",
+		Prompt:  "hello world",
+		Workdir: tmp,
+	})
+	if err != nil {
+		t.Fatalf("start harness: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- run.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "codex app-server exited before turn completed") {
+			t.Fatalf("wait error = %v, want app-server exit error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for wait failure")
+	}
+}

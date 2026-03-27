@@ -15,8 +15,38 @@ import type {
   StatusResponse,
 } from "./types";
 
+const apiKeyStorageKey = "maestro.apiKey";
+
+function bootstrapAPIKey(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  const url = new URL(window.location.href);
+  const fromQuery = url.searchParams.get("api_key")?.trim() || "";
+  if (fromQuery !== "") {
+    window.sessionStorage.setItem(apiKeyStorageKey, fromQuery);
+    url.searchParams.delete("api_key");
+    window.history.replaceState({}, "", url.toString());
+    return fromQuery;
+  }
+  return window.sessionStorage.getItem(apiKeyStorageKey)?.trim() || "";
+}
+
+let apiKey = bootstrapAPIKey();
+
+function authHeaders(headers?: HeadersInit): Headers {
+  const merged = new Headers(headers);
+  if (apiKey !== "") {
+    merged.set("Authorization", `Bearer ${apiKey}`);
+  }
+  return merged;
+}
+
 async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  const response = await fetch(path, {
+    ...init,
+    headers: authHeaders(init?.headers),
+  });
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(payload.error || `${path} ${response.status}`);
@@ -50,7 +80,8 @@ export async function fetchDashboardData() {
 }
 
 export function openStream(onUpdate: () => void, onError?: () => void) {
-  const stream = new EventSource("/api/v1/stream");
+  const path = apiKey === "" ? "/api/v1/stream" : `/api/v1/stream?api_key=${encodeURIComponent(apiKey)}`;
+  const stream = new EventSource(path);
   stream.addEventListener("update", () => {
     onUpdate();
   });
