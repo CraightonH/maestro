@@ -55,11 +55,24 @@ type streamEvent struct {
 	Type              string `json:"type"`
 	Subtype           string `json:"subtype"`
 	Result            string `json:"result"`
+	Message           *streamMessage `json:"message,omitempty"`
 	PermissionDenials []struct {
 		ToolName  string          `json:"tool_name"`
 		ToolUseID string          `json:"tool_use_id"`
 		ToolInput json.RawMessage `json:"tool_input"`
 	} `json:"permission_denials"`
+}
+
+type streamMessage struct {
+	Content []streamContent `json:"content"`
+}
+
+type streamContent struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	Thinking string          `json:"thinking,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Input    json.RawMessage `json:"input,omitempty"`
 }
 
 func NewAdapter() (*Adapter, error) {
@@ -398,12 +411,91 @@ func (r *claudeRun) writeStreamEvent(event streamEvent) {
 		return
 	}
 
-	switch event.Type {
-	case "assistant":
-		_, _ = io.WriteString(r.stdout, "[claude assistant event]\n")
-	case "tool_use":
-		_, _ = io.WriteString(r.stdout, "[claude tool use]\n")
-	case "tool_result":
-		_, _ = io.WriteString(r.stdout, "[claude tool result]\n")
+	if event.Message == nil {
+		return
 	}
+
+	for _, block := range event.Message.Content {
+		switch block.Type {
+		case "tool_use":
+			_, _ = fmt.Fprintf(r.stdout, "Using %s\n", toolUseSummary(block.Name, block.Input))
+		case "text":
+			if text := strings.TrimSpace(block.Text); text != "" {
+				_, _ = io.WriteString(r.stdout, text)
+				if !strings.HasSuffix(text, "\n") {
+					_, _ = io.WriteString(r.stdout, "\n")
+				}
+			}
+		case "thinking":
+			if thought := strings.TrimSpace(block.Thinking); thought != "" {
+				_, _ = fmt.Fprintf(r.stdout, "%s\n", truncate(thought, 200))
+			}
+		}
+	}
+}
+
+func toolUseSummary(name string, input json.RawMessage) string {
+	// MCP tools: name only, no description.
+	if strings.HasPrefix(name, "mcp__") {
+		return name
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil || len(fields) == 0 {
+		return name
+	}
+
+	extract := func(key string) string {
+		raw, ok := fields[key]
+		if !ok {
+			return ""
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil {
+			return strings.TrimSpace(s)
+		}
+		return ""
+	}
+
+	var detail string
+	switch name {
+	case "Bash":
+		detail = extract("description")
+		if detail == "" {
+			detail = extract("command")
+		}
+	case "Read", "Write", "Edit":
+		detail = extract("file_path")
+	case "Glob":
+		detail = extract("pattern")
+	case "Grep":
+		pattern := extract("pattern")
+		path := extract("path")
+		if pattern != "" && path != "" {
+			detail = fmt.Sprintf("%q in %s", pattern, path)
+		} else if pattern != "" {
+			detail = fmt.Sprintf("%q", pattern)
+		}
+	case "Agent":
+		detail = extract("description")
+	case "WebSearch":
+		detail = extract("query")
+	case "WebFetch":
+		detail = extract("url")
+	default:
+		detail = extract("description")
+	}
+
+	if detail == "" {
+		return name
+	}
+	return fmt.Sprintf("%s: %s", name, truncate(detail, 200))
+}
+
+func truncate(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
