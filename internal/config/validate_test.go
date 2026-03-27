@@ -166,6 +166,103 @@ func TestValidateMVPAcceptsWorkspaceNoneWithoutRepo(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsScpStyleRepoURL(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "ops-linear",
+				Tracker:   "linear",
+				Repo:      "git@gitlab.example.com:team/project.git",
+				AgentType: "triage",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:            "triage",
+				Harness:         "codex",
+				Workspace:       "git-clone",
+				Prompt:          promptPath,
+				ApprovalPolicy:  "auto",
+				ApprovalTimeout: config.Duration{Duration: time.Hour},
+				MaxConcurrent:   1,
+				StallTimeout:    config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected SCP-style repo URL to validate: %v", err)
+	}
+}
+
+func TestValidateMVPRejectsInvalidColonRepoURL(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "ops-linear",
+				Tracker:   "linear",
+				Repo:      "://missing",
+				AgentType: "triage",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:            "triage",
+				Harness:         "codex",
+				Workspace:       "git-clone",
+				Prompt:          promptPath,
+				ApprovalPolicy:  "auto",
+				ApprovalTimeout: config.Duration{Duration: time.Hour},
+				MaxConcurrent:   1,
+				StallTimeout:    config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid repo url") {
+		t.Fatalf("validation error = %v, want invalid repo url", err)
+	}
+}
+
 func TestValidateMVPAcceptsRepoPackWithoutPromptFile(t *testing.T) {
 	root := t.TempDir()
 

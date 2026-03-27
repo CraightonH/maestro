@@ -8,10 +8,12 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/tjohnson/maestro/internal/domain"
+	"github.com/tjohnson/maestro/internal/redact"
 )
 
 type Prepared struct {
@@ -59,7 +61,7 @@ func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentNam
 		if !isGitRepoHealthy(ctx, path) {
 			// Repo is corrupt — safe to remove and re-clone.
 			_ = os.RemoveAll(path)
-		} else if err := reuseWorkspace(ctx, path, branch); err != nil {
+		} else if err := reuseWorkspace(ctx, path, branch, m.gitLabHost, m.gitLabToken); err != nil {
 			// Repo is healthy but fetch/checkout failed (network, auth, conflict).
 			// Preserve the workspace and return the error — don't destroy local work.
 			return Prepared{}, fmt.Errorf("reuse workspace %s: %w", path, err)
@@ -116,9 +118,9 @@ func isGitRepoHealthy(ctx context.Context, path string) bool {
 	return runGit(ctx, path, "rev-parse", "--git-dir") == nil
 }
 
-func reuseWorkspace(ctx context.Context, path string, branch string) error {
-	// Fetch latest from all remotes.
-	if err := runGit(ctx, path, "fetch", "--all", "--prune"); err != nil {
+func reuseWorkspace(ctx context.Context, path string, branch string, gitLabHost string, gitLabToken string) error {
+	// Fetch latest from origin, with auth only for matching GitLab HTTPS remotes.
+	if err := fetchWorkspaceOrigin(ctx, path, gitLabHost, gitLabToken); err != nil {
 		return err
 	}
 	return checkoutOrCreateBranch(ctx, path, branch)
@@ -280,23 +282,53 @@ func copyFile(source string, destination string, mode fs.FileMode) error {
 	return nil
 }
 
-func cloneRepo(ctx context.Context, repoURL string, gitLabHost string, gitLabToken string, path string) error {
-	if strings.TrimSpace(gitLabToken) == "" || !strings.HasPrefix(repoURL, "http") {
-		return runGit(ctx, "", "clone", repoURL, path)
+func fetchWorkspaceOrigin(ctx context.Context, path string, gitLabHost string, gitLabToken string) error {
+	remoteURL, err := gitRemoteURL(ctx, path, "origin")
+	if err != nil {
+		return err
 	}
-	repoEndpoint, err := url.Parse(repoURL)
-	if err != nil || !strings.EqualFold(repoEndpoint.Host, gitLabHost) {
-		return runGit(ctx, "", "clone", repoURL, path)
-	}
+	return runGitWithAuth(ctx, path, remoteURL, gitLabHost, gitLabToken, "fetch", "origin", "--prune")
+}
 
+func gitRemoteURL(ctx context.Context, path string, remote string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", remote)
+	cmd.Dir = path
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf(
+			"git remote get-url %s: %w: %s",
+			redact.String(remote),
+			err,
+			redact.String(strings.TrimSpace(string(output))),
+		)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func gitLabAuthArgs(repoURL string, gitLabHost string, gitLabToken string) []string {
+	if strings.TrimSpace(gitLabToken) == "" || strings.TrimSpace(gitLabHost) == "" {
+		return nil
+	}
+	repoEndpoint, err := url.Parse(strings.TrimSpace(repoURL))
+	if err != nil {
+		return nil
+	}
+	if !strings.EqualFold(repoEndpoint.Scheme, "https") || !strings.EqualFold(repoEndpoint.Host, strings.TrimSpace(gitLabHost)) {
+		return nil
+	}
 	auth := base64.StdEncoding.EncodeToString([]byte("oauth2:" + gitLabToken))
-	return runGit(
-		ctx,
-		"",
-		"-c",
-		"http.extraHeader=Authorization: Basic "+auth,
-		"clone",
-		repoURL,
-		path,
-	)
+	return []string{"-c", "http.extraHeader=Authorization: Basic " + auth}
+}
+
+func runGitWithAuth(ctx context.Context, dir string, repoURL string, gitLabHost string, gitLabToken string, args ...string) error {
+	if authArgs := gitLabAuthArgs(repoURL, gitLabHost, gitLabToken); len(authArgs) > 0 {
+		args = append(authArgs, args...)
+	}
+	return runGit(ctx, dir, args...)
+}
+
+func cloneRepo(ctx context.Context, repoURL string, gitLabHost string, gitLabToken string, path string) error {
+	return runGitWithAuth(ctx, "", repoURL, gitLabHost, gitLabToken, "clone", repoURL, path)
 }

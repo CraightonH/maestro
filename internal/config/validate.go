@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -262,6 +263,9 @@ func validateRepoURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
+	if isScpStyleRepoURL(raw) {
+		return nil
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid repo url %q: %w", raw, err)
@@ -270,6 +274,12 @@ func validateRepoURL(raw string) error {
 		return fmt.Errorf("repo urls must not embed credentials; use connection.token_env instead")
 	}
 	return nil
+}
+
+var scpStyleRepoURLPattern = regexp.MustCompile(`^[^@\s/:]+@[^:/\s]+:.+$`)
+
+func isScpStyleRepoURL(raw string) bool {
+	return scpStyleRepoURLPattern.MatchString(strings.TrimSpace(raw))
 }
 
 func requiresSourceRepo(workspace string, tracker string) bool {
