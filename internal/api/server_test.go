@@ -118,6 +118,190 @@ func TestStatusEndpointReturnsSnapshotAndConfig(t *testing.T) {
 	}
 }
 
+func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
+	now := time.Unix(1710000000, 0).UTC()
+	runtime := &fakeRuntime{
+		snapshot: orchestrator.Snapshot{
+			SourceName:    "gitlab-a",
+			SourceTracker: "gitlab",
+			LastPollAt:    now,
+			LastPollCount: 3,
+			ClaimedCount:  1,
+			RetryCount:    1,
+			PendingApprovals: []orchestrator.ApprovalView{
+				{
+					RequestID:       "approval-1",
+					RunID:           "run-1",
+					IssueID:         "123",
+					IssueIdentifier: "team/project#1",
+					AgentName:       "coder",
+					ToolName:        "Bash",
+					ToolInput:       `{"command":"git status"}`,
+					ApprovalPolicy:  "manual",
+					RequestedAt:     now,
+					Resolvable:      true,
+				},
+			},
+			PendingMessages: []orchestrator.MessageView{
+				{
+					RequestID:       "message-1",
+					RunID:           "run-1",
+					IssueID:         "123",
+					IssueIdentifier: "team/project#1",
+					SourceName:      "gitlab-a",
+					AgentName:       "coder",
+					Kind:            "before_work_review",
+					Summary:         "Need review",
+					Body:            "Proceed?",
+					RequestedAt:     now,
+					Resolvable:      true,
+				},
+			},
+			Retries: []orchestrator.RetryView{
+				{
+					IssueID:         "124",
+					IssueIdentifier: "team/project#2",
+					SourceName:      "gitlab-a",
+					Attempt:         2,
+					DueAt:           now.Add(time.Minute),
+					Error:           "temporary failure",
+				},
+			},
+			ApprovalHistory: []orchestrator.ApprovalHistoryEntry{
+				{
+					RequestID:       "approval-0",
+					RunID:           "run-0",
+					IssueID:         "122",
+					IssueIdentifier: "team/project#0",
+					AgentName:       "coder",
+					ToolName:        "Edit",
+					ApprovalPolicy:  "manual",
+					Decision:        "approve",
+					Reason:          "ok",
+					RequestedAt:     now.Add(-2 * time.Minute),
+					DecidedAt:       now.Add(-time.Minute),
+					Outcome:         "resolved",
+				},
+			},
+			MessageHistory: []orchestrator.MessageHistoryEntry{
+				{
+					RequestID:       "message-0",
+					RunID:           "run-0",
+					IssueID:         "122",
+					IssueIdentifier: "team/project#0",
+					SourceName:      "gitlab-a",
+					AgentName:       "coder",
+					Kind:            "before_work_review",
+					Summary:         "Need review",
+					Body:            "Proceed?",
+					Reply:           "yes",
+					ResolvedVia:     "web",
+					RequestedAt:     now.Add(-2 * time.Minute),
+					RepliedAt:       now.Add(-time.Minute),
+					Outcome:         "resolved",
+				},
+			},
+			ActiveRun: &domain.AgentRun{
+				ID:             "run-1",
+				AgentName:      "coder",
+				AgentType:      "code-pr",
+				SourceName:     "gitlab-a",
+				HarnessKind:    "claude-code",
+				WorkspacePath:  "/tmp/workspace",
+				Status:         domain.RunStatusActive,
+				Attempt:        1,
+				ApprovalPolicy: "manual",
+				ApprovalState:  domain.ApprovalStateAwaiting,
+				StartedAt:      now,
+				LastActivityAt: now.Add(30 * time.Second),
+				Issue: domain.Issue{
+					ID:         "123",
+					Identifier: "team/project#1",
+					Title:      "Fix bug",
+					URL:        "https://example.com/issues/123",
+					State:      "opened",
+					Labels:     []string{"bug", "urgent"},
+					UpdatedAt:  now,
+				},
+			},
+			ActiveRuns: []domain.AgentRun{
+				{
+					ID:         "run-1",
+					AgentName:  "coder",
+					SourceName: "gitlab-a",
+					Status:     domain.RunStatusActive,
+					Issue: domain.Issue{
+						Identifier: "team/project#1",
+					},
+				},
+			},
+			RunOutputs: []orchestrator.RunOutputView{
+				{
+					RunID:           "run-1",
+					SourceName:      "gitlab-a",
+					IssueIdentifier: "team/project#1",
+					StdoutTail:      "hello",
+					StderrTail:      "warn",
+					UpdatedAt:       now,
+				},
+			},
+			SourceSummaries: []orchestrator.SourceSummary{
+				{
+					Name:             "gitlab-a",
+					DisplayGroup:     "Core",
+					Tags:             []string{"prod"},
+					Tracker:          "gitlab",
+					LastPollAt:       now,
+					LastPollCount:    3,
+					ClaimedCount:     1,
+					RetryCount:       1,
+					ActiveRunCount:   1,
+					PendingApprovals: 1,
+					PendingMessages:  1,
+				},
+			},
+			RecentEvents: []orchestrator.Event{
+				{
+					Time:    now,
+					Level:   "info",
+					Source:  "gitlab-a",
+					RunID:   "run-1",
+					Issue:   "team/project#1",
+					Message: "dispatched",
+				},
+			},
+		},
+	}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
+	authorizeRequest(server, request)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
+	}
+
+	body := recorder.Body.String()
+	for _, want := range []string{
+		`"source_tracker": "gitlab"`,
+		`"tool_input": "{\"command\":\"git status\"}"`,
+		`"resolved_via": "web"`,
+		`"workspace_path": "/tmp/workspace"`,
+		`"stdout_tail": "hello"`,
+		`"display_group": "Core"`,
+		`"message": "dispatched"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("status body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestApprovalActionEndpointResolvesDecision(t *testing.T) {
 	runtime := &fakeRuntime{}
 	cfg := &config.Config{

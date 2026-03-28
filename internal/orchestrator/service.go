@@ -182,15 +182,19 @@ type Dependencies struct {
 }
 
 type Service struct {
-	cfg        *config.Config
-	logger     *slog.Logger
-	source     config.SourceConfig
-	agent      config.AgentTypeConfig
-	tracker    tracker.Tracker
-	harness    harness.Harness
-	workspace  *workspace.Manager
-	stateStore *state.Store
-	limiter    dispatchLimiter
+	cfg         *config.Config
+	logger      *slog.Logger
+	source      config.SourceConfig
+	agent       config.AgentTypeConfig
+	tracker     tracker.Tracker
+	harness     harness.Harness
+	workspace   *workspace.Manager
+	stateStore  *state.Store
+	limiter     dispatchLimiter
+	stateMgr    *stateManager
+	approvalMgr *approvalRouter
+	messageMgr  *messageRouter
+	runMgr      *runManager
 
 	mu              sync.RWMutex
 	claimed         map[string]struct{}
@@ -285,7 +289,11 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 		messageWaiters: map[string]chan string{},
 		runOutputs:     map[string]*runOutputBuffer{},
 	}
-	if err := svc.restoreState(); err != nil {
+	svc.stateMgr = &stateManager{service: svc}
+	svc.approvalMgr = &approvalRouter{service: svc}
+	svc.messageMgr = &messageRouter{service: svc}
+	svc.runMgr = &runManager{service: svc}
+	if err := svc.stateMgr.restoreState(); err != nil {
 		logger.Warn("restore state failed", "error", err)
 	}
 	return svc, nil

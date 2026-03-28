@@ -11,8 +11,8 @@ import (
 var pollRequestTimeout = 30 * time.Second
 
 func (s *Service) Run(ctx context.Context) error {
-	s.startApprovalWatcher(ctx)
-	s.startMessageWatcher(ctx)
+	s.approvalMgr.startWatcher(ctx)
+	s.messageMgr.startWatcher(ctx)
 	if err := s.tick(ctx); err != nil {
 		s.recordEvent("error", "initial poll failed: %v", err)
 	}
@@ -28,7 +28,7 @@ func (s *Service) Run(ctx context.Context) error {
 				return err
 			}
 			s.runWG.Wait()
-			_ = s.saveStateBestEffort()
+			_ = s.stateMgr.saveStateBestEffort()
 			s.recordEvent("info", "service shutting down")
 			return nil
 		case <-ticker.C:
@@ -81,10 +81,10 @@ func (s *Service) tick(ctx context.Context) error {
 	}
 
 	for _, issue := range issues {
-		if s.isClaimed(issue.ID) || s.shouldSkipIssue(issue) {
+		if s.isClaimed(issue.ID) || s.stateMgr.shouldSkipIssue(issue) {
 			continue
 		}
-		return s.dispatch(ctx, issue)
+		return s.runMgr.dispatch(ctx, issue)
 	}
 
 	return nil
@@ -129,11 +129,11 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 			s.mu.Lock()
 			delete(s.retryQueue, candidate.issueID)
 			s.mu.Unlock()
-			_ = s.saveStateBestEffort()
+			_ = s.stateMgr.saveStateBestEffort()
 			s.recordSourceEvent("info", s.source.Name, "discarded retry for %s (no longer eligible)", issue.Identifier)
 			continue
 		}
-		return s.dispatch(ctx, issue)
+		return s.runMgr.dispatch(ctx, issue)
 	}
 
 	return nil

@@ -29,7 +29,7 @@ func (s *Service) reconcileActiveRun(ctx context.Context, polled []domain.Issue)
 		current = &refreshed
 	}
 
-	s.updateRun(run.ID, func(r *domain.AgentRun) {
+	s.runMgr.updateRun(run.ID, func(r *domain.AgentRun) {
 		r.Issue = *current
 	})
 
@@ -167,7 +167,7 @@ func (s *Service) refreshStoredIssueTimestamp(ctx context.Context, issueID strin
 	s.mu.Unlock()
 
 	if changed {
-		_ = s.saveStateBestEffort()
+		_ = s.stateMgr.saveStateBestEffort()
 	}
 }
 
@@ -182,7 +182,7 @@ func (s *Service) refreshActiveRunIssue(ctx context.Context, runID string) {
 		return
 	}
 
-	s.updateRun(runID, func(r *domain.AgentRun) {
+	s.runMgr.updateRun(runID, func(r *domain.AgentRun) {
 		r.Issue = refreshed
 	})
 }

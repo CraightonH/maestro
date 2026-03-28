@@ -9,7 +9,12 @@ import (
 	"github.com/tjohnson/maestro/internal/state"
 )
 
-func (s *Service) restoreState() error {
+type stateManager struct {
+	service *Service
+}
+
+func (m *stateManager) restoreState() error {
+	s := m.service
 	snapshot, err := s.stateStore.Load()
 	if err != nil {
 		var corruptErr *state.CorruptStateError
@@ -30,18 +35,7 @@ func (s *Service) restoreState() error {
 	s.approvals = make(map[string]ApprovalView, len(snapshot.PendingApprovals))
 	s.approvalOrder = s.approvalOrder[:0]
 	for _, approval := range snapshot.PendingApprovals {
-		view := ApprovalView{
-			RequestID:       approval.RequestID,
-			RunID:           approval.RunID,
-			IssueID:         approval.IssueID,
-			IssueIdentifier: approval.IssueIdentifier,
-			AgentName:       approval.AgentName,
-			ToolName:        approval.ToolName,
-			ToolInput:       approval.ToolInput,
-			ApprovalPolicy:  approval.ApprovalPolicy,
-			RequestedAt:     approval.RequestedAt,
-			Resolvable:      approval.Resolvable,
-		}
+		view := approvalViewFromPersisted(approval)
 		if !view.Resolvable {
 			view.Resolvable = true
 		}
@@ -50,66 +44,26 @@ func (s *Service) restoreState() error {
 	}
 	s.approvalHistory = s.approvalHistory[:0]
 	for _, approval := range snapshot.ApprovalHistory {
-		s.approvalHistory = append(s.approvalHistory, ApprovalHistoryEntry{
-			RequestID:       approval.RequestID,
-			RunID:           approval.RunID,
-			IssueID:         approval.IssueID,
-			IssueIdentifier: approval.IssueIdentifier,
-			AgentName:       approval.AgentName,
-			ToolName:        approval.ToolName,
-			ApprovalPolicy:  approval.ApprovalPolicy,
-			Decision:        approval.Decision,
-			Reason:          approval.Reason,
-			RequestedAt:     approval.RequestedAt,
-			DecidedAt:       approval.DecidedAt,
-			Outcome:         approval.Outcome,
-		})
+		s.approvalHistory = append(s.approvalHistory, approvalHistoryEntryFromPersisted(approval))
 	}
 	s.messages = make(map[string]MessageView, len(snapshot.PendingMessages))
 	s.messageOrder = s.messageOrder[:0]
 	for _, message := range snapshot.PendingMessages {
-		view := MessageView{
-			RequestID:       message.RequestID,
-			RunID:           message.RunID,
-			IssueID:         message.IssueID,
-			IssueIdentifier: message.IssueIdentifier,
-			SourceName:      message.SourceName,
-			AgentName:       message.AgentName,
-			Kind:            message.Kind,
-			Summary:         message.Summary,
-			Body:            message.Body,
-			RequestedAt:     message.RequestedAt,
-			Resolvable:      message.Resolvable,
-		}
+		view := messageViewFromPersisted(message)
 		s.messages[view.RequestID] = view
 		s.messageOrder = append(s.messageOrder, view.RequestID)
 	}
 	s.messageHistory = s.messageHistory[:0]
 	for _, message := range snapshot.MessageHistory {
-		s.messageHistory = append(s.messageHistory, MessageHistoryEntry{
-			RequestID:       message.RequestID,
-			RunID:           message.RunID,
-			IssueID:         message.IssueID,
-			IssueIdentifier: message.IssueIdentifier,
-			SourceName:      message.SourceName,
-			AgentName:       message.AgentName,
-			Kind:            message.Kind,
-			Summary:         message.Summary,
-			Body:            message.Body,
-			Reply:           message.Reply,
-			ResolvedVia:     message.ResolvedVia,
-			RequestedAt:     message.RequestedAt,
-			RepliedAt:       message.RepliedAt,
-			Outcome:         message.Outcome,
-		})
+		s.messageHistory = append(s.messageHistory, messageHistoryEntryFromPersisted(message))
 	}
 	s.mu.Unlock()
 
-	expiredApprovals := s.expireTimedOutApprovals(now)
+	expiredApprovals := s.approvalMgr.expireTimedOutApprovals(now)
 
 	if snapshot.ActiveRun == nil {
-		if len(expiredApprovals) > 0 || s.expirePendingApprovals("restart without active run") || s.expirePendingMessages("restart without active run") {
-			return s.saveStateBestEffort()
+		if len(expiredApprovals) > 0 || m.expirePendingApprovals("restart without active run") || m.expirePendingMessages("restart without active run") {
+			return m.saveStateBestEffort()
 		}
 		return nil
 	}
@@ -126,10 +80,10 @@ func (s *Service) restoreState() error {
 			Error:          "approval timeout",
 		}
 		s.mu.Unlock()
-		_ = s.expirePendingApprovals("restart after approval timeout")
-		_ = s.expirePendingMessages("restart after approval timeout")
+		_ = m.expirePendingApprovals("restart after approval timeout")
+		_ = m.expirePendingMessages("restart after approval timeout")
 		s.recordEvent("warn", "recovered active run %s after approval timeout", snapshot.ActiveRun.RunID)
-		return s.saveStateBestEffort()
+		return m.saveStateBestEffort()
 	}
 
 	nextAttempt := snapshot.ActiveRun.Attempt + 1
@@ -145,10 +99,10 @@ func (s *Service) restoreState() error {
 			Error:          "run interrupted during shutdown or restart",
 		}
 		s.mu.Unlock()
-		_ = s.expirePendingApprovals("restart after interrupted run")
-		_ = s.expirePendingMessages("restart after interrupted run")
+		_ = m.expirePendingApprovals("restart after interrupted run")
+		_ = m.expirePendingMessages("restart after interrupted run")
 		s.recordEvent("warn", "recovered active run %s but max attempts reached", snapshot.ActiveRun.RunID)
-		return s.saveStateBestEffort()
+		return m.saveStateBestEffort()
 	}
 
 	s.mu.Lock()
@@ -162,10 +116,10 @@ func (s *Service) restoreState() error {
 	}
 	s.mu.Unlock()
 
-	_ = s.expirePendingApprovals("restart after interrupted run")
-	_ = s.expirePendingMessages("restart after interrupted run")
+	_ = m.expirePendingApprovals("restart after interrupted run")
+	_ = m.expirePendingMessages("restart after interrupted run")
 	s.recordEvent("warn", "recovered active run %s as retry attempt %d", snapshot.ActiveRun.RunID, nextAttempt)
-	return s.saveStateBestEffort()
+	return m.saveStateBestEffort()
 }
 
 func hasTimedOutApprovalForRun(expired []ApprovalView, runID string) bool {
@@ -177,15 +131,17 @@ func hasTimedOutApprovalForRun(expired []ApprovalView, runID string) bool {
 	return false
 }
 
-func (s *Service) saveStateBestEffort() error {
-	if err := s.stateStore.Save(s.snapshotState()); err != nil {
+func (m *stateManager) saveStateBestEffort() error {
+	s := m.service
+	if err := s.stateStore.Save(m.snapshotState()); err != nil {
 		s.logger.Warn("persist state failed", "path", s.stateStore.Path(), "error", err)
 		return err
 	}
 	return nil
 }
 
-func (s *Service) snapshotState() state.Snapshot {
+func (m *stateManager) snapshotState() state.Snapshot {
+	s := m.service
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -201,88 +157,28 @@ func (s *Service) snapshotState() state.Snapshot {
 	}
 	for _, requestID := range s.approvalOrder {
 		if approval, ok := s.approvals[requestID]; ok {
-			snapshot.PendingApprovals = append(snapshot.PendingApprovals, state.PersistedApprovalRequest{
-				RequestID:       approval.RequestID,
-				RunID:           approval.RunID,
-				IssueID:         approval.IssueID,
-				IssueIdentifier: approval.IssueIdentifier,
-				AgentName:       approval.AgentName,
-				ToolName:        approval.ToolName,
-				ToolInput:       approval.ToolInput,
-				ApprovalPolicy:  approval.ApprovalPolicy,
-				RequestedAt:     approval.RequestedAt,
-				Resolvable:      true,
-			})
+			persisted := persistedApprovalRequestFromView(approval)
+			persisted.Resolvable = true
+			snapshot.PendingApprovals = append(snapshot.PendingApprovals, persisted)
 		}
 	}
 	for _, entry := range s.approvalHistory {
-		snapshot.ApprovalHistory = append(snapshot.ApprovalHistory, state.PersistedApprovalDecision{
-			RequestID:       entry.RequestID,
-			RunID:           entry.RunID,
-			IssueID:         entry.IssueID,
-			IssueIdentifier: entry.IssueIdentifier,
-			AgentName:       entry.AgentName,
-			ToolName:        entry.ToolName,
-			ApprovalPolicy:  entry.ApprovalPolicy,
-			Decision:        entry.Decision,
-			Reason:          entry.Reason,
-			RequestedAt:     entry.RequestedAt,
-			DecidedAt:       entry.DecidedAt,
-			Outcome:         entry.Outcome,
-		})
+		snapshot.ApprovalHistory = append(snapshot.ApprovalHistory, persistedApprovalDecisionFromHistory(entry))
 	}
 	for _, requestID := range s.messageOrder {
 		if message, ok := s.messages[requestID]; ok {
-			snapshot.PendingMessages = append(snapshot.PendingMessages, state.PersistedMessageRequest{
-				RequestID:       message.RequestID,
-				RunID:           message.RunID,
-				IssueID:         message.IssueID,
-				IssueIdentifier: message.IssueIdentifier,
-				SourceName:      message.SourceName,
-				AgentName:       message.AgentName,
-				Kind:            message.Kind,
-				Summary:         message.Summary,
-				Body:            message.Body,
-				RequestedAt:     message.RequestedAt,
-				Resolvable:      message.Resolvable,
-			})
+			snapshot.PendingMessages = append(snapshot.PendingMessages, persistedMessageRequestFromView(message))
 		}
 	}
 	for _, entry := range s.messageHistory {
-		snapshot.MessageHistory = append(snapshot.MessageHistory, state.PersistedMessageReply{
-			RequestID:       entry.RequestID,
-			RunID:           entry.RunID,
-			IssueID:         entry.IssueID,
-			IssueIdentifier: entry.IssueIdentifier,
-			SourceName:      entry.SourceName,
-			AgentName:       entry.AgentName,
-			Kind:            entry.Kind,
-			Summary:         entry.Summary,
-			Body:            entry.Body,
-			Reply:           entry.Reply,
-			ResolvedVia:     entry.ResolvedVia,
-			RequestedAt:     entry.RequestedAt,
-			RepliedAt:       entry.RepliedAt,
-			Outcome:         entry.Outcome,
-		})
+		snapshot.MessageHistory = append(snapshot.MessageHistory, persistedMessageReplyFromHistory(entry))
 	}
-	if s.activeRun != nil {
-		snapshot.ActiveRun = &state.PersistedRun{
-			RunID:          s.activeRun.ID,
-			IssueID:        s.activeRun.Issue.ID,
-			Identifier:     s.activeRun.Issue.Identifier,
-			Status:         s.activeRun.Status,
-			Attempt:        s.activeRun.Attempt,
-			WorkspacePath:  s.activeRun.WorkspacePath,
-			StartedAt:      s.activeRun.StartedAt,
-			LastActivityAt: s.activeRun.LastActivityAt,
-			IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
-		}
-	}
+	snapshot.ActiveRun = persistedRunFromAgentRun(s.activeRun)
 	return snapshot
 }
 
-func (s *Service) expirePendingApprovals(reason string) bool {
+func (m *stateManager) expirePendingApprovals(reason string) bool {
+	s := m.service
 	s.mu.Lock()
 	if len(s.approvalOrder) == 0 {
 		s.mu.Unlock()
@@ -293,7 +189,7 @@ func (s *Service) expirePendingApprovals(reason string) bool {
 		if !ok {
 			continue
 		}
-		s.appendApprovalHistory(ApprovalHistoryEntry{
+		s.approvalMgr.appendApprovalHistory(ApprovalHistoryEntry{
 			RequestID:       approval.RequestID,
 			RunID:           approval.RunID,
 			IssueID:         approval.IssueID,
@@ -314,7 +210,8 @@ func (s *Service) expirePendingApprovals(reason string) bool {
 	return true
 }
 
-func (s *Service) expirePendingMessages(reason string) bool {
+func (m *stateManager) expirePendingMessages(reason string) bool {
+	s := m.service
 	s.mu.Lock()
 	if len(s.messageOrder) == 0 {
 		s.mu.Unlock()
@@ -325,7 +222,7 @@ func (s *Service) expirePendingMessages(reason string) bool {
 		if !ok {
 			continue
 		}
-		s.appendMessageHistory(MessageHistoryEntry{
+		s.messageMgr.appendMessageHistory(MessageHistoryEntry{
 			RequestID:       message.RequestID,
 			RunID:           message.RunID,
 			IssueID:         message.IssueID,
@@ -347,7 +244,8 @@ func (s *Service) expirePendingMessages(reason string) bool {
 	return true
 }
 
-func (s *Service) shouldSkipIssue(issue domain.Issue) bool {
+func (m *stateManager) shouldSkipIssue(issue domain.Issue) bool {
+	s := m.service
 	changed := false
 	skip := false
 
@@ -373,12 +271,13 @@ func (s *Service) shouldSkipIssue(issue domain.Issue) bool {
 	s.mu.Unlock()
 
 	if changed {
-		_ = s.saveStateBestEffort()
+		_ = m.saveStateBestEffort()
 	}
 	return skip
 }
 
-func (s *Service) takeAttempt(issue domain.Issue) int {
+func (m *stateManager) takeAttempt(issue domain.Issue) int {
+	s := m.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -390,7 +289,8 @@ func (s *Service) takeAttempt(issue domain.Issue) int {
 	return retry.Attempt
 }
 
-func (s *Service) scheduleRetry(run *domain.AgentRun, err error) bool {
+func (m *stateManager) scheduleRetry(run *domain.AgentRun, err error) bool {
+	s := m.service
 	nextAttempt := run.Attempt + 1
 	if nextAttempt >= s.source.EffectiveMaxAttempts(s.cfg.State) {
 		return false
@@ -400,7 +300,7 @@ func (s *Service) scheduleRetry(run *domain.AgentRun, err error) bool {
 		IssueID:        run.Issue.ID,
 		Identifier:     run.Issue.Identifier,
 		Attempt:        nextAttempt,
-		DueAt:          time.Now().Add(s.retryBackoff(nextAttempt)),
+		DueAt:          time.Now().Add(m.retryBackoff(nextAttempt)),
 		Error:          sanitizeOutput(err.Error()),
 		IssueUpdatedAt: run.Issue.UpdatedAt,
 		WorkspacePath:  run.WorkspacePath,
@@ -408,7 +308,8 @@ func (s *Service) scheduleRetry(run *domain.AgentRun, err error) bool {
 	return true
 }
 
-func (s *Service) retryBackoff(attempt int) time.Duration {
+func (m *stateManager) retryBackoff(attempt int) time.Duration {
+	s := m.service
 	if attempt <= 0 {
 		return 0
 	}
@@ -423,7 +324,8 @@ func (s *Service) retryBackoff(attempt int) time.Duration {
 	return backoff
 }
 
-func (s *Service) approvalState() domain.ApprovalState {
+func (m *stateManager) approvalState() domain.ApprovalState {
+	s := m.service
 	switch s.agent.ApprovalPolicy {
 	case "auto":
 		return domain.ApprovalStateApproved
@@ -436,7 +338,7 @@ func issueRecordStale(issueUpdatedAt time.Time, recordUpdatedAt time.Time) bool 
 	return !issueUpdatedAt.IsZero() && !recordUpdatedAt.IsZero() && issueUpdatedAt.After(recordUpdatedAt)
 }
 
-func (s *Service) statusSummary() string {
-	snapshot := s.Snapshot()
+func (m *stateManager) statusSummary() string {
+	snapshot := m.service.Snapshot()
 	return fmt.Sprintf("claimed=%d retry=%d", snapshot.ClaimedCount, snapshot.RetryCount)
 }

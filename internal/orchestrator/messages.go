@@ -10,7 +10,24 @@ import (
 	"github.com/tjohnson/maestro/internal/harness"
 )
 
-func (s *Service) startMessageWatcher(ctx context.Context) {
+type messageRouter struct {
+	service *Service
+}
+
+func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia string) error {
+	return s.messageMgr.resolveMessage(requestID, reply, resolvedVia)
+}
+
+func (s *Service) createControlMessage(run *domain.AgentRun, kind string, summary string, body string) (MessageView, <-chan string) {
+	return s.messageMgr.createControlMessage(run, kind, summary, body)
+}
+
+func (s *Service) cancelControlMessage(requestID string, outcome string) {
+	s.messageMgr.cancelControlMessage(requestID, outcome)
+}
+
+func (r *messageRouter) startWatcher(ctx context.Context) {
+	s := r.service
 	messages := s.harness.Messages()
 	if messages == nil {
 		return
@@ -25,18 +42,18 @@ func (s *Service) startMessageWatcher(ctx context.Context) {
 				if !ok {
 					return
 				}
-				s.recordMessageRequest(request)
+				r.recordMessageRequest(request)
 			}
 		}
 	}()
 }
 
-func (s *Service) recordMessageRequest(request harness.MessageRequest) {
+func (r *messageRouter) recordMessageRequest(request harness.MessageRequest) {
 	kind := strings.TrimSpace(request.Kind)
 	if kind == "" {
 		kind = "agent_message"
 	}
-	s.recordMessageView(MessageView{
+	r.recordMessageView(MessageView{
 		RequestID:   request.RequestID,
 		RunID:       request.RunID,
 		Kind:        kind,
@@ -47,7 +64,8 @@ func (s *Service) recordMessageRequest(request harness.MessageRequest) {
 	})
 }
 
-func (s *Service) recordMessageView(input MessageView) {
+func (r *messageRouter) recordMessageView(input MessageView) {
+	s := r.service
 	view := input
 
 	s.mu.Lock()
@@ -64,10 +82,11 @@ func (s *Service) recordMessageView(input MessageView) {
 	s.mu.Unlock()
 
 	s.recordRunEventByFields("warn", s.source.Name, view.RunID, view.IssueIdentifier, "%s requested for %s", messageKindLabel(view.Kind), view.RunID)
-	_ = s.saveStateBestEffort()
+	_ = s.stateMgr.saveStateBestEffort()
 }
 
-func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia string) error {
+func (r *messageRouter) resolveMessage(requestID string, reply string, resolvedVia string) error {
+	s := r.service
 	now := time.Now()
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
@@ -78,7 +97,7 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 		resolvedVia = "operator"
 	}
 
-	request, hasWaiter, err := s.claimMessageResolution(requestID)
+	request, hasWaiter, err := r.claimMessageResolution(requestID)
 	if err != nil {
 		return err
 	}
@@ -90,7 +109,7 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 			Reply:     reply,
 			RepliedAt: now,
 		}); err != nil {
-			s.restoreMessageResolution(requestID)
+			r.restoreMessageResolution(requestID)
 			s.recordRunEventByFields("error", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply for %s failed: %v", messageKindLabel(request.Kind), request.RunID, err)
 			return err
 		}
@@ -124,7 +143,7 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 		s.activeRun.Status = domain.RunStatusActive
 		s.activeRun.LastActivityAt = now
 	}
-	s.appendMessageHistory(history)
+	r.appendMessageHistory(history)
 	s.mu.Unlock()
 
 	if hasWaiter {
@@ -133,11 +152,12 @@ func (s *Service) ResolveMessage(requestID string, reply string, resolvedVia str
 	}
 
 	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "%s reply received for %s via %s", messageKindLabel(request.Kind), request.RunID, resolvedVia)
-	_ = s.saveStateBestEffort()
+	_ = s.stateMgr.saveStateBestEffort()
 	return nil
 }
 
-func (s *Service) claimMessageResolution(requestID string) (MessageView, bool, error) {
+func (r *messageRouter) claimMessageResolution(requestID string) (MessageView, bool, error) {
+	s := r.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -154,7 +174,8 @@ func (s *Service) claimMessageResolution(requestID string) (MessageView, bool, e
 	return request, hasWaiter, nil
 }
 
-func (s *Service) restoreMessageResolution(requestID string) {
+func (r *messageRouter) restoreMessageResolution(requestID string) {
+	s := r.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -166,7 +187,8 @@ func (s *Service) restoreMessageResolution(requestID string) {
 	s.messages[requestID] = request
 }
 
-func (s *Service) createControlMessage(run *domain.AgentRun, kind string, summary string, body string) (MessageView, <-chan string) {
+func (r *messageRouter) createControlMessage(run *domain.AgentRun, kind string, summary string, body string) (MessageView, <-chan string) {
+	s := r.service
 	now := time.Now()
 	requestID := "control-before-work:" + run.ID
 	if strings.TrimSpace(kind) == "" {
@@ -186,11 +208,12 @@ func (s *Service) createControlMessage(run *domain.AgentRun, kind string, summar
 	s.mu.Lock()
 	s.messageWaiters[requestID] = replyCh
 	s.mu.Unlock()
-	s.recordMessageView(view)
+	r.recordMessageView(view)
 	return view, replyCh
 }
 
-func (s *Service) cancelControlMessage(requestID string, outcome string) {
+func (r *messageRouter) cancelControlMessage(requestID string, outcome string) {
+	s := r.service
 	s.mu.Lock()
 	request, ok := s.messages[requestID]
 	if !ok {
@@ -201,7 +224,7 @@ func (s *Service) cancelControlMessage(requestID string, outcome string) {
 	delete(s.messages, requestID)
 	s.messageOrder = removeFromOrder(s.messageOrder, requestID)
 	delete(s.messageWaiters, requestID)
-	s.appendMessageHistory(MessageHistoryEntry{
+	r.appendMessageHistory(MessageHistoryEntry{
 		RequestID:       request.RequestID,
 		RunID:           request.RunID,
 		IssueID:         request.IssueID,
@@ -218,10 +241,11 @@ func (s *Service) cancelControlMessage(requestID string, outcome string) {
 		Outcome:         outcome,
 	})
 	s.mu.Unlock()
-	_ = s.saveStateBestEffort()
+	_ = s.stateMgr.saveStateBestEffort()
 }
 
-func (s *Service) appendMessageHistory(entry MessageHistoryEntry) {
+func (r *messageRouter) appendMessageHistory(entry MessageHistoryEntry) {
+	s := r.service
 	s.messageHistory = append(s.messageHistory, entry)
 	if len(s.messageHistory) > maxMessageHistory {
 		s.messageHistory = s.messageHistory[len(s.messageHistory)-maxMessageHistory:]

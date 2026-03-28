@@ -9,7 +9,16 @@ import (
 	"github.com/tjohnson/maestro/internal/harness"
 )
 
-func (s *Service) startApprovalWatcher(ctx context.Context) {
+type approvalRouter struct {
+	service *Service
+}
+
+func (s *Service) ResolveApproval(requestID string, decision string) error {
+	return s.approvalMgr.resolveApproval(requestID, decision)
+}
+
+func (r *approvalRouter) startWatcher(ctx context.Context) {
+	s := r.service
 	approvals := s.harness.Approvals()
 	if approvals == nil {
 		return
@@ -24,7 +33,7 @@ func (s *Service) startApprovalWatcher(ctx context.Context) {
 				if !ok {
 					return
 				}
-				s.recordApprovalRequest(request)
+				r.recordApprovalRequest(request)
 			}
 		}
 	}()
@@ -38,21 +47,22 @@ func (s *Service) startApprovalWatcher(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				expired := s.expireTimedOutApprovals(time.Now())
+				expired := r.expireTimedOutApprovals(time.Now())
 				if len(expired) == 0 {
 					continue
 				}
 				for _, approval := range expired {
 					s.recordRunEventByFields("warn", s.source.Name, approval.RunID, approval.IssueIdentifier, "approval timed out for %s (%s)", approval.RunID, approval.ToolName)
-					s.stopRunForTimedOutApproval(approval)
+					r.stopRunForTimedOutApproval(approval)
 				}
-				_ = s.saveStateBestEffort()
+				_ = s.stateMgr.saveStateBestEffort()
 			}
 		}
 	}()
 }
 
-func (s *Service) recordApprovalRequest(request harness.ApprovalRequest) {
+func (r *approvalRouter) recordApprovalRequest(request harness.ApprovalRequest) {
+	s := r.service
 	view := ApprovalView{
 		RequestID:      request.RequestID,
 		RunID:          request.RunID,
@@ -79,11 +89,12 @@ func (s *Service) recordApprovalRequest(request harness.ApprovalRequest) {
 	s.mu.Unlock()
 
 	s.recordRunEventByFields("warn", s.source.Name, request.RunID, view.IssueIdentifier, "approval requested for %s (%s)", request.RunID, request.ToolName)
-	_ = s.saveStateBestEffort()
+	_ = s.stateMgr.saveStateBestEffort()
 }
 
-func (s *Service) ResolveApproval(requestID string, decision string) error {
-	request, err := s.claimApprovalResolution(requestID)
+func (r *approvalRouter) resolveApproval(requestID string, decision string) error {
+	s := r.service
+	request, err := r.claimApprovalResolution(requestID)
 	if err != nil {
 		return err
 	}
@@ -92,7 +103,7 @@ func (s *Service) ResolveApproval(requestID string, decision string) error {
 		RequestID: requestID,
 		Decision:  decision,
 	}); err != nil {
-		s.restoreApprovalResolution(requestID)
+		r.restoreApprovalResolution(requestID)
 		s.recordRunEventByFields("error", s.source.Name, request.RunID, request.IssueIdentifier, "approval %s for %s failed: %v", decision, request.RunID, err)
 		return err
 	}
@@ -125,15 +136,16 @@ func (s *Service) ResolveApproval(requestID string, decision string) error {
 		}
 		s.activeRun.LastActivityAt = now
 	}
-	s.appendApprovalHistory(history)
+	r.appendApprovalHistory(history)
 	s.mu.Unlock()
 
 	s.recordRunEventByFields("info", s.source.Name, request.RunID, request.IssueIdentifier, "approval %s for %s (%s)", decision, request.RunID, request.ToolName)
-	_ = s.saveStateBestEffort()
+	_ = s.stateMgr.saveStateBestEffort()
 	return nil
 }
 
-func (s *Service) claimApprovalResolution(requestID string) (ApprovalView, error) {
+func (r *approvalRouter) claimApprovalResolution(requestID string) (ApprovalView, error) {
+	s := r.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -149,7 +161,8 @@ func (s *Service) claimApprovalResolution(requestID string) (ApprovalView, error
 	return request, nil
 }
 
-func (s *Service) restoreApprovalResolution(requestID string) {
+func (r *approvalRouter) restoreApprovalResolution(requestID string) {
+	s := r.service
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -161,7 +174,8 @@ func (s *Service) restoreApprovalResolution(requestID string) {
 	s.approvals[requestID] = request
 }
 
-func (s *Service) expireTimedOutApprovals(now time.Time) []ApprovalView {
+func (r *approvalRouter) expireTimedOutApprovals(now time.Time) []ApprovalView {
+	s := r.service
 	timeout := s.agent.ApprovalTimeout.Duration
 	if timeout <= 0 {
 		return nil
@@ -191,7 +205,7 @@ func (s *Service) expireTimedOutApprovals(now time.Time) []ApprovalView {
 		}
 
 		expired = append(expired, approval)
-		s.appendApprovalHistory(ApprovalHistoryEntry{
+		r.appendApprovalHistory(ApprovalHistoryEntry{
 			RequestID:       approval.RequestID,
 			RunID:           approval.RunID,
 			IssueID:         approval.IssueID,
@@ -230,7 +244,8 @@ func approvalTimeoutPollInterval(timeout time.Duration) time.Duration {
 	return interval
 }
 
-func (s *Service) stopRunForTimedOutApproval(approval ApprovalView) {
+func (r *approvalRouter) stopRunForTimedOutApproval(approval ApprovalView) {
+	s := r.service
 	s.mu.RLock()
 	active := s.activeRun != nil && s.activeRun.ID == approval.RunID
 	s.mu.RUnlock()
@@ -250,8 +265,8 @@ func approvalTimeoutFailureReason(approval ApprovalView) string {
 	return fmt.Sprintf("approval timeout while waiting on %s", approval.ToolName)
 }
 
-
-func (s *Service) appendApprovalHistory(entry ApprovalHistoryEntry) {
+func (r *approvalRouter) appendApprovalHistory(entry ApprovalHistoryEntry) {
+	s := r.service
 	s.approvalHistory = append(s.approvalHistory, entry)
 	if len(s.approvalHistory) > maxApprovalHistory {
 		s.approvalHistory = s.approvalHistory[len(s.approvalHistory)-maxApprovalHistory:]
