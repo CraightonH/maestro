@@ -52,14 +52,26 @@ type activeRun struct {
 }
 
 type streamEvent struct {
-	Type              string `json:"type"`
-	Subtype           string `json:"subtype"`
-	Result            string `json:"result"`
+	Type              string         `json:"type"`
+	Subtype           string         `json:"subtype"`
+	Result            string         `json:"result"`
+	Message           *streamMessage `json:"message,omitempty"`
 	PermissionDenials []struct {
 		ToolName  string          `json:"tool_name"`
 		ToolUseID string          `json:"tool_use_id"`
 		ToolInput json.RawMessage `json:"tool_input"`
 	} `json:"permission_denials"`
+}
+
+type streamMessage struct {
+	Content []streamContent `json:"content"`
+}
+
+type streamContent struct {
+	Type  string          `json:"type"`
+	Text  string          `json:"text,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 func NewAdapter() (*Adapter, error) {
@@ -388,7 +400,6 @@ func buildApprovalRequest(runID string, approvalPolicy string, denial struct {
 	}
 }
 
-
 func (r *claudeRun) writeStreamEvent(event streamEvent) {
 	if strings.TrimSpace(event.Result) != "" {
 		_, _ = io.WriteString(r.stdout, event.Result)
@@ -398,12 +409,100 @@ func (r *claudeRun) writeStreamEvent(event streamEvent) {
 		return
 	}
 
-	switch event.Type {
-	case "assistant":
-		_, _ = io.WriteString(r.stdout, "[claude assistant event]\n")
-	case "tool_use":
-		_, _ = io.WriteString(r.stdout, "[claude tool use]\n")
-	case "tool_result":
-		_, _ = io.WriteString(r.stdout, "[claude tool result]\n")
+	if event.Message == nil {
+		return
 	}
+
+	for _, block := range event.Message.Content {
+		switch block.Type {
+		case "tool_use":
+			_, _ = fmt.Fprintf(r.stdout, "Using %s\n", toolUseSummary(block.Name, block.Input))
+		case "text":
+			if text := strings.TrimSpace(block.Text); text != "" {
+				_, _ = io.WriteString(r.stdout, text)
+				if !strings.HasSuffix(text, "\n") {
+					_, _ = io.WriteString(r.stdout, "\n")
+				}
+			}
+		}
+	}
+}
+
+func toolUseSummary(name string, input json.RawMessage) string {
+	if strings.HasPrefix(name, "mcp__") {
+		return name
+	}
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil || len(fields) == 0 {
+		return name
+	}
+
+	extract := func(key string) string {
+		raw, ok := fields[key]
+		if !ok {
+			return ""
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(value)
+	}
+
+	formatters := map[string]func(func(string) string) string{
+		"Bash": func(extract func(string) string) string {
+			return firstNonEmpty(extract, "description", "command")
+		},
+		"Glob": func(extract func(string) string) string {
+			return formatPatternPathDetail(extract, false)
+		},
+		"Grep": func(extract func(string) string) string {
+			return formatPatternPathDetail(extract, true)
+		},
+	}
+
+	detail := ""
+	if format := formatters[name]; format != nil {
+		detail = format(extract)
+	} else {
+		detail = firstNonEmpty(extract, "description", "file_path", "path", "url", "query", "pattern", "command")
+	}
+
+	if detail == "" {
+		return name
+	}
+	return fmt.Sprintf("%s: %s", name, truncate(detail, 200))
+}
+
+func firstNonEmpty(extract func(string) string, keys ...string) string {
+	for _, key := range keys {
+		if value := extract(key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func formatPatternPathDetail(extract func(string) string, quotePattern bool) string {
+	pattern := extract("pattern")
+	path := extract("path")
+	if pattern == "" {
+		return ""
+	}
+	if quotePattern {
+		pattern = fmt.Sprintf("%q", pattern)
+	}
+	if path != "" {
+		return fmt.Sprintf("%s in %s", pattern, path)
+	}
+	return pattern
+}
+
+func truncate(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }

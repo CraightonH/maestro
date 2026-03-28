@@ -2,6 +2,7 @@ package claude
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -163,5 +164,98 @@ esac
 	}
 	if !strings.Contains(log, "--output-format\nstream-json") {
 		t.Fatalf("invocations = %q, want stream-json in permissive run", log)
+	}
+}
+
+func TestWriteStreamEventRendersTextAndToolUse(t *testing.T) {
+	var stdout strings.Builder
+	run := &claudeRun{stdout: &stdout}
+
+	input, err := json.Marshal(map[string]any{
+		"description": "List files in current directory",
+	})
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+
+	run.writeStreamEvent(streamEvent{
+		Message: &streamMessage{
+			Content: []streamContent{
+				{Type: "text", Text: "Let me inspect the repository."},
+				{Type: "tool_use", Name: "Bash", Input: input},
+			},
+		},
+	})
+
+	got := stdout.String()
+	if !strings.Contains(got, "Let me inspect the repository.\n") {
+		t.Fatalf("stdout = %q, want text output", got)
+	}
+	if !strings.Contains(got, "Using Bash: List files in current directory\n") {
+		t.Fatalf("stdout = %q, want tool summary", got)
+	}
+}
+
+func TestWriteStreamEventSkipsThinkingBlocks(t *testing.T) {
+	var stdout strings.Builder
+	run := &claudeRun{stdout: &stdout}
+
+	run.writeStreamEvent(streamEvent{
+		Message: &streamMessage{
+			Content: []streamContent{
+				{Type: "thinking", Text: "should not render"},
+			},
+		},
+	})
+
+	if got := stdout.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty", got)
+	}
+}
+
+func TestToolUseSummaryHandlesMCPAndMalformedInput(t *testing.T) {
+	if got := toolUseSummary("mcp__elastic__search", json.RawMessage(`{"query":"x"}`)); got != "mcp__elastic__search" {
+		t.Fatalf("mcp summary = %q", got)
+	}
+	if got := toolUseSummary("Read", json.RawMessage(`{`)); got != "Read" {
+		t.Fatalf("malformed summary = %q", got)
+	}
+}
+
+func TestToolUseSummaryFormatsCommonBuiltInTools(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "Read", input: `{"file_path":"internal/api/server.go"}`, want: "Read: internal/api/server.go"},
+		{name: "Glob", input: `{"pattern":"templates/*.json"}`, want: "Glob: templates/*.json"},
+		{name: "Glob", input: `{"pattern":"*.txt","path":"/tmp/work"}`, want: "Glob: *.txt in /tmp/work"},
+		{name: "Grep", input: `{"pattern":"parser.success","path":"internal/"}`, want: `Grep: "parser.success" in internal/`},
+		{name: "WebFetch", input: `{"url":"https://example.com"}`, want: "WebFetch: https://example.com"},
+	}
+
+	for _, test := range tests {
+		if got := toolUseSummary(test.name, json.RawMessage(test.input)); got != test.want {
+			t.Fatalf("%s summary = %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestToolUseSummaryFallsBackForUnknownTools(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "UnknownTool", input: `{"description":"Summarize the repo"}`, want: "UnknownTool: Summarize the repo"},
+		{name: "UnknownTool", input: `{"file_path":"docs/guide.md"}`, want: "UnknownTool: docs/guide.md"},
+		{name: "UnknownTool", input: `{"query":"latest release notes"}`, want: "UnknownTool: latest release notes"},
+	}
+
+	for _, test := range tests {
+		if got := toolUseSummary(test.name, json.RawMessage(test.input)); got != test.want {
+			t.Fatalf("%s fallback summary = %q, want %q", test.name, got, test.want)
+		}
 	}
 }
