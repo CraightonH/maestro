@@ -99,7 +99,10 @@ func (r *approvalRouter) resolveApproval(requestID string, decision string) erro
 		return err
 	}
 
-	if err := s.harness.Approve(context.Background(), harness.ApprovalDecision{
+	controlCtx, cancel := withHarnessControlTimeout()
+	defer cancel()
+
+	if err := s.harness.Approve(controlCtx, harness.ApprovalDecision{
 		RequestID: requestID,
 		Decision:  decision,
 	}); err != nil {
@@ -151,7 +154,7 @@ func (r *approvalRouter) claimApprovalResolution(requestID string) (ApprovalView
 
 	request, ok := s.approvals[requestID]
 	if !ok {
-		return ApprovalView{}, fmt.Errorf("approval request %q not found", requestID)
+		return ApprovalView{}, fmt.Errorf("approval request %q: %w", requestID, ErrApprovalNotFound)
 	}
 	if !request.Resolvable {
 		return ApprovalView{}, fmt.Errorf("approval request %q is already being resolved", requestID)

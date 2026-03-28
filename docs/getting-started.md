@@ -331,6 +331,10 @@ channels:
       user_id_env: $MAESTRO_SLACK_USER_ID
 ```
 
+DM mode authorizes that configured Slack user automatically. If you use a fixed channel instead of a
+DM, add an explicit allowlist with `authorized_user_ids` or `authorized_user_ids_env`. Unauthorized
+users cannot approve, reject, stop runs, or answer pending control messages.
+
 If you want Slack to ask a plain question and wait for a typed reply instead of showing `Approve` / `Reject`, enable:
 
 ```yaml
@@ -445,6 +449,11 @@ Hook commands receive:
 - `MAESTRO_WORKSPACE_PATH`
 
 `defaults.stall_timeout` sets the inactivity timeout for runs. You can override it per agent with `agent_types[].stall_timeout`.
+
+Agent processes do not inherit the full parent shell environment. Maestro passes a curated runtime
+baseline such as `PATH`, `HOME`, locale/XDG/temp vars, and common proxy/cert vars, then applies any
+explicit `agent_types[].env` entries on top. If an agent needs an extra variable, add it to the
+agent config explicitly.
 
 `hooks.before_remove` is reserved in the config but is not implemented yet.
 

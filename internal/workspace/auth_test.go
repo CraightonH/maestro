@@ -2,17 +2,23 @@ package workspace
 
 import "testing"
 
-func TestGitLabAuthArgsMatchesOnlyConfiguredHTTPSHost(t *testing.T) {
-	args := gitLabAuthArgs("https://gitlab.example.com/team/project.git", "gitlab.example.com", "secret")
-	if len(args) != 2 {
-		t.Fatalf("auth args len = %d, want 2", len(args))
+func TestGitLabAuthEnvMatchesOnlyConfiguredHTTPSHost(t *testing.T) {
+	env := gitLabAuthEnv("https://gitlab.example.com/team/project.git", "gitlab.example.com", "secret")
+	if len(env) != 3 {
+		t.Fatalf("auth env len = %d, want 3", len(env))
 	}
-	if args[0] != "-c" {
-		t.Fatalf("auth args[0] = %q, want -c", args[0])
+	if env[0] != "GIT_CONFIG_COUNT=1" {
+		t.Fatalf("auth env[0] = %q, want GIT_CONFIG_COUNT=1", env[0])
+	}
+	if env[1] != "GIT_CONFIG_KEY_0=http.extraHeader" {
+		t.Fatalf("auth env[1] = %q, want http.extraHeader key", env[1])
+	}
+	if env[2] == "" || env[2] == "GIT_CONFIG_VALUE_0=" {
+		t.Fatalf("auth env[2] = %q, want auth header value", env[2])
 	}
 }
 
-func TestGitLabAuthArgsSkipsNonMatchingOrNonHTTPSRemotes(t *testing.T) {
+func TestGitLabAuthEnvSkipsNonMatchingOrNonHTTPSRemotes(t *testing.T) {
 	cases := []struct {
 		name    string
 		repoURL string
@@ -29,8 +35,8 @@ func TestGitLabAuthArgsSkipsNonMatchingOrNonHTTPSRemotes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if args := gitLabAuthArgs(tc.repoURL, tc.host, tc.token); len(args) != 0 {
-				t.Fatalf("auth args = %v, want none", args)
+			if env := gitLabAuthEnv(tc.repoURL, tc.host, tc.token); len(env) != 0 {
+				t.Fatalf("auth env = %v, want none", env)
 			}
 		})
 	}

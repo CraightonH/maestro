@@ -128,19 +128,22 @@ func nextUpdatedAt(current time.Time) time.Time {
 }
 
 type FakeHarness struct {
-	KindValue   string
-	StartErr    error
-	WaitErr     error
-	WaitErrs    []error
-	StartedRuns []harness.RunConfig
-	StopCalls   []string
-	WaitBlock   chan struct{}
-	ApprovalCh  chan harness.ApprovalRequest
-	MessageCh   chan harness.MessageRequest
-	ApproveErr  error
-	ReplyErr    error
-	Decisions   []harness.ApprovalDecision
-	Replies     []harness.MessageReply
+	KindValue    string
+	StartErr     error
+	WaitErr      error
+	WaitErrs     []error
+	StartedRuns  []harness.RunConfig
+	StopCalls    []string
+	WaitBlock    chan struct{}
+	StopBlock    <-chan struct{}
+	ApprovalCh   chan harness.ApprovalRequest
+	MessageCh    chan harness.MessageRequest
+	ApproveErr   error
+	ApproveBlock <-chan struct{}
+	ReplyErr     error
+	ReplyBlock   <-chan struct{}
+	Decisions    []harness.ApprovalDecision
+	Replies      []harness.MessageReply
 
 	mu sync.Mutex
 }
@@ -190,6 +193,7 @@ func (f *FakeHarness) Start(ctx context.Context, cfg harness.RunConfig) (harness
 func (f *FakeHarness) Stop(ctx context.Context, runID string) error {
 	f.mu.Lock()
 	f.StopCalls = append(f.StopCalls, runID)
+	stopBlock := f.StopBlock
 	if f.WaitBlock != nil {
 		select {
 		case <-f.WaitBlock:
@@ -198,6 +202,13 @@ func (f *FakeHarness) Stop(ctx context.Context, runID string) error {
 		}
 	}
 	f.mu.Unlock()
+	if stopBlock != nil {
+		select {
+		case <-stopBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	return nil
 }
 
@@ -206,6 +217,13 @@ func (f *FakeHarness) Approvals() <-chan harness.ApprovalRequest {
 }
 
 func (f *FakeHarness) Approve(ctx context.Context, decision harness.ApprovalDecision) error {
+	if f.ApproveBlock != nil {
+		select {
+		case <-f.ApproveBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Decisions = append(f.Decisions, decision)
@@ -223,6 +241,13 @@ func (f *FakeHarness) Messages() <-chan harness.MessageRequest {
 }
 
 func (f *FakeHarness) Reply(ctx context.Context, reply harness.MessageReply) error {
+	if f.ReplyBlock != nil {
+		select {
+		case <-f.ReplyBlock:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Replies = append(f.Replies, reply)

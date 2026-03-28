@@ -71,6 +71,11 @@ bin/maestro --config maestro.yaml --no-tui
 bin/maestro doctor --config maestro.yaml
 ```
 
+Agent processes do not inherit the full parent shell environment. Maestro passes a curated runtime
+baseline such as `PATH`, `HOME`, locale/XDG/temp vars, and common proxy/cert vars, then applies any
+explicit `agent_types[].env` entries on top. If an agent needs an extra environment variable, add it
+to the agent config explicitly.
+
 ## Config Reference
 
 Every field available in `maestro.yaml`, derived from the config schema in `internal/config/types.go`.
@@ -544,6 +549,28 @@ Open `http://127.0.0.1:7777` for the built-in dashboard.
 When the server binds to loopback (`127.0.0.1`, `localhost`, or `::1`), API auth is optional so local use stays frictionless. If you bind the server to any non-loopback host, Maestro requires an API key. Set `server.api_key` for a stable key, or let Maestro generate an ephemeral one at startup.
 
 When auth is enabled, API clients must send `Authorization: Bearer <key>`. The built-in dashboard can be opened with `?api_key=<key>` once; it stores the key in session storage and removes it from the URL.
+
+## Slack Authorization
+
+Slack approvals and thread replies are operator-gated.
+
+- DM mode authorizes the configured target user automatically via `user_id` or `user_id_env`
+- fixed channel mode requires an explicit allowlist via `authorized_user_ids` or `authorized_user_ids_env`
+- unauthorized Slack users cannot approve, reject, stop runs, or answer pending control messages
+
+Example fixed-channel config:
+
+```yaml
+channels:
+  - name: slack-review
+    kind: slack
+    config:
+      mode: channel
+      channel_id_env: $MAESTRO_SLACK_CHANNEL_ID
+      token_env: $MAESTRO_SLACK_BOT_TOKEN
+      app_token_env: $MAESTRO_SLACK_APP_TOKEN
+      authorized_user_ids_env: $MAESTRO_SLACK_ALLOWED_USERS
+```
 
 ## Trackers
 

@@ -103,7 +103,10 @@ func (r *messageRouter) resolveMessage(requestID string, reply string, resolvedV
 	}
 
 	if !hasWaiter {
-		if err := s.harness.Reply(context.Background(), harness.MessageReply{
+		controlCtx, cancel := withHarnessControlTimeout()
+		defer cancel()
+
+		if err := s.harness.Reply(controlCtx, harness.MessageReply{
 			RequestID: requestID,
 			Kind:      request.Kind,
 			Reply:     reply,
@@ -163,7 +166,7 @@ func (r *messageRouter) claimMessageResolution(requestID string) (MessageView, b
 
 	request, ok := s.messages[requestID]
 	if !ok {
-		return MessageView{}, false, fmt.Errorf("message request %q not found", requestID)
+		return MessageView{}, false, fmt.Errorf("message request %q: %w", requestID, ErrMessageNotFound)
 	}
 	if !request.Resolvable {
 		return MessageView{}, false, fmt.Errorf("message request %q is already being resolved", requestID)

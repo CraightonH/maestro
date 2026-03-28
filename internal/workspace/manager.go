@@ -307,7 +307,7 @@ func gitRemoteURL(ctx context.Context, path string, remote string) (string, erro
 	return strings.TrimSpace(string(output)), nil
 }
 
-func gitLabAuthArgs(repoURL string, gitLabHost string, gitLabToken string) []string {
+func gitLabAuthEnv(repoURL string, gitLabHost string, gitLabToken string) []string {
 	if strings.TrimSpace(gitLabToken) == "" || strings.TrimSpace(gitLabHost) == "" {
 		return nil
 	}
@@ -319,14 +319,15 @@ func gitLabAuthArgs(repoURL string, gitLabHost string, gitLabToken string) []str
 		return nil
 	}
 	auth := base64.StdEncoding.EncodeToString([]byte("oauth2:" + gitLabToken))
-	return []string{"-c", "http.extraHeader=Authorization: Basic " + auth}
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.extraHeader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + auth,
+	}
 }
 
 func runGitWithAuth(ctx context.Context, dir string, repoURL string, gitLabHost string, gitLabToken string, args ...string) error {
-	if authArgs := gitLabAuthArgs(repoURL, gitLabHost, gitLabToken); len(authArgs) > 0 {
-		args = append(authArgs, args...)
-	}
-	return runGit(ctx, dir, args...)
+	return runGitWithEnv(ctx, dir, gitLabAuthEnv(repoURL, gitLabHost, gitLabToken), args...)
 }
 
 func cloneRepo(ctx context.Context, repoURL string, gitLabHost string, gitLabToken string, path string) error {

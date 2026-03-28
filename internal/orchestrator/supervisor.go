@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -189,23 +190,29 @@ func (s *Supervisor) ResolveApproval(requestID string, decision string) error {
 	for _, svc := range s.services {
 		if err := svc.ResolveApproval(requestID, decision); err == nil {
 			return nil
-		} else if !strings.Contains(err.Error(), "not found") {
+		} else if !errors.Is(err, ErrApprovalNotFound) {
 			errs = append(errs, err.Error())
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
-	return fmt.Errorf("approval request %q not found", requestID)
+	return fmt.Errorf("approval request %q: %w", requestID, ErrApprovalNotFound)
 }
 
 func (s *Supervisor) ResolveMessage(requestID string, reply string, resolvedVia string) error {
+	var errs []string
 	for _, svc := range s.services {
 		if err := svc.ResolveMessage(requestID, reply, resolvedVia); err == nil {
 			return nil
+		} else if !errors.Is(err, ErrMessageNotFound) {
+			errs = append(errs, err.Error())
 		}
 	}
-	return fmt.Errorf("message request %q not found", requestID)
+	if len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return fmt.Errorf("message request %q: %w", requestID, ErrMessageNotFound)
 }
 
 func (s *Supervisor) StopRun(runID string, reason string) error {
@@ -213,14 +220,14 @@ func (s *Supervisor) StopRun(runID string, reason string) error {
 	for _, svc := range s.services {
 		if err := svc.StopRun(runID, reason); err == nil {
 			return nil
-		} else if !strings.Contains(err.Error(), "not found") {
+		} else if !errors.Is(err, ErrRunNotFound) {
 			errs = append(errs, err.Error())
 		}
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
-	return fmt.Errorf("run %q not found", runID)
+	return fmt.Errorf("run %q: %w", runID, ErrRunNotFound)
 }
 
 func (s *Supervisor) Services() []*Service {

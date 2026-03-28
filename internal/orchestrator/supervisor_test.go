@@ -17,6 +17,48 @@ import (
 	"github.com/tjohnson/maestro/internal/workspace"
 )
 
+func TestSupervisorResolveApprovalUsesTypedNotFound(t *testing.T) {
+	svc := &Service{}
+	svc.approvalMgr = &approvalRouter{service: svc}
+	supervisor := &Supervisor{services: []*Service{svc}}
+
+	err := supervisor.ResolveApproval("missing", "approve")
+	if !errors.Is(err, ErrApprovalNotFound) {
+		t.Fatalf("errors.Is(err, ErrApprovalNotFound) = false, err=%v", err)
+	}
+}
+
+func TestSupervisorResolveMessageReturnsRealErrorWhenPresent(t *testing.T) {
+	first := &Service{}
+	first.messageMgr = &messageRouter{service: first}
+	second := &Service{
+		messages: map[string]MessageView{
+			"msg-1": {RequestID: "msg-1", Resolvable: false},
+		},
+	}
+	second.messageMgr = &messageRouter{service: second}
+	supervisor := &Supervisor{services: []*Service{first, second}}
+
+	err := supervisor.ResolveMessage("msg-1", "reply", "test")
+	if err == nil {
+		t.Fatal("expected resolve message error")
+	}
+	if errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("unexpected not-found error: %v", err)
+	}
+}
+
+func TestSupervisorStopRunUsesTypedNotFound(t *testing.T) {
+	supervisor := &Supervisor{services: []*Service{
+		{},
+	}}
+
+	err := supervisor.StopRun("missing-run", "stop")
+	if !errors.Is(err, ErrRunNotFound) {
+		t.Fatalf("errors.Is(err, ErrRunNotFound) = false, err=%v", err)
+	}
+}
+
 func TestServicesShareGlobalDispatchLimiter(t *testing.T) {
 	root := t.TempDir()
 	repoURL := createSupervisorGitRepo(t)

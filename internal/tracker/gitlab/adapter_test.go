@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tjohnson/maestro/internal/config"
@@ -47,6 +48,56 @@ func TestPollNormalizesProjectIssues(t *testing.T) {
 	}
 	if got := issues[0].Meta["repo_url"]; got != "https://gitlab.example.com/team/project.git" {
 		t.Fatalf("repo_url = %q", got)
+	}
+}
+
+func TestEnsureProjectIsSafeUnderConcurrentCalls(t *testing.T) {
+	var mu sync.Mutex
+	projectFetches := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/projects/team/project":
+			mu.Lock()
+			projectFetches++
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"id":1,"path_with_namespace":"team/project","http_url_to_repo":"https://gitlab.example.com/team/project.git"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewAdapter(config.SourceConfig{
+		Name:      "gitlab-project",
+		Tracker:   "gitlab",
+		AgentType: "code-pr",
+		Connection: config.SourceConnection{
+			BaseURL: server.URL,
+			Token:   "secret",
+			Project: "team/project",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := adapter.ensureProject(context.Background()); err != nil {
+				t.Errorf("ensure project: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if projectFetches != 1 {
+		t.Fatalf("project fetches = %d, want 1", projectFetches)
 	}
 }
 

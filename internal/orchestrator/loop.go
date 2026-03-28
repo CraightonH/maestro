@@ -149,5 +149,7 @@ func (s *Service) shutdown() error {
 	}
 
 	s.recordRunEvent(activeRun, "info", "stopping active run %s", activeRun.ID)
-	return s.harness.Stop(context.Background(), activeRun.ID)
+	stopCtx, cancel := withHarnessShutdownTimeout()
+	defer cancel()
+	return s.harness.Stop(stopCtx, activeRun.ID)
 }

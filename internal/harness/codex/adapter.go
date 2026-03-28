@@ -44,7 +44,7 @@ type codexRun struct {
 	// Multi-turn state
 	threadID   string
 	cwd        string
-	turnNumber int
+	turnNumber atomic.Int64
 	ctx        context.Context
 
 	writeMu sync.Mutex
@@ -208,7 +208,6 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		threadSandbox:     cfg.ThreadSandbox,
 		turnSandboxPolicy: cfg.TurnSandboxPolicy,
 		continuationFunc:  cfg.ContinuationFunc,
-		turnNumber:        1,
 		ctx:               ctx,
 		pending:           map[int64]chan rpcResponse{},
 		pendingApproval:   map[string]pendingApproval{},
@@ -216,6 +215,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		doneCh:            make(chan error, 1),
 		processCh:         make(chan error, 1),
 	}
+	run.turnNumber.Store(1)
 
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -450,12 +450,13 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 		}
 		switch msg.Turn.Status {
 		case "completed":
-			if r.maxTurns <= 1 || r.turnNumber >= r.maxTurns || r.continuationFunc == nil {
+			currentTurn := r.currentTurnNumber()
+			if r.maxTurns <= 1 || currentTurn >= r.maxTurns || r.continuationFunc == nil {
 				r.finish(nil)
 				return
 			}
-			go func() {
-				prompt, cont, err := r.continuationFunc(r.ctx, r.turnNumber)
+			go func(turnNumber int) {
+				prompt, cont, err := r.continuationFunc(r.ctx, turnNumber)
 				if err != nil {
 					r.finish(fmt.Errorf("continuation check: %w", err))
 					return
@@ -464,11 +465,11 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 					r.finish(nil)
 					return
 				}
-				r.turnNumber++
+				r.advanceTurnNumber()
 				if _, err := r.startTurn(r.threadID, r.cwd, prompt); err != nil {
 					r.finish(fmt.Errorf("start continuation turn: %w", err))
 				}
-			}()
+			}(currentTurn)
 		case "failed":
 			if msg.Turn.Error != nil && msg.Turn.Error.Message != "" {
 				r.finish(fmt.Errorf("codex turn failed: %s", msg.Turn.Error.Message))
@@ -563,6 +564,14 @@ func (r *codexRun) finish(err error) {
 	case r.doneCh <- err:
 	default:
 	}
+}
+
+func (r *codexRun) currentTurnNumber() int {
+	return int(r.turnNumber.Load())
+}
+
+func (r *codexRun) advanceTurnNumber() int {
+	return int(r.turnNumber.Add(1))
 }
 
 func (r *codexRun) approve(decision harness.ApprovalDecision) error {
@@ -698,7 +707,7 @@ func marshalRaw(v any) (json.RawMessage, error) {
 func codexApprovalPolicy(policy string) string {
 	switch policy {
 	case "manual":
-		return "onRequest"
+		return "on-request"
 	default:
 		return "never"
 	}
@@ -707,9 +716,9 @@ func codexApprovalPolicy(policy string) string {
 func codexSandboxMode(policy string) string {
 	switch policy {
 	case "manual":
-		return "workspaceWrite"
+		return "workspace-write"
 	default:
-		return "dangerFullAccess"
+		return "danger-full-access"
 	}
 }
 

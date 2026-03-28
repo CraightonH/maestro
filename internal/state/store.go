@@ -316,5 +316,5 @@ func copyFile(source string, destination string) error {
 	if _, err := io.Copy(output, input); err != nil {
 		return err
 	}
-	return output.Close()
+	return nil
 }

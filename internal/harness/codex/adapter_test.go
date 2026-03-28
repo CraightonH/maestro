@@ -24,7 +24,7 @@ if [ "$1" = "app-server" ]; then
       *'"method":"initialized"'*)
         ;;
       *'"method":"thread/start"'*)
-        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
+        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"danger-full-access"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
         ;;
       *'"method":"turn/start"'*)
         printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}'
@@ -82,7 +82,7 @@ if [ "$1" = "app-server" ]; then
       *'"method":"initialized"'*)
         ;;
       *'"method":"thread/start"'*)
-        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"on-request","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
+        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"on-request","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"danger-full-access"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
         ;;
       *'"method":"turn/start"'*)
         printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}'
@@ -163,7 +163,7 @@ if [ "$1" = "app-server" ]; then
       *'"method":"initialized"'*)
         ;;
       *'"method":"thread/start"'*)
-        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
+        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"danger-full-access"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
         ;;
       *'"method":"turn/start"'*)
         printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}'
@@ -242,14 +242,14 @@ func TestCodexApprovalPolicyAndSandboxSelection(t *testing.T) {
 	if got := codexApprovalPolicy("auto"); got != "never" {
 		t.Fatalf("auto approval policy = %q, want never", got)
 	}
-	if got := codexApprovalPolicy("manual"); got != "onRequest" {
-		t.Fatalf("manual approval policy = %q, want onRequest", got)
+	if got := codexApprovalPolicy("manual"); got != "on-request" {
+		t.Fatalf("manual approval policy = %q, want on-request", got)
 	}
-	if got := codexSandboxMode("auto"); got != "dangerFullAccess" {
-		t.Fatalf("auto sandbox mode = %q, want dangerFullAccess", got)
+	if got := codexSandboxMode("auto"); got != "danger-full-access" {
+		t.Fatalf("auto sandbox mode = %q, want danger-full-access", got)
 	}
-	if got := codexSandboxMode("manual"); got != "workspaceWrite" {
-		t.Fatalf("manual sandbox mode = %q, want workspaceWrite", got)
+	if got := codexSandboxMode("manual"); got != "workspace-write" {
+		t.Fatalf("manual sandbox mode = %q, want workspace-write", got)
 	}
 
 	policy := codexSandboxPolicy("manual", "/tmp/work")
@@ -343,7 +343,7 @@ if [ "$1" = "app-server" ]; then
       *'"method":"initialized"'*)
         ;;
       *'"method":"thread/start"'*)
-        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"dangerFullAccess"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
+        printf '%s\n' '{"id":2,"result":{"approvalPolicy":"never","cwd":"/tmp","model":"gpt-5","modelProvider":"openai","sandbox":{"type":"danger-full-access"},"thread":{"id":"thread-1","cliVersion":"0.0.0","createdAt":0,"cwd":"/tmp","ephemeral":true,"modelProvider":"openai","preview":"","source":"appServer","status":{"type":"idle"},"turns":[],"updatedAt":0}}}'
         ;;
       *'"method":"turn/start"'*)
         printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}'

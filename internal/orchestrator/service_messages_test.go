@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 	"github.com/tjohnson/maestro/internal/orchestrator"
@@ -246,5 +247,69 @@ func TestServiceRejectsConcurrentMessageResolve(t *testing.T) {
 	}
 	if len(fakeHarness.Replies) != 1 {
 		t.Fatalf("message replies = %+v, want exactly 1", fakeHarness.Replies)
+	}
+}
+
+func TestServiceStopsBeforeWorkGateCleanly(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Controls.BeforeWork.Enabled = true
+	cfg.Controls.BeforeWork.Mode = "reply"
+	cfg.State.RetryBase = config.Duration{Duration: time.Hour}
+	cfg.State.MaxRetryBackoff = config.Duration{Duration: time.Hour}
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#beforework", "team/project#beforework"),
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return snapshot.ActiveRun != nil && len(snapshot.PendingMessages) == 1 && len(fakeHarness.StartedRuns) == 0
+	})
+
+	runID := svc.Snapshot().ActiveRun.ID
+	if err := svc.StopRun(runID, "operator stopped before work"); err != nil {
+		t.Fatalf("stop run: %v", err)
+	}
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return snapshot.ActiveRun == nil && len(snapshot.PendingMessages) == 0 && len(snapshot.MessageHistory) == 1
+	})
+
+	snapshot := svc.Snapshot()
+	if len(snapshot.MessageHistory) != 1 {
+		t.Fatalf("message history = %+v, want 1 entry", snapshot.MessageHistory)
+	}
+	history := snapshot.MessageHistory[0]
+	if history.Outcome != "cancelled" {
+		t.Fatalf("message outcome = %q, want cancelled", history.Outcome)
+	}
+	if history.Kind != "before_work_reply" {
+		t.Fatalf("message kind = %q, want before_work_reply", history.Kind)
+	}
+	if len(fakeHarness.StartedRuns) != 0 {
+		t.Fatalf("started runs = %d, want 0", len(fakeHarness.StartedRuns))
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
 	}
 }

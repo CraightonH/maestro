@@ -223,16 +223,30 @@ For DM routing, set either:
 - `channels[].config.user_id`
 - or `channels[].config.user_id_env`
 
+That configured DM user is also the authorized operator for Slack actions and replies.
+
 For a fixed channel, use:
 
 - `channels[].config.mode: channel`
 - `channels[].config.channel_id` or `channel_id_env`
+- `channels[].config.authorized_user_ids` or `authorized_user_ids_env`
+
+In channel mode, only explicitly authorized Slack users can approve, reject, stop runs, or answer
+pending control messages. Unauthorized users receive a thread reply explaining that they are not
+allowed to operate Maestro from that thread.
 
 Current limits:
 
 - Slack thread replies now resolve pending Maestro control messages and generic runtime message requests, but there is still no broad free-form agent chat surface
 - there is no Teams equivalent yet
 - Slack state is persisted locally in `state.dir/slack.json`
+
+## Agent Environment
+
+Agent processes do not inherit the full Maestro process environment. Maestro passes a curated
+baseline such as `PATH`, `HOME`, locale/XDG/temp vars, and common proxy/cert vars, then merges any
+explicit `agent_types[].env` entries on top. Add required secrets or custom variables to the agent
+config explicitly instead of relying on ambient shell inheritance.
 
 ## Normal Demo Flow
 

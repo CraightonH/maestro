@@ -16,6 +16,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/orchestrator"
 )
@@ -102,6 +103,14 @@ func (f *fakeSlackClient) RunSocketMode(context.Context, func(slackInboundEnvelo
 	return nil
 }
 
+func authorizedTestChannel(client *fakeSlackClient) *slackChannel {
+	return &slackChannel{
+		name:   "slack-dm",
+		config: slackChannelConfig{AuthorizedUserIDs: []string{"U123"}},
+		client: client,
+	}
+}
+
 func TestBridgePostsApprovalLifecycle(t *testing.T) {
 	client := &fakeSlackClient{channelID: "D123"}
 	runtime := &fakeRuntime{}
@@ -109,7 +118,7 @@ func TestBridgePostsApprovalLifecycle(t *testing.T) {
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		runtime:             runtime,
 		agentChannels:       map[string]string{"code-pr": "slack-dm"},
-		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
 		statePath:           filepath.Join(t.TempDir(), "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
@@ -219,7 +228,7 @@ func TestBridgeReusesSlackThreadAcrossSourcesForSameIssueURL(t *testing.T) {
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		runtime:             runtime,
 		agentChannels:       map[string]string{"research": "slack-dm", "execute": "slack-dm"},
-		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
 		statePath:           filepath.Join(t.TempDir(), "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
@@ -308,6 +317,9 @@ func TestBridgeHandleStopAction(t *testing.T) {
 
 	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
 		Type: "block_actions",
+		User: struct {
+			ID string `json:"id"`
+		}{ID: "U123"},
 		Channel: struct {
 			ID string `json:"id"`
 		}{ID: "D123"},
@@ -340,7 +352,7 @@ func TestBridgeHandleBeforeWorkDenyAction(t *testing.T) {
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		runtime:             runtime,
 		agentChannels:       map[string]string{"code-pr": "slack-dm"},
-		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
 		statePath:           filepath.Join(t.TempDir(), "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
@@ -351,6 +363,9 @@ func TestBridgeHandleBeforeWorkDenyAction(t *testing.T) {
 
 	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
 		Type: "block_actions",
+		User: struct {
+			ID string `json:"id"`
+		}{ID: "U123"},
 		Channel: struct {
 			ID string `json:"id"`
 		}{ID: "D123"},
@@ -380,7 +395,7 @@ func TestBridgePostsBeforeWorkMessageWithSlackActions(t *testing.T) {
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		runtime:             runtime,
 		agentChannels:       map[string]string{"code-pr": "slack-dm"},
-		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
 		statePath:           filepath.Join(t.TempDir(), "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
@@ -438,7 +453,7 @@ func TestBridgeHandleBeforeWorkStartAction(t *testing.T) {
 		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
 		runtime:             runtime,
 		agentChannels:       map[string]string{"code-pr": "slack-dm"},
-		channels:            map[string]*slackChannel{"slack-dm": {name: "slack-dm", client: client}},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
 		statePath:           filepath.Join(t.TempDir(), "slack.json"),
 		state:               emptySlackState(),
 		seenApprovalHistory: map[string]struct{}{},
@@ -455,6 +470,9 @@ func TestBridgeHandleBeforeWorkStartAction(t *testing.T) {
 
 	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
 		Type: "block_actions",
+		User: struct {
+			ID string `json:"id"`
+		}{ID: "U123"},
 		Channel: struct {
 			ID string `json:"id"`
 		}{ID: "D123"},
@@ -474,6 +492,107 @@ func TestBridgeHandleBeforeWorkStartAction(t *testing.T) {
 	}
 	if len(client.updates) != 0 {
 		t.Fatalf("updates = %+v, want none", client.updates)
+	}
+}
+
+func TestBridgeRejectsUnauthorizedSlackAction(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+
+	bridge.handleAction(context.Background(), "slack-dm", blockActionPayload{
+		Type: "block_actions",
+		User: struct {
+			ID string `json:"id"`
+		}{ID: "U999"},
+		Channel: struct {
+			ID string `json:"id"`
+		}{ID: "D123"},
+		Container: struct {
+			MessageTS string `json:"message_ts"`
+		}{MessageTS: "ts-root"},
+		Actions: []struct {
+			ActionID string `json:"action_id"`
+			Value    string `json:"value"`
+		}{
+			{ActionID: "maestro_stop_run", Value: "run-9"},
+		},
+	})
+
+	if len(runtime.stopRequests) != 0 {
+		t.Fatalf("stop requests = %+v, want none", runtime.stopRequests)
+	}
+	if len(client.posts) != 1 || !strings.Contains(client.posts[0].text, "not authorized") {
+		t.Fatalf("posts = %+v, want unauthorized notice", client.posts)
+	}
+}
+
+func TestBridgeRejectsUnauthorizedSlackReply(t *testing.T) {
+	client := &fakeSlackClient{channelID: "D123"}
+	runtime := &fakeRuntime{}
+	bridge := &Bridge{
+		logger:              slog.New(slog.NewTextHandler(io.Discard, nil)),
+		runtime:             runtime,
+		agentChannels:       map[string]string{"code-pr": "slack-dm"},
+		channels:            map[string]*slackChannel{"slack-dm": authorizedTestChannel(client)},
+		statePath:           filepath.Join(t.TempDir(), "slack.json"),
+		state:               emptySlackState(),
+		seenApprovalHistory: map[string]struct{}{},
+		seenMessageHistory:  map[string]struct{}{},
+		seenEvents:          map[string]struct{}{},
+		runMeta:             map[string]runContext{},
+	}
+	bridge.state.Messages["msg-1"] = slackMessageRef{
+		ChannelName: "slack-dm",
+		ChannelID:   "D123",
+		MessageTS:   "ts-1",
+		ThreadTS:    "thread-1",
+	}
+
+	bridge.handleMessageReply(context.Background(), "slack-dm", slackMessageEvent{
+		Type:     "message",
+		Channel:  "D123",
+		User:     "U999",
+		Text:     "hello",
+		ThreadTS: "thread-1",
+		TS:       "msg-ts",
+	})
+
+	if len(runtime.messageReplies) != 0 {
+		t.Fatalf("message replies = %+v, want none", runtime.messageReplies)
+	}
+	if len(client.posts) != 1 || !strings.Contains(client.posts[0].text, "not authorized") {
+		t.Fatalf("posts = %+v, want unauthorized notice", client.posts)
+	}
+}
+
+func TestLoadSlackChannelConfigRequiresAuthorizedUsersForChannelMode(t *testing.T) {
+	t.Setenv("SLACK_BOT_TOKEN", "xoxb-test")
+	t.Setenv("SLACK_APP_TOKEN", "xapp-test")
+
+	_, err := loadSlackChannelConfig(config.ChannelConfig{
+		Name: "ops",
+		Kind: "slack",
+		Config: map[string]any{
+			"mode":          "channel",
+			"token_env":     "SLACK_BOT_TOKEN",
+			"app_token_env": "SLACK_APP_TOKEN",
+			"channel_id":    "C123",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "authorized_user_ids") {
+		t.Fatalf("err = %v, want authorized_user_ids validation", err)
 	}
 }
 

@@ -302,10 +302,10 @@ func (c SourceConnection) GroupPath() string {
 
 func (s SourceConfig) EffectiveIssueFilter() FilterConfig {
 	if s.Tracker == "gitlab-epic" {
-		if !isZeroFilter(s.IssueFilter) {
+		if !IsZeroFilter(s.IssueFilter) {
 			return s.IssueFilter
 		}
-		if !isZeroFilter(s.Filter) {
+		if !IsZeroFilter(s.Filter) {
 			filter := s.Filter
 			filter.Labels = nil
 			return filter
@@ -316,10 +316,10 @@ func (s SourceConfig) EffectiveIssueFilter() FilterConfig {
 
 func (s SourceConfig) EffectiveEpicFilter() FilterConfig {
 	if s.Tracker == "gitlab-epic" {
-		if !isZeroFilter(s.EpicFilter) {
+		if !IsZeroFilter(s.EpicFilter) {
 			return s.EpicFilter
 		}
-		if !isZeroFilter(s.Filter) {
+		if !IsZeroFilter(s.Filter) {
 			filter := s.Filter
 			filter.Assignee = ""
 			return filter
@@ -328,7 +328,7 @@ func (s SourceConfig) EffectiveEpicFilter() FilterConfig {
 	return s.Filter
 }
 
-func isZeroFilter(filter FilterConfig) bool {
+func IsZeroFilter(filter FilterConfig) bool {
 	return len(filter.Labels) == 0 && len(filter.IIDs) == 0 && len(filter.States) == 0 && strings.TrimSpace(filter.Assignee) == ""
 }
 

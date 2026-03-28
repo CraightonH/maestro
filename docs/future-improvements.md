@@ -516,6 +516,21 @@ registration for responses.
 
 ---
 
+### 🔌 Generic Channel Provider Abstraction
+
+Extract the Slack-first bridge into a reusable provider interface once there is a second
+real production channel with similar requirements.
+
+**Why deferred**: Slack is still the only fully exercised interactive channel. A generic
+abstraction now would be speculative and likely weaker than the concrete behavior we
+already know we need.
+
+**To ship**: Introduce a narrow provider boundary around thread persistence, outbound
+approval/message rendering, inbound action handling, and channel/user resolution after
+Slack and one more production channel have both proven those responsibilities stable.
+
+---
+
 ### 💬 GitLab Issue Comments as Channel
 
 Route approvals and messages as comments on the GitLab issue itself, with emoji

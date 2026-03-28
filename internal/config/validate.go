@@ -163,7 +163,7 @@ func ValidateMVP(cfg *Config) error {
 		if source.Tracker == "gitlab-epic" && strings.TrimSpace(source.Connection.GroupPath()) == "" {
 			return fmt.Errorf("source %q gitlab epic sources require connection.group", source.Name)
 		}
-		if isZeroFilter(source.EffectiveIssueFilter()) && isZeroFilter(source.EffectiveEpicFilter()) {
+		if IsZeroFilter(source.EffectiveIssueFilter()) && IsZeroFilter(source.EffectiveEpicFilter()) {
 			return fmt.Errorf("source %q filter must include labels, states, or assignee", source.Name)
 		}
 		if source.Tracker == "gitlab-epic" && strings.TrimSpace(source.EffectiveEpicFilter().Assignee) != "" {

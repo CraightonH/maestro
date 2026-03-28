@@ -1309,6 +1309,90 @@ func TestServiceRunsConfiguredHooks(t *testing.T) {
 	}
 }
 
+func TestServiceBeforeRunHookFailureBlocksHarnessStartAndQueuesRetry(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Hooks.Timeout = config.Duration{Duration: 5 * time.Second}
+	cfg.Hooks.BeforeRun = "exit 7"
+	cfg.State.RetryBase = config.Duration{Duration: time.Hour}
+	cfg.State.MaxRetryBackoff = config.Duration{Duration: time.Hour}
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#hook", "team/project#hook"),
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return len(fakeHarness.StartedRuns) == 0 && snapshot.ActiveRun == nil && snapshot.RetryCount == 1
+	})
+
+	stored := waitForPersistedState(t, cfg.State.Dir, 2*time.Second, func(snapshot state.Snapshot) bool {
+		retry, ok := snapshot.RetryQueue["gitlab:team/project#hook"]
+		return ok && strings.Contains(retry.Error, "hook before_run failed")
+	})
+	retry := stored.RetryQueue["gitlab:team/project#hook"]
+	if !strings.Contains(retry.Error, "hook before_run failed") {
+		t.Fatalf("retry error = %q, want hook failure", retry.Error)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceAfterCreateHookFailureDoesNotBlockRun(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Hooks.Timeout = config.Duration{Duration: 5 * time.Second}
+	cfg.Hooks.AfterCreate = "exit 9"
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: singleIssue(cfg, repoURL, "gitlab:team/project#hook2", "team/project#hook2"),
+	}
+	fakeHarness := &testutil.FakeHarness{}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun == nil
+	})
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	return testConfigWithRoot(t, t.TempDir())

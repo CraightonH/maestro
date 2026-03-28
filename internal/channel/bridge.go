@@ -85,11 +85,12 @@ type slackChannel struct {
 }
 
 type slackChannelConfig struct {
-	Mode      string
-	BotToken  string
-	AppToken  string
-	UserID    string
-	ChannelID string
+	Mode              string
+	BotToken          string
+	AppToken          string
+	UserID            string
+	ChannelID         string
+	AuthorizedUserIDs []string
 }
 
 type slackClient interface {
@@ -152,7 +153,10 @@ type socketEnvelope struct {
 }
 
 type blockActionPayload struct {
-	Type    string `json:"type"`
+	Type string `json:"type"`
+	User struct {
+		ID string `json:"id"`
+	} `json:"user"`
 	Channel struct {
 		ID string `json:"id"`
 	} `json:"channel"`
@@ -566,6 +570,10 @@ func (b *Bridge) handleAction(ctx context.Context, channelName string, payload b
 	if payload.Type != "block_actions" || len(payload.Actions) == 0 {
 		return
 	}
+	if !b.isAuthorizedSlackUser(channelName, payload.User.ID) {
+		b.postUnauthorizedSlackMessage(ctx, channelName, payload.Channel.ID, payload.Container.MessageTS, payload.User.ID)
+		return
+	}
 	action := payload.Actions[0]
 	decision := ""
 	switch action.ActionID {
@@ -643,6 +651,10 @@ func (b *Bridge) handleMessageReply(ctx context.Context, channelName string, pay
 		return
 	}
 	if strings.TrimSpace(payload.ThreadTS) == "" || strings.TrimSpace(payload.Text) == "" {
+		return
+	}
+	if !b.isAuthorizedSlackUser(channelName, payload.User) {
+		b.postUnauthorizedSlackMessage(ctx, channelName, payload.Channel, payload.ThreadTS, payload.User)
 		return
 	}
 
@@ -991,6 +1003,13 @@ func loadSlackChannelConfig(channel config.ChannelConfig) (slackChannelConfig, e
 		UserID:    firstNonEmpty(channelConfigValue(channel.Config, "user_id"), os.Getenv(stripEnvPrefix(channelConfigValue(channel.Config, "user_id_env")))),
 		ChannelID: firstNonEmpty(channelConfigValue(channel.Config, "channel_id"), os.Getenv(stripEnvPrefix(channelConfigValue(channel.Config, "channel_id_env")))),
 	}
+	cfg.AuthorizedUserIDs = uniqueNonEmpty(append(
+		[]string{cfg.UserID},
+		splitCSV(channelConfigValue(channel.Config, "authorized_user_ids"))...,
+	)...)
+	if envIDs := splitCSV(os.Getenv(stripEnvPrefix(channelConfigValue(channel.Config, "authorized_user_ids_env")))); len(envIDs) > 0 {
+		cfg.AuthorizedUserIDs = uniqueNonEmpty(append(cfg.AuthorizedUserIDs, envIDs...)...)
+	}
 	if strings.TrimSpace(cfg.BotToken) == "" {
 		return slackChannelConfig{}, fmt.Errorf("missing slack bot token")
 	}
@@ -1005,6 +1024,9 @@ func loadSlackChannelConfig(channel config.ChannelConfig) (slackChannelConfig, e
 	case "channel":
 		if strings.TrimSpace(cfg.ChannelID) == "" {
 			return slackChannelConfig{}, fmt.Errorf("slack channel mode requires channel_id or channel_id_env")
+		}
+		if len(cfg.AuthorizedUserIDs) == 0 {
+			return slackChannelConfig{}, fmt.Errorf("slack channel mode requires authorized_user_ids, authorized_user_ids_env, user_id, or user_id_env")
 		}
 	default:
 		return slackChannelConfig{}, fmt.Errorf("unsupported slack mode %q", cfg.Mode)
@@ -1040,6 +1062,67 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func uniqueNonEmpty(values ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			if _, ok := seen[trimmed]; ok {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func (b *Bridge) isAuthorizedSlackUser(channelName string, userID string) bool {
+	channel := b.channels[channelName]
+	if channel == nil {
+		return false
+	}
+	if len(channel.config.AuthorizedUserIDs) == 0 {
+		return true
+	}
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return false
+	}
+	for _, allowed := range channel.config.AuthorizedUserIDs {
+		if allowed == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Bridge) postUnauthorizedSlackMessage(ctx context.Context, channelName string, channelID string, threadTS string, userID string) {
+	channel := b.channels[channelName]
+	if channel == nil {
+		return
+	}
+	b.logger.Warn("unauthorized slack control attempt", "channel", channelName, "user_id", userID)
+	text := "You are not authorized to control Maestro from this thread."
+	_, _ = channel.client.PostMessage(ctx, channelID, threadTS, text, []any{
+		slackSection("*Unauthorized*\n" + text),
+	})
 }
 
 func clipSlackText(value string, limit int) string {

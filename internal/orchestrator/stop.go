@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"context"
+	"errors"
 	"fmt"
 
 	"github.com/tjohnson/maestro/internal/domain"
@@ -11,7 +11,7 @@ func (s *Service) StopRun(runID string, reason string) error {
 	s.mu.Lock()
 	if s.activeRun == nil || s.activeRun.ID != runID {
 		s.mu.Unlock()
-		return fmt.Errorf("run %q not found", runID)
+		return fmt.Errorf("run %q: %w", runID, ErrRunNotFound)
 	}
 	if _, exists := s.pendingStops[runID]; exists {
 		s.mu.Unlock()
@@ -25,7 +25,13 @@ func (s *Service) StopRun(runID string, reason string) error {
 	s.mu.Unlock()
 
 	s.recordRunEventByFields("warn", s.source.Name, runID, "", "stopping run %s: %s", runID, reason)
-	if err := s.harness.Stop(context.Background(), runID); err != nil {
+	stopCtx, cancel := withHarnessControlTimeout()
+	defer cancel()
+
+	if err := s.harness.Stop(stopCtx, runID); err != nil {
+		if errors.Is(err, ErrRunNotFound) {
+			return err
+		}
 		s.recordRunEventByFields("error", s.source.Name, runID, "", "stop run %s failed: %v", runID, err)
 		return err
 	}

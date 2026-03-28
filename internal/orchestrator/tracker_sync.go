@@ -17,6 +17,7 @@ func (s *Service) reconcileActiveRun(ctx context.Context, polled []domain.Issue)
 		return
 	}
 	run := *s.activeRun
+	run.Issue = snapshotIssue(s.activeRun.Issue)
 	s.mu.RUnlock()
 
 	current := findIssue(polled, run.Issue.ID)
@@ -30,7 +31,7 @@ func (s *Service) reconcileActiveRun(ctx context.Context, polled []domain.Issue)
 	}
 
 	s.runMgr.updateRun(run.ID, func(r *domain.AgentRun) {
-		r.Issue = *current
+		r.Issue = snapshotIssue(*current)
 	})
 
 	prefix := s.labelPrefix()
@@ -183,7 +184,7 @@ func (s *Service) refreshActiveRunIssue(ctx context.Context, runID string) {
 	}
 
 	s.runMgr.updateRun(runID, func(r *domain.AgentRun) {
-		r.Issue = refreshed
+		r.Issue = snapshotIssue(refreshed)
 	})
 }
 

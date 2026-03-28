@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
@@ -13,9 +14,10 @@ import (
 )
 
 type Adapter struct {
-	source  config.SourceConfig
-	client  *Client
-	project projectResponse
+	source    config.SourceConfig
+	client    *Client
+	projectMu sync.RWMutex
+	project   projectResponse
 }
 
 type projectResponse struct {
@@ -380,6 +382,15 @@ func (a *Adapter) postIssueComment(ctx context.Context, ref gitLabIssueRef, body
 }
 
 func (a *Adapter) ensureProject(ctx context.Context) error {
+	a.projectMu.RLock()
+	if a.project.ID != 0 {
+		a.projectMu.RUnlock()
+		return nil
+	}
+	a.projectMu.RUnlock()
+
+	a.projectMu.Lock()
+	defer a.projectMu.Unlock()
 	if a.project.ID != 0 {
 		return nil
 	}
@@ -399,6 +410,10 @@ func (a *Adapter) normalizeProjectIssue(item issueResponse) domain.Issue {
 		project = issueProject
 	}
 
+	a.projectMu.RLock()
+	repoURL := chooseRepoURL(a.project)
+	a.projectMu.RUnlock()
+
 	return domain.Issue{
 		ID:          formatGitLabIssueID(project, item.IID),
 		ExternalID:  strconv.Itoa(item.ID),
@@ -416,7 +431,7 @@ func (a *Adapter) normalizeProjectIssue(item issueResponse) domain.Issue {
 		UpdatedAt:   trackerbase.ParseTime(item.UpdatedAt),
 		Meta: map[string]string{
 			"project":         project,
-			"repo_url":        chooseRepoURL(a.project),
+			"repo_url":        repoURL,
 			"gitlab_base_url": a.source.Connection.BaseURL,
 			"gitlab_scope":    "project-issue",
 			"state_type":      strings.ToLower(strings.TrimSpace(item.State)),
@@ -476,7 +491,7 @@ func (a *Adapter) normalizeEpicIssue(item issueResponse, epic epicResponse) (dom
 
 func (a *Adapter) matchesEpicFilter(epic epicResponse) bool {
 	filter := a.source.EffectiveEpicFilter()
-	if isZeroGitLabFilter(filter) {
+	if config.IsZeroFilter(filter) {
 		return true
 	}
 	if len(filter.IIDs) > 0 {
@@ -501,7 +516,7 @@ func (a *Adapter) matchesEpicFilter(epic epicResponse) bool {
 
 func (a *Adapter) matchesEpicIssueFilter(item issueResponse) bool {
 	filter := a.source.EffectiveIssueFilter()
-	if isZeroGitLabFilter(filter) {
+	if config.IsZeroFilter(filter) {
 		return true
 	}
 	issue := domain.Issue{
@@ -515,10 +530,6 @@ func (a *Adapter) matchesEpicIssueFilter(item issueResponse) bool {
 
 func epicIssueDisplayFilter(source config.SourceConfig) config.FilterConfig {
 	return source.EffectiveIssueFilter()
-}
-
-func isZeroGitLabFilter(filter config.FilterConfig) bool {
-	return len(filter.Labels) == 0 && len(filter.IIDs) == 0 && len(filter.States) == 0 && strings.TrimSpace(filter.Assignee) == ""
 }
 
 func issueAssignee(item issueResponse) string {

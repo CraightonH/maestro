@@ -508,6 +508,8 @@ sources:
 agent_types:
   - name: stage-codex
     agent_pack: ${stage_pack}
+    env:
+      SMOKE_ARTIFACTS: ${artifacts_root}
     codex:
       reasoning: high
       max_turns: 2
@@ -515,6 +517,8 @@ agent_types:
 
   - name: review-claude
     agent_pack: dev-claude
+    env:
+      SMOKE_ARTIFACTS: ${artifacts_root}
 
   - name: repo-pack-codex
     agent_pack: "repo:.maestro"
@@ -522,6 +526,8 @@ agent_types:
     workspace: git-clone
     approval_policy: auto
     max_concurrent: 1
+    env:
+      SMOKE_ARTIFACTS: ${artifacts_root}
     codex:
       reasoning: high
       max_turns: 1
@@ -532,11 +538,15 @@ agent_types:
     prompt: ${epic_prompt_path}
     approval_policy: auto
     max_concurrent: 1
+    env:
+      SMOKE_ARTIFACTS: ${artifacts_root}
     claude:
       extra_args: ["--epic-extra"]
 
   - name: linear-codex
     agent_pack: dev-codex
+    env:
+      SMOKE_ARTIFACTS: ${artifacts_root}
     codex:
       max_turns: 1
 
