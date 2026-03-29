@@ -1,6 +1,8 @@
 package orchestrator
 
 import (
+	"time"
+
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/state"
 )
@@ -143,6 +145,7 @@ func persistedRunFromAgentRun(run *domain.AgentRun) *state.PersistedRun {
 	if run == nil {
 		return nil
 	}
+	metrics := domain.DeriveRunMetrics(run.Metrics, run.StartedAt, run.CompletedAt, time.Now())
 	return &state.PersistedRun{
 		RunID:          run.ID,
 		IssueID:        run.Issue.ID,
@@ -153,5 +156,6 @@ func persistedRunFromAgentRun(run *domain.AgentRun) *state.PersistedRun {
 		StartedAt:      run.StartedAt,
 		LastActivityAt: run.LastActivityAt,
 		IssueUpdatedAt: run.Issue.UpdatedAt,
+		Metrics:        metrics,
 	}
 }

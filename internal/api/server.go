@@ -151,17 +151,18 @@ type snapshotJSON struct {
 }
 
 type sourceSummaryJSON struct {
-	Name             string    `json:"name"`
-	DisplayGroup     string    `json:"display_group,omitempty"`
-	Tags             []string  `json:"tags,omitempty"`
-	Tracker          string    `json:"tracker"`
-	LastPollAt       time.Time `json:"last_poll_at,omitempty"`
-	LastPollCount    int       `json:"last_poll_count"`
-	ClaimedCount     int       `json:"claimed_count"`
-	RetryCount       int       `json:"retry_count"`
-	ActiveRunCount   int       `json:"active_run_count"`
-	PendingApprovals int       `json:"pending_approvals"`
-	PendingMessages  int       `json:"pending_messages"`
+	Name             string                `json:"name"`
+	DisplayGroup     string                `json:"display_group,omitempty"`
+	Tags             []string              `json:"tags,omitempty"`
+	Tracker          string                `json:"tracker"`
+	RateLimit        *trackerRateLimitJSON `json:"rate_limit,omitempty"`
+	LastPollAt       time.Time             `json:"last_poll_at,omitempty"`
+	LastPollCount    int                   `json:"last_poll_count"`
+	ClaimedCount     int                   `json:"claimed_count"`
+	RetryCount       int                   `json:"retry_count"`
+	ActiveRunCount   int                   `json:"active_run_count"`
+	PendingApprovals int                   `json:"pending_approvals"`
+	PendingMessages  int                   `json:"pending_messages"`
 }
 
 type issueJSON struct {
@@ -176,22 +177,41 @@ type issueJSON struct {
 }
 
 type runJSON struct {
-	ID             string         `json:"id"`
-	AgentName      string         `json:"agent_name"`
-	AgentType      string         `json:"agent_type,omitempty"`
-	Issue          issueJSON      `json:"issue"`
-	SourceName     string         `json:"source_name"`
-	HarnessKind    string         `json:"harness_kind,omitempty"`
-	WorkspacePath  string         `json:"workspace_path,omitempty"`
-	Status         string         `json:"status"`
-	Attempt        int            `json:"attempt"`
-	ApprovalPolicy string         `json:"approval_policy,omitempty"`
-	ApprovalState  string         `json:"approval_state,omitempty"`
-	StartedAt      time.Time      `json:"started_at,omitempty"`
-	LastActivityAt time.Time      `json:"last_activity_at,omitempty"`
-	CompletedAt    time.Time      `json:"completed_at,omitempty"`
-	Error          string         `json:"error,omitempty"`
-	Output         *runOutputJSON `json:"output,omitempty"`
+	ID             string          `json:"id"`
+	AgentName      string          `json:"agent_name"`
+	AgentType      string          `json:"agent_type,omitempty"`
+	Issue          issueJSON       `json:"issue"`
+	SourceName     string          `json:"source_name"`
+	HarnessKind    string          `json:"harness_kind,omitempty"`
+	WorkspacePath  string          `json:"workspace_path,omitempty"`
+	Status         string          `json:"status"`
+	Attempt        int             `json:"attempt"`
+	ApprovalPolicy string          `json:"approval_policy,omitempty"`
+	ApprovalState  string          `json:"approval_state,omitempty"`
+	StartedAt      time.Time       `json:"started_at,omitempty"`
+	LastActivityAt time.Time       `json:"last_activity_at,omitempty"`
+	CompletedAt    time.Time       `json:"completed_at,omitempty"`
+	Metrics        *runMetricsJSON `json:"metrics,omitempty"`
+	Error          string          `json:"error,omitempty"`
+	Output         *runOutputJSON  `json:"output,omitempty"`
+}
+
+type runMetricsJSON struct {
+	TokensIn                  *int64    `json:"tokens_in,omitempty"`
+	TokensOut                 *int64    `json:"tokens_out,omitempty"`
+	TotalTokens               *int64    `json:"total_tokens,omitempty"`
+	CostUSD                   *float64  `json:"cost_usd,omitempty"`
+	DurationMS                *int64    `json:"duration_ms,omitempty"`
+	ThroughputTokensPerSecond *float64  `json:"throughput_tokens_per_second,omitempty"`
+	UpdatedAt                 time.Time `json:"updated_at,omitempty"`
+}
+
+type trackerRateLimitJSON struct {
+	Limit             *int64    `json:"limit,omitempty"`
+	Remaining         *int64    `json:"remaining,omitempty"`
+	ResetAt           time.Time `json:"reset_at,omitempty"`
+	RetryAfterSeconds *int64    `json:"retry_after_seconds,omitempty"`
+	UpdatedAt         time.Time `json:"updated_at,omitempty"`
 }
 
 type runOutputJSON struct {
@@ -291,6 +311,10 @@ type streamUpdate struct {
 	} `json:"snapshot"`
 }
 
+type configSummaryProvider interface {
+	ConfigSummary() ops.ConfigSummary
+}
+
 func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
 	apiKey := strings.TrimSpace(cfg.Server.APIKey)
 	ephemeralKey := false
@@ -343,6 +367,13 @@ func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
 		logger.Info("generated ephemeral api key for web api", "addr", server.addr, "api_key", apiKey)
 	}
 	return server
+}
+
+func (s *Server) currentConfigSummary() ops.ConfigSummary {
+	if provider, ok := s.runtime.(configSummaryProvider); ok {
+		return provider.ConfigSummary()
+	}
+	return s.configSummary
 }
 
 func (s *Server) Addr() string {
@@ -586,9 +617,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
+	summary := s.currentConfigSummary()
 	writeJSON(w, http.StatusOK, statusResponse{
 		GeneratedAt: time.Now().UTC(),
-		Config:      s.configSummary,
+		Config:      summary,
 		Snapshot:    encodeSnapshot(s.runtime.Snapshot()),
 	})
 }
@@ -598,7 +630,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.configSummary)
+	writeJSON(w, http.StatusOK, s.currentConfigSummary())
 }
 
 func (s *Server) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
@@ -614,9 +646,10 @@ func (s *Server) handleConfigRaw(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	summary := s.currentConfigSummary()
 	writeJSON(w, http.StatusOK, configRawResponse{
 		GeneratedAt: time.Now().UTC(),
-		ConfigPath:  s.configSummary.ConfigPath,
+		ConfigPath:  summary.ConfigPath,
 		Editable:    editable,
 		YAML:        raw,
 	})
@@ -636,12 +669,13 @@ func (s *Server) handleConfigValidate(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = config.ValidateMVP(cfg)
 	}
+	currentSummary := s.currentConfigSummary()
 	if err != nil {
 		writeJSON(w, http.StatusOK, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
-			ConfigPath:    s.configSummary.ConfigPath,
-			Editable:      s.configSummary.ConfigPath != "",
+			ConfigPath:    currentSummary.ConfigPath,
+			Editable:      currentSummary.ConfigPath != "",
 			RestartNeeded: false,
 			ValidationErr: err.Error(),
 		})
@@ -668,11 +702,12 @@ func (s *Server) handleConfigDryRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current, editable, err := s.readConfigRaw()
+	currentSummary := s.currentConfigSummary()
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
-			ConfigPath:    s.configSummary.ConfigPath,
+			ConfigPath:    currentSummary.ConfigPath,
 			Editable:      false,
 			RestartNeeded: false,
 			ValidationErr: err.Error(),
@@ -688,7 +723,7 @@ func (s *Server) handleConfigDryRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
-			ConfigPath:    s.configSummary.ConfigPath,
+			ConfigPath:    currentSummary.ConfigPath,
 			Editable:      editable,
 			RestartNeeded: false,
 			ValidationErr: err.Error(),
@@ -702,7 +737,7 @@ func (s *Server) handleConfigDryRun(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   time.Now().UTC(),
 		ConfigPath:    summary.ConfigPath,
 		Editable:      editable,
-		RestartNeeded: true,
+		RestartNeeded: false,
 		Diff:          unifiedConfigDiff(current, req.YAML),
 		Config:        &summary,
 	})
@@ -717,7 +752,8 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if strings.TrimSpace(s.configSummary.ConfigPath) == "" {
+	currentSummary := s.currentConfigSummary()
+	if strings.TrimSpace(currentSummary.ConfigPath) == "" {
 		writeJSON(w, http.StatusBadRequest, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
@@ -727,7 +763,7 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var cfg *config.Config
-	cfg, err := config.LoadBytesWithEnv(s.configSummary.ConfigPath, []byte(req.YAML), s.validationEnvLookup())
+	cfg, err := config.LoadBytesWithEnv(currentSummary.ConfigPath, []byte(req.YAML), s.validationEnvLookup())
 	if err == nil {
 		err = config.ValidateMVP(cfg)
 	}
@@ -739,7 +775,7 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
-			ConfigPath:    s.configSummary.ConfigPath,
+			ConfigPath:    currentSummary.ConfigPath,
 			Editable:      true,
 			RestartNeeded: false,
 			ValidationErr: err.Error(),
@@ -747,11 +783,11 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := writeConfigAtomically(s.configSummary.ConfigPath, []byte(req.YAML)); err != nil {
+	if err := writeConfigAtomically(currentSummary.ConfigPath, []byte(req.YAML)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, configValidateResponse{
 			OK:            false,
 			GeneratedAt:   time.Now().UTC(),
-			ConfigPath:    s.configSummary.ConfigPath,
+			ConfigPath:    currentSummary.ConfigPath,
 			Editable:      true,
 			RestartNeeded: false,
 			ValidationErr: err.Error(),
@@ -766,7 +802,7 @@ func (s *Server) handleConfigSave(w http.ResponseWriter, r *http.Request) {
 		GeneratedAt:   time.Now().UTC(),
 		ConfigPath:    summary.ConfigPath,
 		Editable:      true,
-		RestartNeeded: true,
+		RestartNeeded: false,
 		Diff:          unifiedConfigDiff(current, req.YAML),
 		Config:        &summary,
 	})
@@ -777,7 +813,8 @@ func (s *Server) handleConfigBackups(w http.ResponseWriter, r *http.Request) {
 		writeMethodNotAllowed(w, http.MethodGet)
 		return
 	}
-	items, err := listConfigBackups(s.configSummary.ConfigPath)
+	summary := s.currentConfigSummary()
+	items, err := listConfigBackups(summary.ConfigPath)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
@@ -787,7 +824,7 @@ func (s *Server) handleConfigBackups(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, configBackupResponse{
 		GeneratedAt: time.Now().UTC(),
-		ConfigPath:  s.configSummary.ConfigPath,
+		ConfigPath:  summary.ConfigPath,
 		Count:       len(items),
 		Items:       items,
 	})
@@ -798,14 +835,15 @@ func (s *Server) handleConfigBackupCreate(w http.ResponseWriter, r *http.Request
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
-	if strings.TrimSpace(s.configSummary.ConfigPath) == "" {
+	summary := s.currentConfigSummary()
+	if strings.TrimSpace(summary.ConfigPath) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
 			"error": "no config file is associated with this runtime",
 		})
 		return
 	}
-	backup, err := createConfigBackup(s.configSummary.ConfigPath)
+	backup, err := createConfigBackup(summary.ConfigPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
 			"ok":    false,
@@ -834,7 +872,8 @@ func (s *Server) handleConfigBackupDetail(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	items, err := listConfigBackups(s.configSummary.ConfigPath)
+	summary := s.currentConfigSummary()
+	items, err := listConfigBackups(summary.ConfigPath)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"ok":    false,
@@ -864,7 +903,7 @@ func (s *Server) handleConfigBackupDetail(w http.ResponseWriter, r *http.Request
 	current, _, _ := s.readConfigRaw()
 	if r.Method == http.MethodPost {
 		var cfg *config.Config
-		cfg, err := config.LoadBytesWithEnv(s.configSummary.ConfigPath, raw, s.validationEnvLookup())
+		cfg, err := config.LoadBytesWithEnv(summary.ConfigPath, raw, s.validationEnvLookup())
 		if err == nil {
 			err = config.ValidateMVP(cfg)
 		}
@@ -875,7 +914,7 @@ func (s *Server) handleConfigBackupDetail(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
-		if err := writeConfigAtomically(s.configSummary.ConfigPath, raw); err != nil {
+		if err := writeConfigAtomically(summary.ConfigPath, raw); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"ok":    false,
 				"error": err.Error(),
@@ -886,14 +925,14 @@ func (s *Server) handleConfigBackupDetail(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
 			"generated_at":   time.Now().UTC(),
-			"restart_needed": true,
+			"restart_needed": false,
 			"backup":         selected,
 		})
 		return
 	}
 	writeJSON(w, http.StatusOK, configBackupDetailResponse{
 		GeneratedAt: time.Now().UTC(),
-		ConfigPath:  s.configSummary.ConfigPath,
+		ConfigPath:  summary.ConfigPath,
 		Backup:      selected,
 		YAML:        string(raw),
 		Diff:        unifiedConfigDiff(string(raw), current),
@@ -1183,7 +1222,7 @@ func (s *Server) handlePackSave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, packSaveResponse{
 		OK:            true,
 		GeneratedAt:   time.Now().UTC(),
-		RestartNeeded: true,
+		RestartNeeded: false,
 		Config:        &summary,
 	})
 }
@@ -1196,7 +1235,8 @@ func writeMethodNotAllowed(w http.ResponseWriter, methods ...string) {
 }
 
 func (s *Server) savePack(req packSaveRequest) (ops.ConfigSummary, error) {
-	if strings.TrimSpace(s.configSummary.ConfigPath) == "" {
+	summary := s.currentConfigSummary()
+	if strings.TrimSpace(summary.ConfigPath) == "" {
 		return ops.ConfigSummary{}, fmt.Errorf("config file is not editable in this runtime")
 	}
 	name := strings.TrimSpace(req.Name)
@@ -1277,12 +1317,12 @@ func (s *Server) savePack(req packSaveRequest) (ops.ConfigSummary, error) {
 	}
 
 	var cfg *config.Config
-	rawConfig, readErr := os.ReadFile(s.configSummary.ConfigPath)
+	rawConfig, readErr := os.ReadFile(summary.ConfigPath)
 	if readErr != nil {
 		restore()
 		return ops.ConfigSummary{}, fmt.Errorf("read config for validation: %w", readErr)
 	}
-	cfg, err = config.LoadBytesWithEnv(s.configSummary.ConfigPath, rawConfig, s.validationEnvLookup())
+	cfg, err = config.LoadBytesWithEnv(summary.ConfigPath, rawConfig, s.validationEnvLookup())
 	if err == nil {
 		err = config.ValidateMVP(cfg)
 	}
@@ -1295,16 +1335,17 @@ func (s *Server) savePack(req packSaveRequest) (ops.ConfigSummary, error) {
 }
 
 func (s *Server) resolvePackPaths(req packSaveRequest) (string, string, string, string, error) {
-	base := strings.TrimSpace(s.configSummary.AgentPacksDir)
+	summary := s.currentConfigSummary()
+	base := strings.TrimSpace(summary.AgentPacksDir)
 	if base == "" {
-		base = filepath.Join(filepath.Dir(s.configSummary.ConfigPath), "agents")
+		base = filepath.Join(filepath.Dir(summary.ConfigPath), "agents")
 	}
 	if !filepath.IsAbs(base) {
-		base = filepath.Join(filepath.Dir(s.configSummary.ConfigPath), base)
+		base = filepath.Join(filepath.Dir(summary.ConfigPath), base)
 	}
 	base = filepath.Clean(base)
 
-	for _, agent := range s.configSummary.Agents {
+	for _, agent := range summary.Agents {
 		if agent.AgentPack == req.OriginalName && strings.TrimSpace(agent.PackPath) != "" {
 			dir := filepath.Dir(agent.PackPath)
 			return dir, agent.PackPath, filepath.Join(dir, "prompt.md"), filepath.Join(dir, "context.md"), nil
@@ -1425,7 +1466,7 @@ func trimStrings(values []string) []string {
 
 func (s *Server) validationEnvLookup() config.EnvLookup {
 	placeholders := map[string]string{}
-	for _, source := range s.configSummary.Sources {
+	for _, source := range s.currentConfigSummary().Sources {
 		key := strings.TrimPrefix(strings.TrimSpace(source.TokenEnv), "$")
 		if key == "" {
 			continue
@@ -1464,17 +1505,18 @@ func decodeConfigValidateRequest(w http.ResponseWriter, r *http.Request) (config
 }
 
 func (s *Server) validationConfigPath() string {
-	if strings.TrimSpace(s.configSummary.ConfigPath) != "" {
-		return s.configSummary.ConfigPath
+	if strings.TrimSpace(s.currentConfigSummary().ConfigPath) != "" {
+		return s.currentConfigSummary().ConfigPath
 	}
 	return filepath.Join(os.TempDir(), "maestro-demo-config.yaml")
 }
 
 func (s *Server) readConfigRaw() (string, bool, error) {
-	if strings.TrimSpace(s.configSummary.ConfigPath) == "" {
+	summary := s.currentConfigSummary()
+	if strings.TrimSpace(summary.ConfigPath) == "" {
 		return "", false, fmt.Errorf("no config file is associated with this runtime")
 	}
-	raw, err := os.ReadFile(s.configSummary.ConfigPath)
+	raw, err := os.ReadFile(summary.ConfigPath)
 	if err != nil {
 		return "", false, err
 	}

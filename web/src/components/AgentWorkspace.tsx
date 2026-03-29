@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Approval, ConfigAgentSummary, ConfigSourceSummary, EventItem, Run, RunOutput } from "../types";
-import { formatDate, sourceGroupHref, sourceProjectHref, sourceRepoHref, sourceScopeHref } from "../lib/helpers";
+import { formatDate, formatRunMetrics, sourceGroupHref, sourceProjectHref, sourceRepoHref, sourceScopeHref } from "../lib/helpers";
 import { EmptyState, Metric, PanelHeader, Pill } from "./ui";
 
 export function AgentWorkspace({
@@ -75,6 +75,7 @@ export function AgentWorkspace({
                       <Metric label="Attempt" value={String(currentRun.attempt)} />
                       <Metric label="Last activity" value={formatDate(currentRun.last_activity_at)} />
                     </div>
+                    {formatRunMetrics(currentRun.metrics).length ? <p className="message">{formatRunMetrics(currentRun.metrics).join(" · ")}</p> : null}
                     {currentRun.issue.url ? (
                       <div className="quickLinkRow">
                         <a className="quickLink" href={currentRun.issue.url} target="_blank" rel="noreferrer">

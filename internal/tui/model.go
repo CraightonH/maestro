@@ -733,6 +733,9 @@ func (m Model) renderSourceDetail(w int, sources []orchestrator.SourceSummary, r
 	if strings.TrimSpace(selected.ProjectURL) != "" {
 		lines = append(lines, styleDim.Render("Project: ")+styleCyan.Render(selected.ProjectURL))
 	}
+	if rateLimit := renderTrackerRateLimit(selected.RateLimit); rateLimit != "" {
+		lines = append(lines, styleDim.Render("Rate limit: ")+rateLimit)
+	}
 
 	// Source events
 	if len(selectedSourceEvts) > 0 {
@@ -875,6 +878,9 @@ func (m Model) renderRunDetail(w int, runs []domain.AgentRun) string {
 	}
 	if len(timeParts) > 0 {
 		lines = append(lines, strings.Join(timeParts, "  "))
+	}
+	if metrics := renderRunMetrics(selected.Metrics); metrics != "" {
+		lines = append(lines, styleDim.Render("Metrics: ")+metrics)
 	}
 
 	// Run ID + workspace.
@@ -1916,6 +1922,59 @@ func messageLabel(kind string) string {
 	default:
 		return kind
 	}
+}
+
+func renderRunMetrics(metrics domain.RunMetrics) string {
+	parts := make([]string, 0, 6)
+	if metrics.TokensIn != nil {
+		parts = append(parts, fmt.Sprintf("%s in", formatCount(*metrics.TokensIn)))
+	}
+	if metrics.TokensOut != nil {
+		parts = append(parts, fmt.Sprintf("%s out", formatCount(*metrics.TokensOut)))
+	}
+	if metrics.TotalTokens != nil {
+		parts = append(parts, fmt.Sprintf("%s total", formatCount(*metrics.TotalTokens)))
+	}
+	if metrics.CostUSD != nil {
+		parts = append(parts, fmt.Sprintf("$%.4f", *metrics.CostUSD))
+	}
+	if metrics.DurationMS != nil {
+		parts = append(parts, formatDurationMS(*metrics.DurationMS))
+	}
+	if metrics.ThroughputTokensPerSecond != nil {
+		parts = append(parts, fmt.Sprintf("%.1f tok/s", *metrics.ThroughputTokensPerSecond))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func renderTrackerRateLimit(rateLimit *domain.TrackerRateLimit) string {
+	if rateLimit == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3)
+	if rateLimit.Remaining != nil && rateLimit.Limit != nil {
+		parts = append(parts, fmt.Sprintf("%s/%s left", formatCount(*rateLimit.Remaining), formatCount(*rateLimit.Limit)))
+	} else if rateLimit.Limit != nil {
+		parts = append(parts, fmt.Sprintf("limit %s", formatCount(*rateLimit.Limit)))
+	}
+	if !rateLimit.ResetAt.IsZero() {
+		parts = append(parts, "resets "+dueIn(rateLimit.ResetAt))
+	}
+	if rateLimit.RetryAfterSeconds != nil {
+		parts = append(parts, fmt.Sprintf("retry in %ds", *rateLimit.RetryAfterSeconds))
+	}
+	return strings.Join(parts, "  ")
+}
+
+func formatCount(value int64) string {
+	return fmt.Sprintf("%d", value)
+}
+
+func formatDurationMS(durationMS int64) string {
+	if durationMS < 1000 {
+		return fmt.Sprintf("%dms", durationMS)
+	}
+	return (time.Duration(durationMS) * time.Millisecond).Round(time.Second).String()
 }
 
 func countRunsForSource(runs []domain.AgentRun, sourceName string) int {

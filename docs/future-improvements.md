@@ -148,45 +148,6 @@ attach workspace volume, inject prompt, start. On completion: stop, detach, rese
 
 ## Configuration & Developer Experience
 
-### 🔄 Hot Reload
-
-Watch `maestro.yaml` and agent pack files for changes. Validate before applying — reject
-invalid configs, keep current config running.
-
-**Why**: Config changes currently require a full restart, which kills active runs.
-
-**To ship**: fsnotify watcher, validation gate (reuse `ValidateMVP()`), diff generation,
-graceful source transitions (new start, removed drain, modified restart), `SIGHUP`
-fallback.
-
----
-
-### 🧪 Dry-Run Mode
-
-`maestro --dry-run` fetches matching issues, renders prompts, and prints what would be
-dispatched — without launching agents.
-
-**Why**: Debug prompt templates and filter configs without burning API credits or
-creating noisy tracker comments. Essential for onboarding new agent types.
-
-**To ship**: CLI flag, poll once, render prompts, print dispatch plan, exit. Minimal
-code — wire existing functions with a no-op harness.
-
----
-
-### 🔍 Route Collision Detection
-
-`maestro --routes` prints all source→agent routing rules and warns about overlapping
-label filters that could cause double-dispatch.
-
-**Why**: With multiple sources and label-based routing, overlapping filters can cause the
-same issue to be dispatched twice.
-
-**To ship**: CLI flag, iterate sources, compare filter criteria, print table, warn on
-overlaps.
-
----
-
 ### 📝 Workflow-as-Markdown
 
 Support single `.md` files as self-contained agent definitions — YAML frontmatter
@@ -269,66 +230,15 @@ polling. Config: `webhooks.enabled`, `webhooks.secret_env`.
 
 ---
 
-### 🔄 Multi-Turn Claude Code
+### 🔄 Claude approval-session resume cleanup
 
-Claude Code runs currently execute as single-turn (`--print` mode). Add multi-turn
-support similar to Codex's continuation loop.
-
-**Why**: Complex tasks need multiple turns. Codex already supports this via
-`ContinuationFunc`. Claude Code could use session resume (`--session-id`).
-
-**To ship**: Capture session ID from output, continuation loop, `max_turns` config for
-Claude.
+Claude multi-turn continuation now resumes persisted sessions between completed turns.
+One remaining refinement is to resume a permission-blocked turn directly instead of
+rerunning that prompt from the last completed session after approval.
 
 ---
 
 ## Observability & Dashboard
-
-### 💰 Run Metrics & Cost Tracking
-
-Per-run metrics parsed from harness output and surfaced in TUI, dashboard, and API:
-
-| Metric | Source |
-|--------|--------|
-| **Tokens in / out / total** | Claude stream-json `result` event, Codex RPC response |
-| **Cache tokens** (read + creation) | Claude stream-json `result` event |
-| **Cost (USD)** | Claude `cost_usd` field, Codex equivalent |
-| **Throughput (tokens/sec)** | Derived: output tokens / run wall-clock time |
-| **Total run time** | `CompletedAt - StartedAt` (already tracked, not surfaced) |
-| **Tracker rate limits** | Parse `X-RateLimit-Remaining` / `X-RateLimit-Limit` headers |
-
-**Why**: Operators need visibility into agent costs, performance, and API quota. Run time
-is already in `domain.AgentRun` but not shown in the dashboard. Token counts and
-throughput are available in harness output but not parsed. Rate limits are silently hit
-with no warning.
-
-**To ship**:
-
-- Parse token/cost fields from stream-json `result` events and Codex RPC responses
-- Add `TokensIn`, `TokensOut`, `CacheTokens`, `CostUSD` to `domain.AgentRun`
-- Compute throughput as `TokensOut / run_duration_seconds`
-- Surface run time and throughput in TUI agent detail and web dashboard
-- Aggregate per-source and global totals in supervisor snapshot
-- Parse rate limit headers in tracker HTTP responses, expose in source status
-- Show rate limit quota in TUI status bar and dashboard source cards
-
----
-
-### ▶️ Force Poll from TUI / Dashboard
-
-Trigger an immediate poll of all sources (or a specific source) from the TUI or web
-dashboard, with a 2-second debounce to prevent spamming.
-
-**Why**: When you've just updated an issue and want the agent to pick it up now, waiting
-30-60s for the next poll cycle is frustrating. Keyboard shortcut in TUI (`r`) and button
-in dashboard for instant feedback.
-
-**To ship**: API endpoint `POST /api/v1/sources/poll` (optional `?source=name`). TUI
-keybinding. Dashboard button. Debounce: ignore requests within 2s of the last poll.
-Orchestrator exposes a `ForcePoll()` method that signals the tick loop to run
-immediately.
-
----
 
 ### 🎨 Rich Run Status Indicators
 

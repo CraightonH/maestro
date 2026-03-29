@@ -77,12 +77,6 @@ func ValidateMVP(cfg *Config) error {
 		if agent.Claude != nil && agent.Claude.MaxTurns < 0 {
 			return fmt.Errorf("agent %q claude max_turns must be at least 1", agent.Name)
 		}
-		if agent.Harness == "claude-code" {
-			resolved := ResolveClaudeConfig(cfg.ClaudeDefaults, agent.Claude)
-			if resolved.MaxTurns != 1 {
-				return fmt.Errorf("agent %q claude max_turns must be exactly 1 until multi-turn claude support exists", agent.Name)
-			}
-		}
 		if !slices.Contains([]string{"git-clone", "none"}, agent.Workspace) {
 			return fmt.Errorf("agent %q requires workspace git-clone or none", agent.Name)
 		}

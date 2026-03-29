@@ -223,6 +223,10 @@ func (a *Adapter) Kind() string {
 	return "linear"
 }
 
+func (a *Adapter) RateLimit() *domain.TrackerRateLimit {
+	return a.client.RateLimit()
+}
+
 func (a *Adapter) Poll(ctx context.Context) ([]domain.Issue, error) {
 	projectID, err := a.resolveProjectID(ctx)
 	if err != nil {
@@ -500,7 +504,6 @@ func (a *Adapter) normalizeIssue(item issueNode) domain.Issue {
 		},
 	}
 }
-
 
 func parseLinearIssueID(issueID string) (string, error) {
 	trimmed := strings.TrimSpace(issueID)

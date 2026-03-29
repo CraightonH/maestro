@@ -152,11 +152,11 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 	}
 
 	var continuationFunc func(ctx context.Context, turnNumber int) (string, bool, error)
-	if runtimeAgent.Harness == "codex" && maxTurns > 1 {
+	if maxTurns > 1 && (runtimeAgent.Harness == "codex" || runtimeAgent.Harness == "claude-code") {
 		issueID := issue.ID
 		prefix := s.labelPrefix()
 		activeLabel := trackerbase.LifecycleLabel(prefix, trackerbase.LifecycleSuffixActive)
-		sourceFilter := s.source.Filter
+		sourceFilter := s.source.EffectiveIssueFilter()
 		continuationFunc = func(ctx context.Context, turnNumber int) (string, bool, error) {
 			issue, err := s.tracker.Get(ctx, issueID)
 			if err != nil {
@@ -197,13 +197,19 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 		append:  func(p []byte) { s.appendRunOutput(run.ID, "stderr", p) },
 	}
 	active, err := s.harness.Start(ctx, harness.RunConfig{
-		RunID:             run.ID,
-		Prompt:            renderedPrompt,
-		Workdir:           prepared.Path,
-		ApprovalPolicy:    run.ApprovalPolicy,
-		Env:               runtimeAgent.Env,
-		Stdout:            stdoutWriter,
-		Stderr:            stderrWriter,
+		RunID:          run.ID,
+		Prompt:         renderedPrompt,
+		Workdir:        prepared.Path,
+		ApprovalPolicy: run.ApprovalPolicy,
+		Env:            runtimeAgent.Env,
+		Stdout:         stdoutWriter,
+		Stderr:         stderrWriter,
+		MetricsCallback: func(metrics domain.RunMetrics) {
+			r.updateRun(run.ID, func(activeRun *domain.AgentRun) {
+				activeRun.Metrics = domain.MergeRunMetrics(activeRun.Metrics, metrics)
+				activeRun.Metrics = domain.DeriveRunMetrics(activeRun.Metrics, activeRun.StartedAt, activeRun.CompletedAt, time.Now())
+			})
+		},
 		Model:             model,
 		Reasoning:         reasoning,
 		MaxTurns:          maxTurns,

@@ -38,6 +38,7 @@ func (r *runManager) completeRun(runID string) {
 		}
 		s.activeRun.Status = status
 		s.activeRun.CompletedAt = time.Now()
+		s.activeRun.Metrics = domain.DeriveRunMetrics(s.activeRun.Metrics, s.activeRun.StartedAt, s.activeRun.CompletedAt, s.activeRun.CompletedAt)
 		issueID = s.activeRun.Issue.ID
 		issueIdentifier = s.activeRun.Issue.Identifier
 		if scheduledRetry {
@@ -50,6 +51,7 @@ func (r *runManager) completeRun(runID string) {
 				Attempt:        s.activeRun.Attempt,
 				IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
 				FinishedAt:     s.activeRun.CompletedAt,
+				Metrics:        s.activeRun.Metrics,
 				Error:          comment,
 			}
 		}
@@ -105,6 +107,7 @@ func (r *runManager) failRun(runID string, err error) {
 	if s.activeRun != nil && s.activeRun.ID == runID {
 		s.activeRun.Status = domain.RunStatusFailed
 		s.activeRun.CompletedAt = time.Now()
+		s.activeRun.Metrics = domain.DeriveRunMetrics(s.activeRun.Metrics, s.activeRun.StartedAt, s.activeRun.CompletedAt, s.activeRun.CompletedAt)
 		s.activeRun.Error = err.Error()
 		issueID = s.activeRun.Issue.ID
 		issueIdentifier = s.activeRun.Issue.Identifier
@@ -124,6 +127,7 @@ func (r *runManager) failRun(runID string, err error) {
 					Attempt:        s.activeRun.Attempt,
 					IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
 					FinishedAt:     s.activeRun.CompletedAt,
+					Metrics:        s.activeRun.Metrics,
 					Error:          stop.Reason,
 				}
 			}
@@ -139,6 +143,7 @@ func (r *runManager) failRun(runID string, err error) {
 					Attempt:        s.activeRun.Attempt,
 					IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
 					FinishedAt:     s.activeRun.CompletedAt,
+					Metrics:        s.activeRun.Metrics,
 					Error:          err.Error(),
 				}
 			}
@@ -218,6 +223,7 @@ func (r *runManager) finalizeRun(issueID string) {
 		s.limiter.Release()
 	}
 	_ = s.stateMgr.saveStateBestEffort()
+	s.signalControl()
 }
 
 func (r *runManager) releaseClaim(issueID string) {

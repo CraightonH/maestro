@@ -177,7 +177,8 @@ Pack and config values are combined for:
 in `maestro.yaml` win over pack values for the same harness block. Top-level `codex_defaults` and
 `claude_defaults` fill any remaining gaps.
 
-Claude is currently single-turn only. The effective `claude.max_turns` must resolve to `1`.
+Claude multi-turn runs reuse the saved Claude session via `--resume` between turns. Set
+`claude.max_turns` above `1` when you want continuation behavior similar to Codex.
 
 Loaded context file contents are concatenated into `.Agent.Context` for prompt templates.
 

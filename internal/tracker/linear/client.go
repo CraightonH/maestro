@@ -7,17 +7,23 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/tjohnson/maestro/internal/domain"
 )
 
 const defaultGraphQLEndpoint = "https://api.linear.app/graphql"
 const defaultHTTPClientTimeout = 30 * time.Second
 
 type Client struct {
-	endpoint   string
-	token      string
-	httpClient *http.Client
+	endpoint    string
+	token       string
+	httpClient  *http.Client
+	rateLimitMu sync.RWMutex
+	rateLimit   *domain.TrackerRateLimit
 }
 
 func NewClient(baseURL string, token string) (*Client, error) {
@@ -54,6 +60,7 @@ func (c *Client) query(ctx context.Context, query string, variables map[string]a
 		return err
 	}
 	defer resp.Body.Close()
+	c.recordRateLimit(resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("linear graphql: unexpected status %d", resp.StatusCode)
@@ -77,6 +84,57 @@ func (c *Client) query(ctx context.Context, query string, variables map[string]a
 		}
 	}
 	return nil
+}
+
+func (c *Client) RateLimit() *domain.TrackerRateLimit {
+	c.rateLimitMu.RLock()
+	defer c.rateLimitMu.RUnlock()
+	return domain.CloneTrackerRateLimit(c.rateLimit)
+}
+
+func (c *Client) recordRateLimit(headers http.Header) {
+	limit := linearHeaderInt64(headers, "X-RateLimit-Endpoint-Requests-Limit", "X-RateLimit-Requests-Limit")
+	remaining := linearHeaderInt64(headers, "X-RateLimit-Endpoint-Requests-Remaining", "X-RateLimit-Requests-Remaining")
+	resetAt := linearHeaderEpochMillis(headers, "X-RateLimit-Endpoint-Requests-Reset", "X-RateLimit-Requests-Reset")
+	if limit == nil && remaining == nil && resetAt.IsZero() {
+		return
+	}
+	c.rateLimitMu.Lock()
+	c.rateLimit = &domain.TrackerRateLimit{
+		Limit:     limit,
+		Remaining: remaining,
+		ResetAt:   resetAt,
+		UpdatedAt: time.Now(),
+	}
+	c.rateLimitMu.Unlock()
+}
+
+func linearHeaderInt64(headers http.Header, keys ...string) *int64 {
+	for _, key := range keys {
+		raw := strings.TrimSpace(headers.Get(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err == nil {
+			return &value
+		}
+	}
+	return nil
+}
+
+func linearHeaderEpochMillis(headers http.Header, keys ...string) time.Time {
+	for _, key := range keys {
+		raw := strings.TrimSpace(headers.Get(key))
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err == nil {
+			return time.UnixMilli(value).UTC()
+		}
+	}
+	return time.Time{}
 }
 
 func normalizeEndpoint(raw string) (string, error) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"time"
+
+	"github.com/tjohnson/maestro/internal/domain"
 )
 
 const (
@@ -23,13 +25,14 @@ func WriterOrDiscard(w io.Writer) io.Writer {
 }
 
 type RunConfig struct {
-	RunID          string
-	Prompt         string
-	Workdir        string
-	ApprovalPolicy string
-	Env            map[string]string
-	Stdout         io.Writer
-	Stderr         io.Writer
+	RunID           string
+	Prompt          string
+	Workdir         string
+	ApprovalPolicy  string
+	Env             map[string]string
+	Stdout          io.Writer
+	Stderr          io.Writer
+	MetricsCallback func(domain.RunMetrics)
 
 	// Harness configuration
 	Model     string

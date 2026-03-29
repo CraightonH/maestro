@@ -12,13 +12,18 @@ import (
 )
 
 type FakeTracker struct {
-	Issues []domain.Issue
-	Err    error
+	Issues         []domain.Issue
+	Err            error
+	RateLimitValue *domain.TrackerRateLimit
 
 	mu sync.Mutex
 }
 
 func (f *FakeTracker) Kind() string { return "fake" }
+
+func (f *FakeTracker) RateLimit() *domain.TrackerRateLimit {
+	return domain.CloneTrackerRateLimit(f.RateLimitValue)
+}
 
 func (f *FakeTracker) Poll(ctx context.Context) ([]domain.Issue, error) {
 	if f.Err != nil {
@@ -144,6 +149,7 @@ type FakeHarness struct {
 	ReplyBlock   <-chan struct{}
 	Decisions    []harness.ApprovalDecision
 	Replies      []harness.MessageReply
+	Metrics      domain.RunMetrics
 
 	mu sync.Mutex
 }
@@ -171,6 +177,9 @@ func (f *FakeHarness) Start(ctx context.Context, cfg harness.RunConfig) (harness
 	}
 	if cfg.Stderr != nil {
 		_, _ = io.WriteString(cfg.Stderr, "fake stderr")
+	}
+	if cfg.MetricsCallback != nil {
+		cfg.MetricsCallback(f.Metrics)
 	}
 	if f.StartErr != nil {
 		return nil, f.StartErr

@@ -71,6 +71,10 @@ bin/maestro --config maestro.yaml --no-tui
 bin/maestro doctor --config maestro.yaml
 ```
 
+While `maestro` is running, edits to `maestro.yaml` and local agent pack files hot-reload automatically.
+Invalid changes are rejected, the last known good runtime stays live, and active runs are allowed to
+finish instead of being killed for a full restart.
+
 Agent processes do not inherit the full parent shell environment. Maestro passes a curated runtime
 baseline such as `PATH`, `HOME`, locale/XDG/temp vars, and common proxy/cert vars, then applies any
 explicit `agent_types[].env` entries on top. If an agent needs an extra environment variable, add it
@@ -119,7 +123,7 @@ codex_defaults:                   # defaults for all codex agents
 claude_defaults:                  # defaults for all claude-code agents
   model: claude-opus-4-6          # (default)
   reasoning: high                 # (default)
-  max_turns: 1                    # (default) single-turn; multi-turn not yet supported
+  max_turns: 1                    # default; raise to enable session-resumed continuation
   extra_args: []
 
 # ---------------------------------------------------------------------------
@@ -356,7 +360,7 @@ Template functions: `default`, `join`, `lower`, `upper`, `trim`, `contains`, `ha
 | Pack | Harness | Description |
 |------|---------|-------------|
 | `dev-codex` | codex | Full implementation agent. Plans, codes, tests, creates PRs. Multi-turn. |
-| `dev-claude` | claude-code | Same workflow as dev-codex but single-turn Claude Code. |
+| `dev-claude` | claude-code | Same workflow as dev-codex with Claude Code session continuation. |
 | `review-claude` | claude-code | Automated reviewer. Reviews PRs, runs tests, squash-merges passing work. |
 | `code-pr` | claude-code | Lightweight code change agent. |
 | `triage` | claude-code | Issue triage and labeling. |
@@ -552,6 +556,8 @@ server:
 | `POST` | `/api/v1/packs/save` | Save agent pack changes |
 
 Open `http://127.0.0.1:7777` for the built-in dashboard.
+
+Run snapshots include optional per-run metrics when the harness provides them: token input/output totals, derived total tokens, cost, duration, and throughput. Source summaries also include the latest tracker rate-limit snapshot when the tracker exposes one.
 
 The overview includes `Poll all now`, and each workflow page includes `Poll now`, both backed by the same debounced runtime poll request path used by the TUI and API.
 

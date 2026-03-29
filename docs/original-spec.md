@@ -340,7 +340,7 @@ Fields:
   - Harness-specific config for Claude Code agents. Only valid when `harness: claude-code`.
   - `model` (string, optional): model name. Default from `claude_defaults.model` (`opus-4.6`).
   - `reasoning` (string, optional): reasoning effort. Default from `claude_defaults.reasoning` (`high`).
-  - `max_turns` (integer, optional): max agent turns. Default from `claude_defaults.max_turns` (`1`). The effective value must currently be `1`; multi-turn Claude sessions are not yet supported.
+  - `max_turns` (integer, optional): max agent turns. Default from `claude_defaults.max_turns` (`1`). When greater than `1`, Maestro resumes the saved Claude session between turns.
   - `extra_args` (list of strings, optional): additional CLI arguments passed to the harness.
 
 Cross-validation: `codex:` is rejected if `harness` is not `codex`. `claude:` is rejected if

@@ -101,6 +101,81 @@ func TestServiceRunsIssueOncePerProcess(t *testing.T) {
 	}
 }
 
+func TestServiceSnapshotSurfacesRunMetricsAndTrackerRateLimit(t *testing.T) {
+	cfg := testConfig(t)
+	repoURL := createGitRepo(t)
+	tokensIn := int64(64)
+	tokensOut := int64(16)
+	limit := int64(5000)
+	remaining := int64(4900)
+	resetAt := time.Now().Add(time.Hour).UTC()
+
+	fakeTracker := &testutil.FakeTracker{
+		RateLimitValue: &domain.TrackerRateLimit{
+			Limit:     &limit,
+			Remaining: &remaining,
+			ResetAt:   resetAt,
+		},
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#metrics",
+				Identifier:  "team/project#metrics",
+				Title:       "Surface metrics",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta: map[string]string{
+					"repo_url": repoURL,
+				},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{
+		WaitBlock: make(chan struct{}),
+		Metrics: domain.RunMetrics{
+			TokensIn:  &tokensIn,
+			TokensOut: &tokensOut,
+		},
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return snapshot.ActiveRun != nil && snapshot.ActiveRun.Metrics.TotalTokens != nil && snapshot.SourceSummaries[0].RateLimit != nil
+	})
+
+	snapshot := svc.Snapshot()
+	if snapshot.ActiveRun == nil {
+		t.Fatal("active run = nil, want metrics")
+	}
+	if snapshot.ActiveRun.Metrics.TotalTokens == nil || *snapshot.ActiveRun.Metrics.TotalTokens != 80 {
+		t.Fatalf("active run total_tokens = %#v, want 80", snapshot.ActiveRun.Metrics.TotalTokens)
+	}
+	if snapshot.SourceSummaries[0].RateLimit == nil || snapshot.SourceSummaries[0].RateLimit.Remaining == nil || *snapshot.SourceSummaries[0].RateLimit.Remaining != remaining {
+		t.Fatalf("source summary rate limit = %#v, want remaining %d", snapshot.SourceSummaries[0].RateLimit, remaining)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func TestServiceRunsWorkspaceNoneWithoutRepoMetadata(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.AgentTypes[0].Workspace = "none"
@@ -1027,7 +1102,160 @@ func TestServiceCodexContinuationStopsWhenActiveLabelIsRemoved(t *testing.T) {
 		t.Fatal("continuation after active removed = true, want false")
 	}
 
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceClaudeContinuationStopsWhenActiveLabelIsRemoved(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Defaults.LabelPrefix = "maestro"
+	cfg.Sources[0].Filter = config.FilterConfig{Labels: []string{"maestro:coding"}}
+	cfg.AgentTypes[0].Harness = "claude-code"
+	cfg.AgentTypes[0].Claude = &config.ClaudeConfig{MaxTurns: 3}
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#59c",
+				Identifier:  "team/project#59c",
+				Title:       "Continue work",
+				State:       "todo",
+				Labels:      []string{"maestro:coding"},
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta: map[string]string{
+					"repo_url": repoURL,
+				},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{WaitBlock: make(chan struct{})}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun != nil
+	})
+
+	started := fakeHarness.StartedRuns[0]
+	if started.ContinuationFunc == nil {
+		t.Fatal("continuation func = nil, want claude continuation func")
+	}
+
+	prompt, cont, err := started.ContinuationFunc(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("continuation while active: %v", err)
+	}
+	if !cont {
+		t.Fatal("continuation while active = false, want true")
+	}
+	if !strings.Contains(prompt, "Continuation turn 2 of 3") {
+		t.Fatalf("continuation prompt = %q, want turn prompt", prompt)
+	}
+
+	if err := fakeTracker.RemoveLifecycleLabel(context.Background(), "gitlab:team/project#59c", "maestro:active"); err != nil {
+		t.Fatalf("remove active label: %v", err)
+	}
+
+	_, cont, err = started.ContinuationFunc(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("continuation after active removed: %v", err)
+	}
+	if cont {
+		t.Fatal("continuation after active removed = true, want false")
+	}
+
 	close(fakeHarness.WaitBlock)
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceContinuationUsesEffectiveIssueFilterForGitLabEpic(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Defaults.LabelPrefix = "maestro"
+	cfg.Sources[0].Tracker = "gitlab-epic"
+	cfg.Sources[0].Filter = config.FilterConfig{
+		Labels: []string{"epic:ready"},
+		States: []string{"opened"},
+	}
+	cfg.Sources[0].IssueFilter = config.FilterConfig{
+		States: []string{"opened"},
+	}
+	cfg.AgentTypes[0].Harness = "codex"
+	cfg.AgentTypes[0].Codex = &config.CodexConfig{MaxTurns: 3}
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab-epic:team/platform&7:29|team/platform/repo#42",
+				Identifier:  "team/platform/repo#42",
+				Title:       "Continue linked issue",
+				State:       "opened",
+				Labels:      nil,
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta: map[string]string{
+					"repo_url": repoURL,
+				},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{WaitBlock: make(chan struct{})}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		return len(fakeHarness.StartedRuns) == 1 && svc.Snapshot().ActiveRun != nil
+	})
+
+	started := fakeHarness.StartedRuns[0]
+	if started.ContinuationFunc == nil {
+		t.Fatal("continuation func = nil, want continuation func")
+	}
+
+	prompt, cont, err := started.ContinuationFunc(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("continuation while active: %v", err)
+	}
+	if !cont {
+		t.Fatal("continuation while active = false, want true")
+	}
+	if !strings.Contains(prompt, "Continuation turn 2 of 3") {
+		t.Fatalf("continuation prompt = %q, want turn prompt", prompt)
+	}
+
 	cancel()
 	if err := <-errCh; err != nil {
 		t.Fatalf("run service: %v", err)

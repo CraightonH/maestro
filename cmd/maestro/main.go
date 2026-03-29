@@ -142,7 +142,7 @@ func runCommand(args []string) {
 		}
 	}()
 
-	runtime, err := orchestrator.NewRuntime(cfg, logger)
+	runtime, err := orchestrator.NewReloadableRuntime(cfg, logger)
 	if err != nil {
 		fatalf("build runtime: %v", err)
 	}

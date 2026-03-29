@@ -20,6 +20,24 @@ export interface RunOutput {
   updated_at?: string;
 }
 
+export interface RunMetrics {
+  tokens_in?: number;
+  tokens_out?: number;
+  total_tokens?: number;
+  cost_usd?: number;
+  duration_ms?: number;
+  throughput_tokens_per_second?: number;
+  updated_at?: string;
+}
+
+export interface TrackerRateLimit {
+  limit?: number;
+  remaining?: number;
+  reset_at?: string;
+  retry_after_seconds?: number;
+  updated_at?: string;
+}
+
 export interface Run {
   id: string;
   agent_name: string;
@@ -35,6 +53,7 @@ export interface Run {
   started_at?: string;
   last_activity_at?: string;
   completed_at?: string;
+  metrics?: RunMetrics;
   error?: string;
   output?: RunOutput;
 }
@@ -121,6 +140,7 @@ export interface SourceSummary {
   display_group?: string;
   tags?: string[];
   tracker: string;
+  rate_limit?: TrackerRateLimit;
   last_poll_at?: string;
   last_poll_count: number;
   claimed_count: number;

@@ -58,6 +58,15 @@ func (l *semaphoreLimiter) Release() {
 	}
 }
 
+func (l *semaphoreLimiter) SetCapacity(capacity int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if capacity < 1 {
+		capacity = 1
+	}
+	l.capacity = capacity
+}
+
 func (l *compositeLimiter) TryAcquire() bool {
 	acquired := make([]dispatchLimiter, 0, len(l.limiters))
 	for _, limiter := range l.limiters {

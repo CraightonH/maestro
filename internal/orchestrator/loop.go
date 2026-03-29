@@ -31,6 +31,12 @@ func (s *Service) Run(ctx context.Context) error {
 			_ = s.stateMgr.saveStateBestEffort()
 			s.recordEvent("info", "service shutting down")
 			return nil
+		case <-s.controlCh:
+			if s.shouldExitAfterDrain() {
+				_ = s.stateMgr.saveStateBestEffort()
+				s.recordSourceEvent("info", s.source.Name, "service drained")
+				return nil
+			}
 		case <-ticker.C:
 			if err := s.runTick(ctx, false); err != nil {
 				s.recordEvent("error", "poll failed: %v", err)
@@ -84,6 +90,10 @@ func (s *Service) tick(ctx context.Context) error {
 
 	if hasActive {
 		s.reconcileActiveRun(ctx, issues)
+		return nil
+	}
+
+	if s.IsDraining() {
 		return nil
 	}
 

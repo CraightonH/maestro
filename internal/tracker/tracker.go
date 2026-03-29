@@ -15,3 +15,7 @@ type Tracker interface {
 	RemoveLifecycleLabel(ctx context.Context, issueID string, label string) error
 	UpdateIssueState(ctx context.Context, issueID string, stateName string) error
 }
+
+type RateLimitReporter interface {
+	RateLimit() *domain.TrackerRateLimit
+}

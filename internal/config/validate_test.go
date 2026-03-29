@@ -399,7 +399,7 @@ func TestValidateMVPAcceptsClaudeManualApproval(t *testing.T) {
 	}
 }
 
-func TestValidateMVPRejectsClaudeMultiTurnOverride(t *testing.T) {
+func TestValidateMVPAcceptsClaudeMultiTurnOverride(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
@@ -445,13 +445,12 @@ func TestValidateMVPRejectsClaudeMultiTurnOverride(t *testing.T) {
 		},
 	}
 
-	err := config.ValidateMVP(cfg)
-	if err == nil || !strings.Contains(err.Error(), "must be exactly 1") {
-		t.Fatalf("validation error = %v, want claude single-turn error", err)
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected claude multi-turn override to validate: %v", err)
 	}
 }
 
-func TestValidateMVPRejectsClaudeDefaultsMultiTurn(t *testing.T) {
+func TestValidateMVPAcceptsClaudeDefaultsMultiTurn(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")
 	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
@@ -497,9 +496,8 @@ func TestValidateMVPRejectsClaudeDefaultsMultiTurn(t *testing.T) {
 		},
 	}
 
-	err := config.ValidateMVP(cfg)
-	if err == nil || !strings.Contains(err.Error(), "must be exactly 1") {
-		t.Fatalf("validation error = %v, want claude single-turn error", err)
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected claude multi-turn defaults to validate: %v", err)
 	}
 }
 

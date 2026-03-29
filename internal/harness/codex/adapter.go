@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 )
 
@@ -40,6 +41,7 @@ type codexRun struct {
 	threadSandbox     string
 	turnSandboxPolicy map[string]any
 	continuationFunc  func(ctx context.Context, turnNumber int) (string, bool, error)
+	metricsCallback   func(domain.RunMetrics)
 
 	// Multi-turn state
 	threadID   string
@@ -128,6 +130,25 @@ type agentMessageDeltaNotification struct {
 	Delta string `json:"delta"`
 }
 
+type threadTokenUsageUpdatedNotification struct {
+	ThreadID   string              `json:"threadId"`
+	TurnID     string              `json:"turnId"`
+	TokenUsage threadTokenUsageSet `json:"tokenUsage"`
+}
+
+type threadTokenUsageSet struct {
+	Last  tokenUsageBreakdown `json:"last"`
+	Total tokenUsageBreakdown `json:"total"`
+}
+
+type tokenUsageBreakdown struct {
+	InputTokens     int64 `json:"inputTokens"`
+	OutputTokens    int64 `json:"outputTokens"`
+	TotalTokens     int64 `json:"totalTokens"`
+	CachedInput     int64 `json:"cachedInputTokens"`
+	ReasoningOutput int64 `json:"reasoningOutputTokens"`
+}
+
 type toolRequestUserInputParams struct {
 	ThreadID  string                         `json:"threadId"`
 	TurnID    string                         `json:"turnId"`
@@ -208,6 +229,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		threadSandbox:     cfg.ThreadSandbox,
 		turnSandboxPolicy: cfg.TurnSandboxPolicy,
 		continuationFunc:  cfg.ContinuationFunc,
+		metricsCallback:   cfg.MetricsCallback,
 		ctx:               ctx,
 		pending:           map[int64]chan rpcResponse{},
 		pendingApproval:   map[string]pendingApproval{},
@@ -442,6 +464,16 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 		if err := json.Unmarshal(params, &msg); err == nil && msg.Delta != "" {
 			_, _ = io.WriteString(stdout, msg.Delta)
 		}
+	case "thread/tokenUsage/updated":
+		var msg threadTokenUsageUpdatedNotification
+		if err := json.Unmarshal(params, &msg); err == nil {
+			r.publishMetrics(domain.DeriveRunMetrics(domain.RunMetrics{
+				TokensIn:    int64Ptr(msg.TokenUsage.Total.InputTokens),
+				TokensOut:   int64Ptr(msg.TokenUsage.Total.OutputTokens),
+				TotalTokens: int64Ptr(msg.TokenUsage.Total.TotalTokens),
+				UpdatedAt:   time.Now(),
+			}, time.Time{}, time.Time{}, time.Now()))
+		}
 	case "turn/completed":
 		var msg turnCompletedNotification
 		if err := json.Unmarshal(params, &msg); err != nil {
@@ -480,6 +512,13 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 			r.finish(fmt.Errorf("codex turn interrupted"))
 		}
 	}
+}
+
+func (r *codexRun) publishMetrics(metrics domain.RunMetrics) {
+	if r.metricsCallback == nil {
+		return
+	}
+	r.metricsCallback(metrics)
 }
 
 func (r *codexRun) handleServerRequest(id int64, method string, params json.RawMessage, approvalCh chan<- harness.ApprovalRequest, messageCh chan<- harness.MessageRequest) {
@@ -702,6 +741,10 @@ func marshalRaw(v any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }
 
 func codexApprovalPolicy(policy string) string {

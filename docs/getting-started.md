@@ -249,8 +249,9 @@ agent_types:
       reasoning: medium
 ```
 
-Codex supports multi-turn execution: between turns, Maestro sends a continuation prompt with
-refreshed issue state so the agent can react to tracker changes mid-session.
+Codex and Claude Code both support multi-turn execution. Between turns, Maestro sends a
+continuation prompt with refreshed issue state so the agent can react to tracker changes
+mid-session. Claude continuation resumes the saved Claude session with `--resume`.
 
 ## Build And Install
 
@@ -358,6 +359,13 @@ Current Slack limits:
 
 - no broad free-form agent chat surface yet; replies are routed into explicit pending control messages
 - no built-in hot reload of Slack channel config
+
+Current runtime reload behavior:
+
+- `maestro.yaml` and local agent pack edits hot-reload automatically
+- invalid reloads are rejected and the last valid runtime stays in place
+- removed or changed sources drain cleanly instead of killing active runs
+- Slack bridge/channel wiring still follows the process-start config
 
 Slack app checklist:
 

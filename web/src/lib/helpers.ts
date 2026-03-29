@@ -3,7 +3,9 @@ import type {
   ConfigAgentSummary,
   ConfigSourceSummary,
   Run,
+  RunMetrics,
   SourceSummary,
+  TrackerRateLimit,
   ViewMode,
 } from "../types";
 
@@ -109,13 +111,65 @@ export function formatDate(value?: string) {
 export function relativeTime(value?: string) {
   if (!value) return "n/a";
   const delta = Date.now() - new Date(value).getTime();
-  const minutes = Math.round(delta / 60000);
-  if (Math.abs(minutes) < 1) return "just now";
-  if (Math.abs(minutes) < 60) return `${minutes}m ago`;
+  const future = delta < 0;
+  const minutes = Math.round(Math.abs(delta) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return future ? `in ${minutes}m` : `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
-  if (Math.abs(hours) < 24) return `${hours}h ago`;
+  if (hours < 24) return future ? `in ${hours}h` : `${hours}h ago`;
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  return future ? `in ${days}d` : `${days}d ago`;
+}
+
+export function formatRunMetrics(metrics?: RunMetrics) {
+  if (!metrics) return [];
+  const parts: string[] = [];
+  if (typeof metrics.tokens_in === "number") parts.push(`${formatInteger(metrics.tokens_in)} in`);
+  if (typeof metrics.tokens_out === "number") parts.push(`${formatInteger(metrics.tokens_out)} out`);
+  if (typeof metrics.total_tokens === "number") parts.push(`${formatInteger(metrics.total_tokens)} total`);
+  if (typeof metrics.cost_usd === "number") parts.push(formatCurrency(metrics.cost_usd));
+  if (typeof metrics.duration_ms === "number") parts.push(formatDuration(metrics.duration_ms));
+  if (typeof metrics.throughput_tokens_per_second === "number") parts.push(`${metrics.throughput_tokens_per_second.toFixed(1)} tok/s`);
+  return parts;
+}
+
+export function formatTrackerRateLimit(rateLimit?: TrackerRateLimit) {
+  if (!rateLimit) return "n/a";
+  const parts: string[] = [];
+  if (typeof rateLimit.remaining === "number" && typeof rateLimit.limit === "number") {
+    parts.push(`${formatInteger(rateLimit.remaining)}/${formatInteger(rateLimit.limit)} left`);
+  } else if (typeof rateLimit.limit === "number") {
+    parts.push(`limit ${formatInteger(rateLimit.limit)}`);
+  }
+  if (rateLimit.reset_at) {
+    parts.push(`resets ${relativeTime(rateLimit.reset_at)}`);
+  }
+  if (typeof rateLimit.retry_after_seconds === "number") {
+    parts.push(`retry ${rateLimit.retry_after_seconds}s`);
+  }
+  return parts.join(" · ") || "n/a";
+}
+
+export function formatInteger(value: number) {
+  return new Intl.NumberFormat().format(value);
+}
+
+export function formatCurrency(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value >= 1 ? 2 : 4,
+    maximumFractionDigits: value >= 1 ? 2 : 4,
+  }).format(value);
+}
+
+export function formatDuration(durationMs: number) {
+  if (durationMs < 1000) return `${durationMs}ms`;
+  const seconds = durationMs / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 0 : 1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = Math.round(seconds % 60);
+  return `${minutes}m ${remainder}s`;
 }
 
 export function sourceScopeHref(source: ConfigSourceSummary) {

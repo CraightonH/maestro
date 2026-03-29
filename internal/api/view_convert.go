@@ -43,6 +43,7 @@ func apiSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJSON 
 			DisplayGroup:     item.DisplayGroup,
 			Tags:             append([]string(nil), item.Tags...),
 			Tracker:          item.Tracker,
+			RateLimit:        apiTrackerRateLimit(item.RateLimit),
 			LastPollAt:       item.LastPollAt,
 			LastPollCount:    item.LastPollCount,
 			ClaimedCount:     item.ClaimedCount,
@@ -82,6 +83,7 @@ func apiRun(run domain.AgentRun, output *runOutputJSON) runJSON {
 		StartedAt:      run.StartedAt,
 		LastActivityAt: run.LastActivityAt,
 		CompletedAt:    run.CompletedAt,
+		Metrics:        apiRunMetrics(run.Metrics),
 		Error:          run.Error,
 		Output:         output,
 	}
@@ -226,4 +228,48 @@ func apiEvents(items []orchestrator.Event) []eventJSON {
 		})
 	}
 	return out
+}
+
+func apiRunMetrics(metrics domain.RunMetrics) *runMetricsJSON {
+	if metrics.TokensIn == nil && metrics.TokensOut == nil && metrics.TotalTokens == nil && metrics.CostUSD == nil && metrics.DurationMS == nil && metrics.ThroughputTokensPerSecond == nil && metrics.UpdatedAt.IsZero() {
+		return nil
+	}
+	return &runMetricsJSON{
+		TokensIn:                  cloneInt64Ptr(metrics.TokensIn),
+		TokensOut:                 cloneInt64Ptr(metrics.TokensOut),
+		TotalTokens:               cloneInt64Ptr(metrics.TotalTokens),
+		CostUSD:                   cloneFloat64Ptr(metrics.CostUSD),
+		DurationMS:                cloneInt64Ptr(metrics.DurationMS),
+		ThroughputTokensPerSecond: cloneFloat64Ptr(metrics.ThroughputTokensPerSecond),
+		UpdatedAt:                 metrics.UpdatedAt,
+	}
+}
+
+func apiTrackerRateLimit(rateLimit *domain.TrackerRateLimit) *trackerRateLimitJSON {
+	if rateLimit == nil {
+		return nil
+	}
+	return &trackerRateLimitJSON{
+		Limit:             cloneInt64Ptr(rateLimit.Limit),
+		Remaining:         cloneInt64Ptr(rateLimit.Remaining),
+		ResetAt:           rateLimit.ResetAt,
+		RetryAfterSeconds: cloneInt64Ptr(rateLimit.RetryAfterSeconds),
+		UpdatedAt:         rateLimit.UpdatedAt,
+	}
+}
+
+func cloneInt64Ptr(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFloat64Ptr(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }

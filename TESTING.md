@@ -41,6 +41,7 @@ Coverage includes:
 - custom lifecycle label prefixes with routing labels in the same namespace
 - global `on_complete` defaults plus per-source lifecycle overrides
 - multi-turn Codex continuation
+- multi-turn Claude session continuation
 - prompt template FuncMap helpers
 - local pack harness-config merge and explicit `extra_args: []` clearing
 - built-in `dev-claude` and `dev-codex` packs
@@ -260,8 +261,8 @@ export MAESTRO_LINEAR_SMOKE_PROVISION_FIXTURE=0
 ## Live Claude validation
 
 The Claude live test validates the CLI invocation path against your installed subscription. It runs
-in a temporary directory and now covers both the basic non-interactive path and the manual-approval
-rerun path.
+in a temporary directory and now covers the basic non-interactive path, session-resumed multi-turn
+continuation, and the manual-approval rerun path.
 
 Required environment variables:
 
@@ -271,6 +272,7 @@ Run:
 
 ```bash
 go test ./internal/harness/claude -run TestLiveClaudeHarness -v
+go test ./internal/harness/claude -run TestLiveClaudeHarnessContinuation -v
 go test ./internal/harness/claude -run TestLiveClaudeManualApproval -v
 ```
 

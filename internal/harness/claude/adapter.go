@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 )
 
@@ -20,6 +21,10 @@ type Adapter struct {
 	mu        sync.Mutex
 	procs     map[string]*claudeRun
 	approvals chan harness.ApprovalRequest
+
+	supportMu            sync.Mutex
+	resumeSupportChecked bool
+	resumeSupported      bool
 }
 
 type claudeRun struct {
@@ -32,9 +37,11 @@ type claudeRun struct {
 	approvalPolicy string
 
 	// Harness config
-	model     string
-	reasoning string
-	extraArgs []string
+	model            string
+	reasoning        string
+	maxTurns         int
+	extraArgs        []string
+	continuationFunc func(ctx context.Context, turnNumber int) (prompt string, cont bool, err error)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -42,8 +49,11 @@ type claudeRun struct {
 	cmdMu sync.Mutex
 	cmd   *exec.Cmd
 
-	decisionCh chan harness.ApprovalDecision
-	doneCh     chan error
+	sessionID       string
+	metrics         domain.RunMetrics
+	metricsCallback func(domain.RunMetrics)
+	decisionCh      chan harness.ApprovalDecision
+	doneCh          chan error
 }
 
 type activeRun struct {
@@ -51,10 +61,20 @@ type activeRun struct {
 	wait  func() error
 }
 
+type turnOutcome struct {
+	sessionID string
+	approval  *harness.ApprovalRequest
+}
+
 type streamEvent struct {
 	Type              string         `json:"type"`
 	Subtype           string         `json:"subtype"`
 	Result            string         `json:"result"`
+	SessionID         string         `json:"session_id"`
+	DurationMS        *int64         `json:"duration_ms,omitempty"`
+	TotalCostUSD      *float64       `json:"total_cost_usd,omitempty"`
+	Usage             *claudeUsage   `json:"usage,omitempty"`
+	ModelUsage        claudeModelMap `json:"modelUsage,omitempty"`
 	Message           *streamMessage `json:"message,omitempty"`
 	PermissionDenials []struct {
 		ToolName  string          `json:"tool_name"`
@@ -65,6 +85,7 @@ type streamEvent struct {
 
 type streamMessage struct {
 	Content []streamContent `json:"content"`
+	Usage   *claudeUsage    `json:"usage,omitempty"`
 }
 
 type streamContent struct {
@@ -72,6 +93,21 @@ type streamContent struct {
 	Text  string          `json:"text,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+}
+
+type claudeModelMap map[string]claudeModelUsage
+
+type claudeModelUsage struct {
+	InputTokens              *int64   `json:"inputTokens,omitempty"`
+	OutputTokens             *int64   `json:"outputTokens,omitempty"`
+	CostUSD                  *float64 `json:"costUSD,omitempty"`
+	CacheReadInputTokens     *int64   `json:"cacheReadInputTokens,omitempty"`
+	CacheCreationInputTokens *int64   `json:"cacheCreationInputTokens,omitempty"`
+}
+
+type claudeUsage struct {
+	InputTokens  *int64 `json:"input_tokens,omitempty"`
+	OutputTokens *int64 `json:"output_tokens,omitempty"`
 }
 
 func NewAdapter() (*Adapter, error) {
@@ -92,22 +128,40 @@ func (a *Adapter) Kind() string {
 }
 
 func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.ActiveRun, error) {
+	if cfg.MaxTurns > 1 && cfg.ContinuationFunc != nil {
+		supported, err := a.supportsResume()
+		if err != nil {
+			return nil, fmt.Errorf("detect claude resume support: %w", err)
+		}
+		if !supported {
+			return nil, fmt.Errorf("claude CLI does not support multi-turn session resume")
+		}
+	}
+
+	maxTurns := cfg.MaxTurns
+	if maxTurns < 1 {
+		maxTurns = 1
+	}
+
 	runCtx, cancel := context.WithCancel(ctx)
 	run := &claudeRun{
-		runID:          cfg.RunID,
-		prompt:         cfg.Prompt,
-		workdir:        cfg.Workdir,
-		env:            cfg.Env,
-		stdout:         harness.WriterOrDiscard(cfg.Stdout),
-		stderr:         harness.WriterOrDiscard(cfg.Stderr),
-		approvalPolicy: cfg.ApprovalPolicy,
-		model:          cfg.Model,
-		reasoning:      cfg.Reasoning,
-		extraArgs:      cfg.ExtraArgs,
-		ctx:            runCtx,
-		cancel:         cancel,
-		decisionCh:     make(chan harness.ApprovalDecision, 1),
-		doneCh:         make(chan error, 1),
+		runID:            cfg.RunID,
+		prompt:           cfg.Prompt,
+		workdir:          cfg.Workdir,
+		env:              cfg.Env,
+		stdout:           harness.WriterOrDiscard(cfg.Stdout),
+		stderr:           harness.WriterOrDiscard(cfg.Stderr),
+		approvalPolicy:   cfg.ApprovalPolicy,
+		model:            cfg.Model,
+		reasoning:        cfg.Reasoning,
+		maxTurns:         maxTurns,
+		extraArgs:        cfg.ExtraArgs,
+		continuationFunc: cfg.ContinuationFunc,
+		ctx:              runCtx,
+		cancel:           cancel,
+		metricsCallback:  cfg.MetricsCallback,
+		decisionCh:       make(chan harness.ApprovalDecision, 1),
+		doneCh:           make(chan error, 1),
 	}
 
 	a.mu.Lock()
@@ -172,51 +226,114 @@ func (r *activeRun) Wait() error {
 }
 
 func (r *claudeRun) execute(binary string, approvals chan<- harness.ApprovalRequest) {
-	switch r.approvalPolicy {
-	case "manual":
-		request, err := r.runDetection(binary)
+	currentTurn := 1
+	prompt := r.prompt
+	for {
+		sessionID, err := r.runTurn(binary, prompt, r.sessionID, approvals)
 		if err != nil {
 			r.finish(err)
 			return
 		}
-		if request == nil {
+		if sessionID != "" {
+			r.sessionID = sessionID
+		}
+		if r.maxTurns <= 1 || currentTurn >= r.maxTurns || r.continuationFunc == nil {
 			r.finish(nil)
 			return
 		}
 
-		select {
-		case approvals <- *request:
-		case <-r.ctx.Done():
-			r.finish(r.ctx.Err())
+		nextPrompt, cont, err := r.continuationFunc(r.ctx, currentTurn)
+		if err != nil {
+			r.finish(fmt.Errorf("continuation check: %w", err))
+			return
+		}
+		if !cont {
+			r.finish(nil)
+			return
+		}
+		if strings.TrimSpace(r.sessionID) == "" {
+			r.finish(fmt.Errorf("claude continuation requires session_id from prior turn"))
 			return
 		}
 
-		var decision harness.ApprovalDecision
-		select {
-		case decision = <-r.decisionCh:
-		case <-r.ctx.Done():
-			r.finish(r.ctx.Err())
-			return
-		}
-		if decision.Decision != harness.DecisionApprove {
-			r.finish(fmt.Errorf("approval rejected"))
-			return
-		}
-
-		r.finish(r.runPermissive(binary, "bypassPermissions"))
-	default:
-		r.finish(r.runPermissive(binary, "bypassPermissions"))
+		prompt = nextPrompt
+		currentTurn++
 	}
 }
 
-func (r *claudeRun) runDetection(binary string) (*harness.ApprovalRequest, error) {
+func (a *Adapter) supportsResume() (bool, error) {
+	a.supportMu.Lock()
+	if a.resumeSupportChecked {
+		supported := a.resumeSupported
+		a.supportMu.Unlock()
+		return supported, nil
+	}
+	a.supportMu.Unlock()
+
+	out, err := exec.Command(a.binary, "--help").CombinedOutput()
+	supported := strings.Contains(string(out), "--resume")
+	if err != nil && !supported {
+		return false, err
+	}
+
+	a.supportMu.Lock()
+	a.resumeSupportChecked = true
+	a.resumeSupported = supported
+	a.supportMu.Unlock()
+	return supported, nil
+}
+
+func (r *claudeRun) runTurn(binary string, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
+	switch r.approvalPolicy {
+	case "manual":
+		return r.runManualTurn(binary, prompt, resumeSessionID, approvals)
+	default:
+		outcome, err := r.runCommand(binary, prompt, resumeSessionID, "bypassPermissions", false)
+		return outcome.sessionID, err
+	}
+}
+
+func (r *claudeRun) runManualTurn(binary string, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
+	outcome, err := r.runCommand(binary, prompt, resumeSessionID, "default", true)
+	if err != nil {
+		return outcome.sessionID, err
+	}
+	if outcome.approval == nil {
+		return outcome.sessionID, nil
+	}
+
+	select {
+	case approvals <- *outcome.approval:
+	case <-r.ctx.Done():
+		return outcome.sessionID, r.ctx.Err()
+	}
+
+	var decision harness.ApprovalDecision
+	select {
+	case decision = <-r.decisionCh:
+	case <-r.ctx.Done():
+		return outcome.sessionID, r.ctx.Err()
+	}
+	if decision.Decision != harness.DecisionApprove {
+		return outcome.sessionID, fmt.Errorf("approval rejected")
+	}
+
+	outcome, err = r.runCommand(binary, prompt, resumeSessionID, "bypassPermissions", false)
+	return outcome.sessionID, err
+}
+
+func (r *claudeRun) runCommand(binary string, prompt string, resumeSessionID string, permissionMode string, detectApproval bool) (turnOutcome, error) {
+	outcome := turnOutcome{}
 	args := []string{
 		"--print",
 		"--verbose",
 		"--output-format", "stream-json",
-		"--permission-mode", "default",
-		"--add-dir", r.workdir,
+		"--permission-mode", permissionMode,
 	}
+	if strings.TrimSpace(resumeSessionID) != "" {
+		args = append(args, "--resume", resumeSessionID)
+	}
+	args = append(args, "--add-dir", r.workdir)
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
@@ -226,19 +343,19 @@ func (r *claudeRun) runDetection(binary string) (*harness.ApprovalRequest, error
 	args = append(args, r.extraArgs...)
 	cmd := exec.CommandContext(r.ctx, binary, args...)
 	cmd.Dir = r.workdir
-	cmd.Stdin = strings.NewReader(r.prompt)
+	cmd.Stdin = strings.NewReader(prompt)
 	cmd.Env = harness.MergeEnv(r.env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return outcome, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return nil, err
+		return outcome, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, err
+		return outcome, err
 	}
 	r.setCmd(cmd)
 	defer r.clearCmd(cmd)
@@ -247,7 +364,6 @@ func (r *claudeRun) runDetection(binary string) (*harness.ApprovalRequest, error
 		_, _ = io.Copy(r.stderr, stderr)
 	}()
 
-	var request *harness.ApprovalRequest
 	var resultText string
 	decoder := json.NewDecoder(stdout)
 	for {
@@ -258,83 +374,35 @@ func (r *claudeRun) runDetection(binary string) (*harness.ApprovalRequest, error
 			}
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			return nil, err
+			return outcome, err
+		}
+		if strings.TrimSpace(event.SessionID) != "" {
+			outcome.sessionID = event.SessionID
 		}
 		if event.Type == "result" {
-			if len(event.PermissionDenials) > 0 {
-				request = buildApprovalRequest(r.runID, r.approvalPolicy, event.PermissionDenials[0])
+			if detectApproval && len(event.PermissionDenials) > 0 {
+				outcome.approval = buildApprovalRequest(r.runID, r.approvalPolicy, event.PermissionDenials[0])
 			}
+			r.publishMetrics(claudeMetricsFromResultEvent(event))
 			resultText = event.Result
-		}
-	}
-
-	waitErr := cmd.Wait()
-	if request != nil {
-		return request, nil
-	}
-	if waitErr != nil {
-		return nil, waitErr
-	}
-	if strings.TrimSpace(resultText) != "" {
-		_, _ = io.WriteString(r.stdout, resultText)
-	}
-	return nil, nil
-}
-
-func (r *claudeRun) runPermissive(binary string, permissionMode string) error {
-	args := []string{
-		"--print",
-		"--verbose",
-		"--output-format", "stream-json",
-		"--permission-mode", permissionMode,
-		"--add-dir", r.workdir,
-	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
-	if r.reasoning != "" {
-		args = append(args, "--effort", r.reasoning)
-	}
-	args = append(args, r.extraArgs...)
-	cmd := exec.CommandContext(r.ctx, binary, args...)
-	cmd.Dir = r.workdir
-	cmd.Stdin = strings.NewReader(r.prompt)
-	cmd.Env = harness.MergeEnv(r.env)
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	r.setCmd(cmd)
-	defer r.clearCmd(cmd)
-
-	go func() {
-		_, _ = io.Copy(r.stderr, stderr)
-	}()
-
-	decoder := json.NewDecoder(stdout)
-	for {
-		var event streamEvent
-		if err := decoder.Decode(&event); err != nil {
-			if err == io.EOF {
-				break
+			if detectApproval {
+				continue
 			}
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return err
 		}
 		r.writeStreamEvent(event)
 	}
 
-	return cmd.Wait()
+	waitErr := cmd.Wait()
+	if outcome.approval != nil {
+		return outcome, nil
+	}
+	if waitErr != nil {
+		return outcome, waitErr
+	}
+	if detectApproval && strings.TrimSpace(resultText) != "" {
+		_, _ = io.WriteString(r.stdout, resultText)
+	}
+	return outcome, nil
 }
 
 func (r *claudeRun) approve(decision harness.ApprovalDecision) error {
@@ -379,6 +447,108 @@ func (r *claudeRun) clearCmd(cmd *exec.Cmd) {
 		r.cmd = nil
 	}
 	r.cmdMu.Unlock()
+}
+
+func (r *claudeRun) publishMetrics(metrics domain.RunMetrics) {
+	if r.metricsCallback == nil {
+		return
+	}
+	if metrics.TokensIn == nil && metrics.TokensOut == nil && metrics.TotalTokens == nil && metrics.CostUSD == nil && metrics.DurationMS == nil {
+		return
+	}
+	r.metrics = accumulateRunMetrics(r.metrics, metrics)
+	r.metricsCallback(r.metrics)
+}
+
+func claudeMetricsFromResultEvent(event streamEvent) domain.RunMetrics {
+	metrics := domain.RunMetrics{UpdatedAt: time.Now()}
+	var tokensIn int64
+	var tokensOut int64
+	var tokensSeen bool
+	for _, usage := range event.ModelUsage {
+		if usage.InputTokens != nil {
+			tokensIn += *usage.InputTokens
+			tokensSeen = true
+		}
+		if usage.OutputTokens != nil {
+			tokensOut += *usage.OutputTokens
+			tokensSeen = true
+		}
+	}
+	if tokensSeen {
+		metrics.TokensIn = &tokensIn
+		metrics.TokensOut = &tokensOut
+	} else if event.Usage != nil {
+		metrics.TokensIn = cloneInt64(event.Usage.InputTokens)
+		metrics.TokensOut = cloneInt64(event.Usage.OutputTokens)
+	}
+	if event.TotalCostUSD != nil {
+		metrics.CostUSD = cloneFloat64(event.TotalCostUSD)
+	} else {
+		var cost float64
+		var hasCost bool
+		for _, usage := range event.ModelUsage {
+			if usage.CostUSD != nil {
+				cost += *usage.CostUSD
+				hasCost = true
+			}
+		}
+		if hasCost {
+			metrics.CostUSD = &cost
+		}
+	}
+	metrics.DurationMS = cloneInt64(event.DurationMS)
+	return domain.DeriveRunMetrics(metrics, time.Time{}, time.Time{}, time.Now())
+}
+
+func accumulateRunMetrics(base domain.RunMetrics, add domain.RunMetrics) domain.RunMetrics {
+	base.TokensIn = sumInt64Ptrs(base.TokensIn, add.TokensIn)
+	base.TokensOut = sumInt64Ptrs(base.TokensOut, add.TokensOut)
+	base.TotalTokens = sumInt64Ptrs(base.TotalTokens, add.TotalTokens)
+	base.DurationMS = sumInt64Ptrs(base.DurationMS, add.DurationMS)
+	base.CostUSD = sumFloat64Ptrs(base.CostUSD, add.CostUSD)
+	if !add.UpdatedAt.IsZero() {
+		base.UpdatedAt = add.UpdatedAt
+	}
+	return domain.DeriveRunMetrics(base, time.Time{}, time.Time{}, time.Now())
+}
+
+func sumInt64Ptrs(current *int64, add *int64) *int64 {
+	if add == nil {
+		return cloneInt64(current)
+	}
+	if current == nil {
+		return cloneInt64(add)
+	}
+	total := *current + *add
+	return &total
+}
+
+func sumFloat64Ptrs(current *float64, add *float64) *float64 {
+	if add == nil {
+		return cloneFloat64(current)
+	}
+	if current == nil {
+		return cloneFloat64(add)
+	}
+	total := *current + *add
+	return &total
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func cloneFloat64(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func buildApprovalRequest(runID string, approvalPolicy string, denial struct {

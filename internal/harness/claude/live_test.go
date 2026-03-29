@@ -46,6 +46,53 @@ func TestLiveClaudeHarness(t *testing.T) {
 	}
 }
 
+func TestLiveClaudeHarnessContinuation(t *testing.T) {
+	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CLAUDE")
+	if _, err := exec.LookPath("claude"); err != nil {
+		t.Skipf("skipping live test; claude binary not found: %v", err)
+	}
+
+	adapter, err := NewAdapter()
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var stdout strings.Builder
+	run, err := adapter.Start(ctx, harness.RunConfig{
+		RunID:    "live-run-multi-turn",
+		Prompt:   "Remember the token MAESTRO_CLAUDE_MULTI_TURN_OK and reply with exactly TURN_ONE_OK",
+		Workdir:  t.TempDir(),
+		Stdout:   &stdout,
+		MaxTurns: 2,
+		ContinuationFunc: func(ctx context.Context, turnNumber int) (string, bool, error) {
+			if turnNumber != 1 {
+				return "", false, nil
+			}
+			return "What token did I ask you to remember? Reply with exactly MAESTRO_CLAUDE_MULTI_TURN_OK", true, nil
+		},
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "does not support multi-turn session resume") {
+			t.Skip(err.Error())
+		}
+		t.Fatalf("start harness: %v", err)
+	}
+	if err := run.Wait(); err != nil {
+		t.Fatalf("wait harness: %v", err)
+	}
+
+	got := stdout.String()
+	if !strings.Contains(got, "TURN_ONE_OK") {
+		t.Fatalf("unexpected live claude output: %q", got)
+	}
+	if !strings.Contains(got, "MAESTRO_CLAUDE_MULTI_TURN_OK") {
+		t.Fatalf("unexpected live claude continuation output: %q", got)
+	}
+}
+
 func TestLiveClaudeManualApproval(t *testing.T) {
 	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CLAUDE")
 	if _, err := exec.LookPath("claude"); err != nil {

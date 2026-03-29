@@ -142,6 +142,7 @@ type SourceSummary struct {
 	DisplayGroup     string
 	Tags             []string
 	Tracker          string
+	RateLimit        *domain.TrackerRateLimit
 	ProjectURL       string
 	FilterStates     []string
 	FilterLabels     []string
@@ -218,6 +219,8 @@ type Service struct {
 	forcePollPending  bool
 	polling           bool
 	lastPollAttemptAt time.Time
+	draining          bool
+	controlCh         chan struct{}
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -293,6 +296,7 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 		messageWaiters: map[string]chan string{},
 		runOutputs:     map[string]*runOutputBuffer{},
 		forcePollCh:    make(chan struct{}, 1),
+		controlCh:      make(chan struct{}, 1),
 	}
 	svc.stateMgr = &stateManager{service: svc}
 	svc.approvalMgr = &approvalRouter{service: svc}
@@ -311,6 +315,7 @@ func (s *Service) Snapshot() Snapshot {
 	var activeRun *domain.AgentRun
 	if s.activeRun != nil {
 		copyRun := *s.activeRun
+		copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, time.Now())
 		activeRun = &copyRun
 	}
 
@@ -388,7 +393,7 @@ func (s *Service) Snapshot() Snapshot {
 		ActiveRun:        activeRun,
 		ActiveRuns:       activeRuns(activeRun),
 		RunOutputs:       runOutputs,
-		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
+		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.tracker, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
 		RecentEvents:     events,
 	}
 }
@@ -397,15 +402,22 @@ func activeRuns(run *domain.AgentRun) []domain.AgentRun {
 	if run == nil {
 		return nil
 	}
-	return []domain.AgentRun{*run}
+	copyRun := *run
+	copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, time.Now())
+	return []domain.AgentRun{copyRun}
 }
 
-func sourceSummaryForSnapshot(source config.SourceConfig, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
+func sourceSummaryForSnapshot(source config.SourceConfig, sourceTracker tracker.Tracker, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
+	var rateLimit *domain.TrackerRateLimit
+	if reporter, ok := sourceTracker.(tracker.RateLimitReporter); ok {
+		rateLimit = domain.CloneTrackerRateLimit(reporter.RateLimit())
+	}
 	return SourceSummary{
 		Name:             source.Name,
 		DisplayGroup:     source.DisplayGroup,
 		Tags:             append([]string(nil), source.Tags...),
 		Tracker:          source.Tracker,
+		RateLimit:        rateLimit,
 		ProjectURL:       source.ProjectURL,
 		FilterStates:     append([]string(nil), source.Filter.States...),
 		FilterLabels:     append([]string(nil), source.Filter.Labels...),

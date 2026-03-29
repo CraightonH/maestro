@@ -146,6 +146,12 @@ func TestStatusEndpointReturnsSnapshotAndConfig(t *testing.T) {
 
 func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 	now := time.Unix(1710000000, 0).UTC()
+	tokensIn := int64(120)
+	tokensOut := int64(30)
+	totalTokens := int64(150)
+	durationMS := int64(5000)
+	limit := int64(5000)
+	remaining := int64(4200)
 	runtime := &fakeRuntime{
 		snapshot: orchestrator.Snapshot{
 			SourceName:    "gitlab-a",
@@ -240,6 +246,12 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 				ApprovalState:  domain.ApprovalStateAwaiting,
 				StartedAt:      now,
 				LastActivityAt: now.Add(30 * time.Second),
+				Metrics: domain.RunMetrics{
+					TokensIn:    &tokensIn,
+					TokensOut:   &tokensOut,
+					TotalTokens: &totalTokens,
+					DurationMS:  &durationMS,
+				},
 				Issue: domain.Issue{
 					ID:         "123",
 					Identifier: "team/project#1",
@@ -273,10 +285,15 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 			},
 			SourceSummaries: []orchestrator.SourceSummary{
 				{
-					Name:             "gitlab-a",
-					DisplayGroup:     "Core",
-					Tags:             []string{"prod"},
-					Tracker:          "gitlab",
+					Name:         "gitlab-a",
+					DisplayGroup: "Core",
+					Tags:         []string{"prod"},
+					Tracker:      "gitlab",
+					RateLimit: &domain.TrackerRateLimit{
+						Limit:     &limit,
+						Remaining: &remaining,
+						ResetAt:   now.Add(time.Hour),
+					},
 					LastPollAt:       now,
 					LastPollCount:    3,
 					ClaimedCount:     1,
@@ -318,6 +335,9 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 		`"tool_input": "{\"command\":\"git status\"}"`,
 		`"resolved_via": "web"`,
 		`"workspace_path": "/tmp/workspace"`,
+		`"tokens_in": 120`,
+		`"total_tokens": 150`,
+		`"remaining": 4200`,
 		`"stdout_tail": "hello"`,
 		`"display_group": "Core"`,
 		`"message": "dispatched"`,

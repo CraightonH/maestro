@@ -92,6 +92,8 @@ func TestMessageStateConversionsRoundTripFields(t *testing.T) {
 
 func TestPersistedRunFromAgentRunCopiesExpectedFields(t *testing.T) {
 	now := time.Unix(1710000000, 0).UTC()
+	tokensIn := int64(120)
+	tokensOut := int64(30)
 	run := &domain.AgentRun{
 		ID:             "run-1",
 		AgentName:      "coder",
@@ -103,6 +105,10 @@ func TestPersistedRunFromAgentRunCopiesExpectedFields(t *testing.T) {
 		Attempt:        2,
 		StartedAt:      now,
 		LastActivityAt: now.Add(time.Minute),
+		Metrics: domain.RunMetrics{
+			TokensIn:  &tokensIn,
+			TokensOut: &tokensOut,
+		},
 		Issue: domain.Issue{
 			ID:         "123",
 			Identifier: "GL-123",
@@ -122,5 +128,11 @@ func TestPersistedRunFromAgentRunCopiesExpectedFields(t *testing.T) {
 	}
 	if !got.StartedAt.Equal(run.StartedAt) || !got.LastActivityAt.Equal(run.LastActivityAt) || !got.IssueUpdatedAt.Equal(run.Issue.UpdatedAt) {
 		t.Fatalf("persisted run timestamps mismatch: %#v", got)
+	}
+	if got.Metrics.TokensIn == nil || *got.Metrics.TokensIn != tokensIn {
+		t.Fatalf("persisted run tokens_in = %#v, want %d", got.Metrics.TokensIn, tokensIn)
+	}
+	if got.Metrics.TotalTokens == nil || *got.Metrics.TotalTokens != tokensIn+tokensOut {
+		t.Fatalf("persisted run total_tokens = %#v, want %d", got.Metrics.TotalTokens, tokensIn+tokensOut)
 	}
 }

@@ -2,12 +2,15 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 )
 
@@ -389,4 +392,36 @@ exit 1
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for wait failure")
 	}
+}
+
+func TestHandleNotificationPublishesTokenUsageMetrics(t *testing.T) {
+	var got domain.RunMetrics
+	run := &codexRun{
+		metricsCallback: func(metrics domain.RunMetrics) {
+			got = metrics
+		},
+	}
+
+	run.handleNotification("thread/tokenUsage/updated", jsonRaw(`{
+		"threadId":"thread-1",
+		"turnId":"turn-1",
+		"tokenUsage":{
+			"last":{"inputTokens":4,"outputTokens":2,"totalTokens":6,"cachedInputTokens":0,"reasoningOutputTokens":0},
+			"total":{"inputTokens":11,"outputTokens":7,"totalTokens":18,"cachedInputTokens":0,"reasoningOutputTokens":0}
+		}
+	}`), io.Discard)
+
+	if got.TokensIn == nil || *got.TokensIn != 11 {
+		t.Fatalf("tokens_in = %#v, want 11", got.TokensIn)
+	}
+	if got.TokensOut == nil || *got.TokensOut != 7 {
+		t.Fatalf("tokens_out = %#v, want 7", got.TokensOut)
+	}
+	if got.TotalTokens == nil || *got.TotalTokens != 18 {
+		t.Fatalf("total_tokens = %#v, want 18", got.TotalTokens)
+	}
+}
+
+func jsonRaw(value string) json.RawMessage {
+	return json.RawMessage(value)
 }

@@ -37,5 +37,6 @@ type AgentRun struct {
 	StartedAt      time.Time
 	LastActivityAt time.Time
 	CompletedAt    time.Time
+	Metrics        RunMetrics
 	Error          string
 }

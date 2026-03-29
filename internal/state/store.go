@@ -12,7 +12,7 @@ import (
 	"github.com/tjohnson/maestro/internal/domain"
 )
 
-const currentVersion = 3
+const currentVersion = 4
 const backupCount = 2
 
 type CorruptStateError struct {
@@ -39,13 +39,14 @@ func (e *CorruptStateError) Unwrap() error {
 }
 
 type TerminalIssue struct {
-	IssueID        string           `json:"issue_id"`
-	Identifier     string           `json:"identifier"`
-	Status         domain.RunStatus `json:"status"`
-	Attempt        int              `json:"attempt"`
-	IssueUpdatedAt time.Time        `json:"issue_updated_at,omitempty"`
-	FinishedAt     time.Time        `json:"finished_at"`
-	Error          string           `json:"error,omitempty"`
+	IssueID        string            `json:"issue_id"`
+	Identifier     string            `json:"identifier"`
+	Status         domain.RunStatus  `json:"status"`
+	Attempt        int               `json:"attempt"`
+	IssueUpdatedAt time.Time         `json:"issue_updated_at,omitempty"`
+	FinishedAt     time.Time         `json:"finished_at"`
+	Metrics        domain.RunMetrics `json:"metrics,omitempty"`
+	Error          string            `json:"error,omitempty"`
 }
 
 type RetryEntry struct {
@@ -59,15 +60,16 @@ type RetryEntry struct {
 }
 
 type PersistedRun struct {
-	RunID          string           `json:"run_id"`
-	IssueID        string           `json:"issue_id"`
-	Identifier     string           `json:"identifier"`
-	Status         domain.RunStatus `json:"status"`
-	Attempt        int              `json:"attempt"`
-	WorkspacePath  string           `json:"workspace_path,omitempty"`
-	StartedAt      time.Time        `json:"started_at"`
-	LastActivityAt time.Time        `json:"last_activity_at,omitempty"`
-	IssueUpdatedAt time.Time        `json:"issue_updated_at,omitempty"`
+	RunID          string            `json:"run_id"`
+	IssueID        string            `json:"issue_id"`
+	Identifier     string            `json:"identifier"`
+	Status         domain.RunStatus  `json:"status"`
+	Attempt        int               `json:"attempt"`
+	WorkspacePath  string            `json:"workspace_path,omitempty"`
+	StartedAt      time.Time         `json:"started_at"`
+	LastActivityAt time.Time         `json:"last_activity_at,omitempty"`
+	IssueUpdatedAt time.Time         `json:"issue_updated_at,omitempty"`
+	Metrics        domain.RunMetrics `json:"metrics,omitempty"`
 }
 
 type PersistedApprovalRequest struct {
