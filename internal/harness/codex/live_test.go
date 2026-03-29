@@ -2,7 +2,6 @@ package codex
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/harness"
 	"github.com/tjohnson/maestro/internal/testutil"
 )
@@ -31,29 +29,6 @@ func liveCodexDockerHarnessConfig(t *testing.T) (testutil.LiveDockerHarnessConfi
 	baseURL := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
 	if baseURL == "" {
 		return live, "", nil
-	}
-
-	if apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); apiKey != "" {
-		homeDir := t.TempDir()
-		authDir := filepath.Join(homeDir, ".codex")
-		if err := os.MkdirAll(authDir, 0o755); err != nil {
-			t.Fatalf("mkdir codex auth dir: %v", err)
-		}
-		authBody, err := json.MarshalIndent(map[string]string{
-			"auth_mode":      "apikey",
-			"OPENAI_API_KEY": apiKey,
-		}, "", "  ")
-		if err != nil {
-			t.Fatalf("marshal codex auth: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(authDir, "auth.json"), append(authBody, '\n'), 0o600); err != nil {
-			t.Fatalf("write codex auth: %v", err)
-		}
-		live.Docker.Mounts = append(live.Docker.Mounts, config.DockerMountConfig{
-			Source: homeDir,
-			Target: "/tmp/maestro-home",
-		})
-		live.RunEnv["HOME"] = "/tmp/maestro-home"
 	}
 
 	model := strings.TrimSpace(os.Getenv("MAESTRO_TEST_DOCKER_CODEX_MODEL"))

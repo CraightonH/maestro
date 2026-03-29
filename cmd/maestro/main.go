@@ -30,6 +30,13 @@ import (
 
 var version = "dev"
 
+var doctorLookPath = exec.LookPath
+
+var doctorRunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
+}
+
 func main() {
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -245,68 +252,159 @@ func doctorCommand(args []string) {
 		fatalf("validate config: %v", err)
 	}
 
-	type binaryCheck struct {
-		Binary string
-		Path   string
-		Err    error
+	if err := runDoctor(os.Stdout, cfg); err != nil {
+		fatalf("doctor: %v", err)
+	}
+}
+
+type doctorFailure struct {
+	section string
+	message string
+}
+
+func runDoctor(w io.Writer, cfg *config.Config) error {
+	failures := make([]doctorFailure, 0)
+
+	fmt.Fprintln(w, "Maestro doctor")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Config")
+	fmt.Fprintf(w, "  OK  %s\n", cfg.ConfigPath)
+
+	warnings := config.DiagnoseConfig(cfg)
+	if len(warnings) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Warnings")
+		for _, warning := range warnings {
+			fmt.Fprintf(w, "  WARN  %s\n", warning)
+		}
 	}
 
-	required := map[string]string{}
+	hostBinaries := map[string]string{}
+	dockerAgents := make([]config.AgentTypeConfig, 0)
 	for _, agent := range cfg.AgentTypes {
 		if agent.Docker != nil && strings.TrimSpace(agent.Docker.Image) != "" {
-			required["docker"] = "docker"
+			dockerAgents = append(dockerAgents, agent)
 			continue
 		}
 		switch agent.Harness {
 		case "claude-code":
-			required["claude-code"] = "claude"
+			hostBinaries["claude"] = ""
 		case "codex":
-			required["codex"] = "codex"
+			hostBinaries["codex"] = ""
 		}
 	}
 
-	checks := make([]binaryCheck, 0, len(required))
-	for _, binary := range required {
-		path, err := exec.LookPath(binary)
-		checks = append(checks, binaryCheck{
-			Binary: binary,
-			Path:   path,
-			Err:    err,
-		})
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Harness binaries")
+	binaryNames := make([]string, 0, len(hostBinaries))
+	for binary := range hostBinaries {
+		binaryNames = append(binaryNames, binary)
 	}
-	sort.Slice(checks, func(i, j int) bool {
-		return checks[i].Binary < checks[j].Binary
-	})
-
-	hasFailure := false
-	fmt.Println("Maestro doctor")
-	fmt.Println()
-	fmt.Println("Config")
-	fmt.Printf("  OK  %s\n", cfg.ConfigPath)
-
-	warnings := config.DiagnoseConfig(cfg)
-	if len(warnings) > 0 {
-		fmt.Println()
-		fmt.Println("Warnings")
-		for _, w := range warnings {
-			fmt.Printf("  WARN  %s\n", w)
-		}
-	}
-
-	fmt.Println()
-	fmt.Println("Harness binaries")
-	for _, check := range checks {
-		if check.Err != nil {
-			hasFailure = true
-			fmt.Printf("  FAIL %s not found in PATH\n", check.Binary)
+	sort.Strings(binaryNames)
+	for _, binary := range binaryNames {
+		path, err := doctorLookPath(binary)
+		if err != nil {
+			failures = append(failures, doctorFailure{section: "Harness binaries", message: fmt.Sprintf("%s not found in PATH", binary)})
+			fmt.Fprintf(w, "  FAIL %s not found in PATH\n", binary)
 			continue
 		}
-		fmt.Printf("  OK  %s -> %s\n", check.Binary, check.Path)
+		fmt.Fprintf(w, "  OK  %s -> %s\n", binary, path)
 	}
 
-	if hasFailure {
-		os.Exit(1)
+	if len(dockerAgents) > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintln(w, "Docker")
+		if err := runDockerDoctor(w, dockerAgents); err != nil {
+			failures = append(failures, doctorFailure{section: "Docker", message: err.Error()})
+		}
 	}
+
+	if len(failures) > 0 {
+		return fmt.Errorf("%d check(s) failed", len(failures))
+	}
+	return nil
+}
+
+func runDockerDoctor(w io.Writer, agents []config.AgentTypeConfig) error {
+	dockerPath, err := doctorLookPath("docker")
+	if err != nil {
+		fmt.Fprintln(w, "  FAIL docker not found in PATH")
+		return err
+	}
+	fmt.Fprintf(w, "  OK  docker -> %s\n", dockerPath)
+
+	fmt.Fprintln(w, "  Client env")
+	keys := []string{"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"}
+	found := false
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+			found = true
+			fmt.Fprintf(w, "    OK  %s=%s\n", key, value)
+		}
+	}
+	if !found {
+		fmt.Fprintln(w, "    OK  (no explicit DOCKER_* client env set)")
+	}
+
+	infoOut, err := doctorRunCommand(context.Background(), dockerPath, "info", "--format", "{{.ServerVersion}}")
+	if err != nil {
+		fmt.Fprintf(w, "  FAIL docker daemon unreachable: %s\n", strings.TrimSpace(string(infoOut)))
+		return err
+	}
+	fmt.Fprintf(w, "  OK  docker daemon reachable (%s)\n", strings.TrimSpace(string(infoOut)))
+
+	seen := map[string]struct{}{}
+	for _, agent := range agents {
+		image := strings.TrimSpace(agent.Docker.Image)
+		binary := agent.Harness
+		switch agent.Harness {
+		case "claude-code":
+			binary = "claude"
+		case "codex":
+			binary = "codex"
+		default:
+			continue
+		}
+		key := image + "|" + binary
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+
+		fmt.Fprintf(w, "  Agent %s image %s\n", agent.Name, image)
+		if err := runDockerImageDoctor(w, dockerPath, image, binary); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func runDockerImageDoctor(w io.Writer, dockerPath, image, binary string) error {
+	if strings.TrimSpace(image) == "" {
+		return fmt.Errorf("docker image is required")
+	}
+
+	inspectOut, inspectErr := doctorRunCommand(context.Background(), dockerPath, "image", "inspect", image)
+	if inspectErr != nil {
+		pullOut, pullErr := doctorRunCommand(context.Background(), dockerPath, "pull", image)
+		if pullErr != nil {
+			fmt.Fprintf(w, "    FAIL image not present or pullable: %s\n", strings.TrimSpace(string(pullOut)))
+			return fmt.Errorf("image %s: %w", image, pullErr)
+		}
+		fmt.Fprintln(w, "    OK  image pullable")
+	} else {
+		_ = inspectOut
+		fmt.Fprintln(w, "    OK  image present")
+	}
+
+	runOut, runErr := doctorRunCommand(context.Background(), dockerPath, "run", "--rm", "--entrypoint", binary, image, "--version")
+	if runErr != nil {
+		fmt.Fprintf(w, "    FAIL %s binary missing or not runnable: %s\n", binary, strings.TrimSpace(string(runOut)))
+		return fmt.Errorf("image %s: %w", image, runErr)
+	}
+	fmt.Fprintf(w, "    OK  %s binary present\n", binary)
+	return nil
 }
 
 func inspectConfig(args []string) {

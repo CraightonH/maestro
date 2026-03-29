@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/tjohnson/maestro/internal/config"
+	"github.com/tjohnson/maestro/internal/harness"
 	"github.com/tjohnson/maestro/internal/state"
 	"github.com/tjohnson/maestro/internal/workspace"
 )
@@ -72,15 +73,20 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 	if err != nil {
 		return nil, err
 	}
-	hr, err := newHarness(agent)
+	runner, err := harness.NewProcessRunner(agent.Docker)
+	if err != nil {
+		return nil, err
+	}
+	hr, err := newHarness(agent, runner)
 	if err != nil {
 		return nil, err
 	}
 	return NewServiceWithDeps(scoped, logger, Dependencies{
-		Tracker:    tr,
-		Harness:    hr,
-		Workspace:  workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(source.Connection.BaseURL, source.Connection.Token),
-		StateStore: state.NewStore(config.ScopedStateDir(cfg, source)),
-		Limiter:    shared.limiterFor(agent),
+		Tracker:       tr,
+		Harness:       hr,
+		ProcessRunner: runner,
+		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(source.Connection.BaseURL, source.Connection.Token),
+		StateStore:    state.NewStore(config.ScopedStateDir(cfg, source)),
+		Limiter:       shared.limiterFor(agent),
 	})
 }

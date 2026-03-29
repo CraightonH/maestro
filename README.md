@@ -235,14 +235,23 @@ agent_types:
     docker:
       image: ghcr.io/acme/maestro-claude:latest
       workspace_mount_path: /workspace   # default: /workspace
+      pull_policy: missing                # missing (default), always, or never
       network: bridge                    # bridge (default), none, or host
       cpus: 2
       memory: 4g
       pids_limit: 256
-      env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]
+      auth:
+        mode: claude-proxy
+        source: ANTHROPIC_AUTH_TOKEN
+      security:
+        read_only_root_fs: true
+        tmpfs: [/tmp]
+      cache:
+        profiles: [claude-cache]
+      env_passthrough: [ANTHROPIC_BASE_URL]
       mounts:
         - source: ~/.config/claude
-          target: /home/agent/.config/claude
+          target: /tmp/maestro-home/.claude
           read_only: true
 
 # ---------------------------------------------------------------------------
@@ -279,11 +288,13 @@ agent_defaults:
 #   across different sources.
 # - The prepared host workspace is bind-mounted into the container so git changes remain visible on the host.
 # - Additional docker.mounts entries must be explicit read-only auth/config mounts in phase 1.
+# - Docker defaults are hardened: no-new-privileges, read-only rootfs, cap-drop ALL, and tmpfs /tmp.
 # - Do not mount your full home directory by default; prefer explicit env_passthrough or minimal read-only auth mounts.
-# - Claude can use direct API keys (ANTHROPIC_API_KEY) or bearer-token proxy auth
-#   (ANTHROPIC_AUTH_TOKEN plus ANTHROPIC_BASE_URL).
-# - Codex can use mounted CLI auth or API-key auth. For OpenAI-compatible proxies, pass OPENAI_API_KEY
-#   and set `openai_base_url` via `codex.extra_args`.
+# - Claude can use direct API keys (`docker.auth.mode: claude-api-key`) or bearer-token proxy auth
+#   (`docker.auth.mode: claude-proxy` plus ANTHROPIC_BASE_URL).
+# - Codex can use mounted CLI auth or API-key auth (`docker.auth.mode: codex-api-key`).
+#   For OpenAI-compatible proxies, pass OPENAI_API_KEY and set `openai_base_url` via `codex.extra_args`.
+# - Cache presets are available for common language/tool caches via `docker.cache.profiles`.
 # - When no HOME is provided explicitly, Maestro gives the container a writable local HOME automatically.
 
 # Example: Dockerized Claude agent in the same Maestro process as host-run agents
@@ -300,7 +311,12 @@ agent_defaults:
 #     docker:
 #       image: ghcr.io/acme/maestro-claude:latest
 #       network: bridge
-#       env_passthrough: [ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL]
+#       auth:
+#         mode: claude-proxy
+#         source: ANTHROPIC_AUTH_TOKEN
+#       env_passthrough: [ANTHROPIC_BASE_URL]
+#       cache:
+#         profiles: [claude-cache]
 #
 # Example: Dockerized Codex agent using an OpenAI-compatible proxy
 #
@@ -321,7 +337,11 @@ agent_defaults:
 #     docker:
 #       image: ghcr.io/acme/maestro-codex:latest
 #       network: bridge
-#       env_passthrough: [OPENAI_API_KEY]
+#       auth:
+#         mode: codex-api-key
+#         source: OPENAI_API_KEY
+#       cache:
+#         profiles: [codex-cache]
 
 # ---------------------------------------------------------------------------
 # Workspace — where cloned repos live.
@@ -346,6 +366,7 @@ hooks:
   before_run: ""                   # runs before agent starts (every dispatch)
   after_run: ""                    # runs after agent exits (best-effort)
   timeout: 10m                     # hook execution timeout
+  execution: host                 # "host" (default) or "container"
 
   # Hook env vars: MAESTRO_RUN_ID, MAESTRO_ISSUE_ID, MAESTRO_ISSUE_IDENTIFIER,
   # MAESTRO_AGENT_NAME, MAESTRO_AGENT_TYPE, MAESTRO_RUN_STAGE,

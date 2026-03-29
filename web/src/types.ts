@@ -30,6 +30,16 @@ export interface RunMetrics {
   updated_at?: string;
 }
 
+export interface ExecutionSummary {
+  mode: string;
+  image?: string;
+  network?: string;
+  cpus?: number;
+  memory?: string;
+  pids_limit?: number;
+  auth_source?: string;
+}
+
 export interface TrackerRateLimit {
   limit?: number;
   remaining?: number;
@@ -45,6 +55,7 @@ export interface Run {
   issue: Issue;
   source_name: string;
   harness_kind?: string;
+  execution?: ExecutionSummary;
   workspace_path?: string;
   status: string;
   attempt: number;
@@ -141,6 +152,7 @@ export interface SourceSummary {
   tags?: string[];
   tracker: string;
   rate_limit?: TrackerRateLimit;
+  execution?: ExecutionSummary;
   last_poll_at?: string;
   last_poll_count: number;
   claimed_count: number;

@@ -146,6 +146,7 @@ type SourceSummary struct {
 	ProjectURL       string
 	FilterStates     []string
 	FilterLabels     []string
+	Execution        *ExecutionSummary
 	LastPollAt       time.Time
 	LastPollCount    int
 	ClaimedCount     int
@@ -174,28 +175,40 @@ type Snapshot struct {
 	RecentEvents     []Event
 }
 
+type ExecutionSummary struct {
+	Mode       string
+	Image      string
+	Network    string
+	CPUs       float64
+	Memory     string
+	PIDsLimit  int
+	AuthSource string
+}
+
 type Dependencies struct {
-	Tracker    tracker.Tracker
-	Harness    harness.Harness
-	Workspace  *workspace.Manager
-	StateStore *state.Store
-	Limiter    dispatchLimiter
+	Tracker       tracker.Tracker
+	Harness       harness.Harness
+	ProcessRunner harness.ProcessRunner
+	Workspace     *workspace.Manager
+	StateStore    *state.Store
+	Limiter       dispatchLimiter
 }
 
 type Service struct {
-	cfg         *config.Config
-	logger      *slog.Logger
-	source      config.SourceConfig
-	agent       config.AgentTypeConfig
-	tracker     tracker.Tracker
-	harness     harness.Harness
-	workspace   *workspace.Manager
-	stateStore  *state.Store
-	limiter     dispatchLimiter
-	stateMgr    *stateManager
-	approvalMgr *approvalRouter
-	messageMgr  *messageRouter
-	runMgr      *runManager
+	cfg           *config.Config
+	logger        *slog.Logger
+	source        config.SourceConfig
+	agent         config.AgentTypeConfig
+	tracker       tracker.Tracker
+	harness       harness.Harness
+	processRunner harness.ProcessRunner
+	workspace     *workspace.Manager
+	stateStore    *state.Store
+	limiter       dispatchLimiter
+	stateMgr      *stateManager
+	approvalMgr   *approvalRouter
+	messageMgr    *messageRouter
+	runMgr        *runManager
 
 	mu                sync.RWMutex
 	claimed           map[string]struct{}
@@ -228,16 +241,21 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	hr, err := newHarness(cfg.AgentTypes[0])
+	runner, err := harness.NewProcessRunner(cfg.AgentTypes[0].Docker)
+	if err != nil {
+		return nil, err
+	}
+	hr, err := newHarness(cfg.AgentTypes[0], runner)
 	if err != nil {
 		return nil, err
 	}
 
 	return NewServiceWithDeps(cfg, logger, Dependencies{
-		Tracker:    tr,
-		Harness:    hr,
-		Workspace:  workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(cfg.Sources[0].Connection.BaseURL, cfg.Sources[0].Connection.Token),
-		StateStore: state.NewStore(cfg.State.Dir),
+		Tracker:       tr,
+		Harness:       hr,
+		ProcessRunner: runner,
+		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(cfg.Sources[0].Connection.BaseURL, cfg.Sources[0].Connection.Token),
+		StateStore:    state.NewStore(cfg.State.Dir),
 	})
 }
 
@@ -252,12 +270,7 @@ func newTracker(source config.SourceConfig) (tracker.Tracker, error) {
 	}
 }
 
-func newHarness(agent config.AgentTypeConfig) (harness.Harness, error) {
-	runner, err := harness.NewProcessRunner(agent.Docker)
-	if err != nil {
-		return nil, err
-	}
-
+func newHarness(agent config.AgentTypeConfig, runner harness.ProcessRunner) (harness.Harness, error) {
 	switch agent.Harness {
 	case "claude-code":
 		return claudeharness.NewAdapter(claudeharness.WithProcessRunner(runner))
@@ -281,6 +294,13 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 	if deps.StateStore == nil {
 		deps.StateStore = state.NewStore(cfg.State.Dir)
 	}
+	if deps.ProcessRunner == nil {
+		runner, err := harness.NewProcessRunner(cfg.AgentTypes[0].Docker)
+		if err != nil {
+			return nil, err
+		}
+		deps.ProcessRunner = runner
+	}
 
 	svc := &Service{
 		cfg:            cfg,
@@ -289,6 +309,7 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 		agent:          cfg.AgentTypes[0],
 		tracker:        deps.Tracker,
 		harness:        deps.Harness,
+		processRunner:  deps.ProcessRunner,
 		workspace:      deps.Workspace,
 		claimed:        map[string]struct{}{},
 		finished:       map[string]state.TerminalIssue{},
@@ -398,7 +419,7 @@ func (s *Service) Snapshot() Snapshot {
 		ActiveRun:        activeRun,
 		ActiveRuns:       activeRuns(activeRun),
 		RunOutputs:       runOutputs,
-		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.tracker, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
+		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.agent, s.tracker, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
 		RecentEvents:     events,
 	}
 }
@@ -412,7 +433,7 @@ func activeRuns(run *domain.AgentRun) []domain.AgentRun {
 	return []domain.AgentRun{copyRun}
 }
 
-func sourceSummaryForSnapshot(source config.SourceConfig, sourceTracker tracker.Tracker, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
+func sourceSummaryForSnapshot(source config.SourceConfig, agent config.AgentTypeConfig, sourceTracker tracker.Tracker, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
 	var rateLimit *domain.TrackerRateLimit
 	if reporter, ok := sourceTracker.(tracker.RateLimitReporter); ok {
 		rateLimit = domain.CloneTrackerRateLimit(reporter.RateLimit())
@@ -426,6 +447,7 @@ func sourceSummaryForSnapshot(source config.SourceConfig, sourceTracker tracker.
 		ProjectURL:       source.ProjectURL,
 		FilterStates:     append([]string(nil), source.Filter.States...),
 		FilterLabels:     append([]string(nil), source.Filter.Labels...),
+		Execution:        summarizeExecution(agent),
 		LastPollAt:       lastPollAt,
 		LastPollCount:    lastPollCount,
 		ClaimedCount:     claimedCount,
@@ -434,6 +456,94 @@ func sourceSummaryForSnapshot(source config.SourceConfig, sourceTracker tracker.
 		PendingApprovals: pendingApprovals,
 		PendingMessages:  pendingMessages,
 	}
+}
+
+func summarizeExecution(agent config.AgentTypeConfig) *ExecutionSummary {
+	summary := &ExecutionSummary{
+		Mode:       "host",
+		AuthSource: "host",
+	}
+	if agent.Docker == nil {
+		return summary
+	}
+	summary.Mode = "docker"
+	summary.Image = agent.Docker.Image
+	summary.Network = strings.TrimSpace(agent.Docker.Network)
+	summary.CPUs = agent.Docker.CPUs
+	summary.Memory = strings.TrimSpace(agent.Docker.Memory)
+	summary.PIDsLimit = agent.Docker.PIDsLimit
+	summary.AuthSource = summarizeDockerAuthSource(agent)
+	return summary
+}
+
+func summarizeDockerAuthSource(agent config.AgentTypeConfig) string {
+	if agent.Docker == nil {
+		return "host"
+	}
+
+	envAuth := false
+	for key := range agent.Env {
+		if isDockerAuthEnv(key) {
+			envAuth = true
+			break
+		}
+	}
+	if !envAuth {
+		for _, key := range agent.Docker.EnvPassthrough {
+			if isDockerAuthEnv(key) {
+				envAuth = true
+				break
+			}
+		}
+	}
+
+	mountAuth := false
+	for _, mount := range agent.Docker.Mounts {
+		if looksLikeDockerAuthMount(mount) {
+			mountAuth = true
+			break
+		}
+	}
+
+	switch {
+	case envAuth && mountAuth:
+		return "env + mounted config"
+	case envAuth:
+		return "env"
+	case mountAuth:
+		return "mounted config"
+	default:
+		return "preset"
+	}
+}
+
+func isDockerAuthEnv(key string) bool {
+	switch strings.ToUpper(strings.TrimSpace(key)) {
+	case "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY":
+		return true
+	default:
+		return false
+	}
+}
+
+func looksLikeDockerAuthMount(mount config.DockerMountConfig) bool {
+	target := strings.ToLower(strings.TrimSpace(mount.Target))
+	source := strings.ToLower(strings.TrimSpace(mount.Source))
+	for _, candidate := range []string{target, source} {
+		if candidate == "" {
+			continue
+		}
+		if strings.Contains(candidate, ".claude") || strings.Contains(candidate, ".codex") {
+			return true
+		}
+		if strings.Contains(candidate, "auth.json") || strings.Contains(candidate, "credentials") || strings.Contains(candidate, "settings") {
+			return true
+		}
+		if strings.Contains(candidate, "token") || strings.Contains(candidate, "config") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) recordEvent(level string, message string, args ...any) {

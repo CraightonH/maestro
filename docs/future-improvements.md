@@ -51,6 +51,58 @@ other hooks.
 
 ## Docker / Container Sandboxing
 
+Current state:
+
+- Maestro can now run Claude and Codex harnesses in Docker while keeping orchestration on the host.
+- Workspaces are bind-mounted into the container, so git state remains visible on the host.
+- Basic CPU, memory, PID, network mode, auth presets, explicit read-only auth mounts, cache mounts, pull policy, Docker doctor checks, optional containerized hooks, and execution metadata are supported.
+
+The next Docker work should optimize for three things in order:
+
+1. feature parity with host execution
+2. safe-by-default container behavior
+3. operator ergonomics so Docker mode is easy to configure correctly
+
+### 🐳 Phase 2 Priorities
+
+Recommended order:
+
+1. network policy
+2. secret and tool allowlists
+3. image pinning guidance and enforcement
+4. richer sandbox presets
+5. warm pools / reuse
+
+The basics are now shipped. The next Docker work should focus on tightening isolation beyond the
+current coarse controls and making shared deployments more reproducible.
+
+### 🐳 Shipped in Current Docker Support
+
+- auth presets:
+  - `claude-api-key`
+  - `claude-proxy`
+  - `claude-config-mount`
+  - `codex-api-key`
+  - `codex-config-mount`
+- hardened default container profile:
+  - current uid/gid
+  - writable workspace mount
+  - writable container-local `HOME`
+  - `no-new-privileges`
+  - read-only root filesystem
+  - `cap-drop ALL`
+  - `tmpfs /tmp`
+- `maestro doctor` Docker preflight:
+  - docker binary
+  - daemon/context reachability
+  - image presence or pullability
+  - harness binary presence in image
+  - visible `DOCKER_*` client config
+- optional containerized outer hooks via `hooks.execution: container`
+- execution metadata in API/TUI/web
+- pull policy support
+- cache presets and explicit cache mounts
+
 ### 🐳 Resource Governance per Agent
 
 Per-agent-type CPU, memory, disk I/O, and PID limits enforced by container cgroups.
@@ -61,6 +113,38 @@ offending container.
 **Recommended baseline**: 4 GiB memory, 2 CPUs, 4096 PID limit, medium I/O weight.
 
 ---
+
+### 🐳 Network Policy
+
+Current Docker mode supports coarse network modes (`bridge`, `none`, `host`). The next step is
+limited egress instead of all-or-nothing network access.
+
+Proposed direction:
+
+- keep `bridge` and `none`
+- add proxy-enforced allowlists for domains/hosts
+- eventually provide presets like:
+  - `model-only`
+  - `tracker-and-model`
+  - `custom-allowlist`
+
+**Why**: Network access is still the biggest remaining safety gap for containerized agents.
+
+**To ship**: Outbound HTTP/HTTPS proxy support plus a config layer for allowed domains/hosts.
+
+---
+
+### 🐳 Image Pinning and Pull Policy Guidance
+
+Support:
+
+- `pull_policy: missing | always | never` is already implemented
+- digest-pinned images in docs/examples
+
+**Why**: Reproducibility and safer shared deployments.
+
+**Next step**: Push guidance and optional enforcement toward digest-pinned images for shared or
+production-like deployments.
 
 ### 🐳 Tiered Isolation Modes
 
@@ -86,6 +170,26 @@ attach workspace volume, inject prompt, start. On completion: stop, detach, rese
 **Why**: Eliminates 5-30s cold start. Only relevant at scale.
 
 **When**: After Docker Harness Wrapper ships and dispatch latency becomes a bottleneck.
+
+---
+
+### 🐳 Cache Mounts
+
+Optional persistent cache mounts for package managers and tool caches:
+
+- npm / pnpm / yarn
+- pip / uv
+- Go build cache
+- cargo / rustup
+- harness caches
+
+**Why**: Faster repeated runs, especially for repo bootstrap or test-heavy workflows.
+
+**Why not first**: This is useful, but less important than auth presets, hardening, and doctor
+support.
+
+**To ship**: Add named cache mount presets or explicit cache mount config with clear writable-scope
+rules.
 
 ---
 

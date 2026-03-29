@@ -214,6 +214,60 @@ func TestValidateMVPAcceptsScpStyleRepoURL(t *testing.T) {
 	}
 }
 
+func TestValidateMVPRejectsInvalidHooksExecution(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks: config.HooksConfig{
+			Timeout:   config.Duration{Duration: 30 * time.Second},
+			Execution: "spaceship",
+		},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{
+			{
+				Name:      "ops-linear",
+				Tracker:   "linear",
+				AgentType: "triage",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:            "triage",
+				Harness:         "codex",
+				Workspace:       "none",
+				Prompt:          promptPath,
+				ApprovalPolicy:  "auto",
+				ApprovalTimeout: config.Duration{Duration: time.Hour},
+				MaxConcurrent:   1,
+				StallTimeout:    config.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if !strings.Contains(err.Error(), "hooks.execution") {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
+}
+
 func TestValidateMVPRejectsInvalidColonRepoURL(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")
@@ -493,11 +547,29 @@ func TestValidateMVPAcceptsDockerHarnessConfig(t *testing.T) {
 			Docker: &config.DockerConfig{
 				Image:              "maestro-agent:latest",
 				WorkspaceMountPath: "/workspace",
+				PullPolicy:         "always",
 				Mounts: []config.DockerMountConfig{{
 					Source:   authDir,
 					Target:   "/root/.claude",
 					ReadOnly: true,
 				}},
+				Auth: &config.DockerAuthConfig{
+					Mode:   config.DockerAuthClaudeConfig,
+					Source: authDir,
+				},
+				Security: &config.DockerSecurityConfig{
+					NoNewPrivileges:  boolPtrTest(true),
+					ReadOnlyRootFS:   boolPtrTest(false),
+					DropCapabilities: []string{"NET_RAW"},
+					Tmpfs:            []string{"/var/tmp"},
+				},
+				Cache: &config.DockerCacheConfig{
+					Profiles: []string{config.DockerCacheProfileGo},
+					Mounts: []config.DockerCacheMountConfig{{
+						Source: filepath.Join(root, "cache"),
+						Target: "/tmp/maestro-home/.cache/go-build",
+					}},
+				},
 				EnvPassthrough: []string{"ANTHROPIC_API_KEY"},
 				Network:        "none",
 				CPUs:           2,
@@ -563,6 +635,144 @@ func TestValidateMVPRejectsWritableDockerMount(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "read_only") {
 		t.Fatalf("validation error = %v, want read_only error", err)
 	}
+}
+
+func TestValidateMVPRejectsInvalidDockerPullPolicy(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:      "maestro-agent:latest",
+				PullPolicy: "sometimes",
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "pull_policy") {
+		t.Fatalf("validation error = %v, want pull_policy error", err)
+	}
+}
+
+func TestValidateMVPRejectsInvalidDockerAuthMode(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Auth: &config.DockerAuthConfig{
+					Mode: "unknown",
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "docker.auth.mode") {
+		t.Fatalf("validation error = %v, want docker.auth.mode error", err)
+	}
+}
+
+func TestValidateMVPRejectsInvalidDockerCacheProfile(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Cache: &config.DockerCacheConfig{
+					Profiles: []string{"unknown"},
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "docker.cache.profiles") {
+		t.Fatalf("validation error = %v, want docker.cache.profiles error", err)
+	}
+}
+
+func boolPtrTest(value bool) *bool {
+	v := value
+	return &v
 }
 
 func TestValidateMVPAcceptsClaudeDefaultsMultiTurn(t *testing.T) {

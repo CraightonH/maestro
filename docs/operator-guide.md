@@ -158,7 +158,9 @@ Supported hook phases:
 - `hooks.before_run`
 - `hooks.after_run`
 
-All hooks run through the local shell and share `hooks.timeout`.
+By default hooks run through the host shell and share `hooks.timeout`. If you
+set `hooks.execution: container`, Maestro runs the hook command in the same
+Docker environment as the harness for that agent type.
 
 Current Maestro control points:
 
@@ -290,9 +292,10 @@ Run `maestro doctor --config /path/to/maestro.yaml` to validate your setup. It c
 
 - config loads and passes validation
 - likely overlapping source routes that could cause ambiguous or duplicate dispatch
-- required harness binaries (`claude`, `codex`) are available in `PATH`
+- required host harness binaries (`claude`, `codex`) are available in `PATH`
+- Docker-backed agent images are present or pullable, the Docker daemon/context is reachable, and the visible `DOCKER_*` client env looks sane
 
-Use this before your first run or after changing `agent_types[].harness` entries.
+Use this before your first run or after changing `agent_types[].harness` entries or Docker-backed agent settings.
 
 ## Troubleshooting
 

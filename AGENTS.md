@@ -24,7 +24,7 @@ Key boundary: Maestro is scheduler/runner + approval router. Agents own task pro
 
 Important practical boundaries:
 
-- Maestro shell hooks (`hooks.after_create`, `hooks.before_run`, `hooks.after_run`) are outer orchestration hooks, not harness-native hooks.
+- Maestro shell hooks (`hooks.after_create`, `hooks.before_run`, `hooks.after_run`) are outer orchestration hooks, not harness-native hooks. They run on the host by default; `hooks.execution: container` runs them inside the same Docker environment as the harness.
 - Pack `claude/` and `codex/` directories are copied into the workspace as `.claude/` and `.codex/`. Use those for harness-native config.
 - Agent processes do not inherit the full parent shell environment. They get a curated runtime baseline plus explicit `agent_types[].env`.
 

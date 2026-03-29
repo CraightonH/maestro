@@ -231,18 +231,31 @@ Phase-1 Docker config:
 
 - `docker.image`: required image that already contains `claude` or `codex`
 - `docker.workspace_mount_path`: optional container path for the workspace bind mount
+- `docker.pull_policy`: `missing` (default), `always`, or `never`
 - `docker.network`: `bridge`, `none`, or `host`
 - `docker.cpus`, `docker.memory`, `docker.pids_limit`: basic resource limits
 - `docker.env_passthrough`: explicit host env vars to inject into the container
-- `docker.mounts`: explicit extra bind mounts for auth/config files or directories
+- `docker.mounts`: explicit extra read-only bind mounts for auth/config files or directories
+- `docker.auth`: presets for common auth flows
+- `docker.security`: hardening flags and writable-rootfs overrides
+- `docker.cache`: optional writable cache mounts and common cache presets
 
 Authentication patterns:
 
-- subscription-backed CLI auth: mount the minimal CLI auth/config paths read-only with `docker.mounts`
-- API-key auth: pass keys explicitly with `docker.env_passthrough` or per-agent `env`
-- Claude proxy/gateway auth: pass `ANTHROPIC_AUTH_TOKEN`, and set `ANTHROPIC_BASE_URL` when the gateway is not `https://api.anthropic.com`
-- Maestro does not mount the operator's full home directory by default
+- subscription-backed CLI auth: use `docker.auth.mode: claude-config-mount` or `codex-config-mount` with a minimal read-only host config mount
+- Claude API-key auth: use `docker.auth.mode: claude-api-key`
+- Claude proxy/gateway auth: use `docker.auth.mode: claude-proxy` and set `ANTHROPIC_BASE_URL` when the gateway is not `https://api.anthropic.com`
+- Codex API-key auth: use `docker.auth.mode: codex-api-key`
+- Maestro keeps the container home writable by default and does not mount the operator's full home directory
+- if `docker.security` is omitted, Maestro applies a hardened default profile: `no_new_privileges: true`, `read_only_root_fs: true`, `drop_capabilities: [ALL]`, `tmpfs: [/tmp]`
 - if `HOME` is not provided explicitly, Maestro gives the container a writable local `HOME` automatically
+- cache presets are available for common language/tool caches:
+  - `claude-cache`
+  - `codex-cache`
+  - `npm-cache`
+  - `go-cache`
+  - `pip-cache`
+  - `cargo-cache`
 
 Example:
 
@@ -256,11 +269,20 @@ agent_types:
     docker:
       image: ghcr.io/acme/maestro-claude:latest
       workspace_mount_path: /workspace
+      pull_policy: missing
       network: none
       cpus: 2
       memory: 4g
       pids_limit: 256
-      env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]
+      auth:
+        mode: claude-proxy
+        source: ANTHROPIC_AUTH_TOKEN
+      security:
+        read_only_root_fs: true
+        tmpfs: [/tmp]
+      cache:
+        profiles: [claude-cache]
+      env_passthrough: [ANTHROPIC_BASE_URL]
 ```
 
 Concrete examples:
@@ -284,9 +306,13 @@ agent_types:
       cpus: 2
       memory: 4g
       pids_limit: 256
+      auth:
+        mode: claude-api-key
+        source: ANTHROPIC_API_KEY
       env_passthrough:
-        - ANTHROPIC_AUTH_TOKEN
         - ANTHROPIC_BASE_URL
+      cache:
+        profiles: [claude-cache]
 ```
 
 Codex in Docker using an OpenAI-compatible proxy:
@@ -313,8 +339,11 @@ agent_types:
       cpus: 2
       memory: 4g
       pids_limit: 256
-      env_passthrough:
-        - OPENAI_API_KEY
+      auth:
+        mode: codex-api-key
+        source: OPENAI_API_KEY
+      cache:
+        profiles: [codex-cache]
 ```
 
 For Codex proxy mode:
@@ -322,11 +351,11 @@ For Codex proxy mode:
 - use a model name that your proxy actually exposes
 - pass `forced_login_method="api"` so the CLI does not prefer a stored ChatGPT login
 - pass `openai_base_url` via `codex.extra_args`; the bare `OPENAI_BASE_URL` env path is deprecated in Codex CLI
-- Maestro will synthesize container-local Codex API-key auth state when `OPENAI_API_KEY` is passed into a Dockerized Codex run
+- Maestro will synthesize container-local Codex API-key auth state when `docker.auth.mode: codex-api-key` is set
 
 Current phase-1 limits:
 
-- only the harness process is containerized; hooks still run on the host
+- only the harness process is containerized by default; set `hooks.execution: container` if outer Maestro hooks should run in the same Docker environment
 - additional `docker.mounts` entries must be `read_only: true`
 - Maestro does not yet enforce fine-grained allowlists for tools, secrets, or writable paths
 - Docker availability is checked when the harness is constructed; if `docker` is missing, startup fails with a direct error

@@ -2,6 +2,7 @@ import type {
   Approval,
   ConfigAgentSummary,
   ConfigSourceSummary,
+  ExecutionSummary,
   Run,
   RunMetrics,
   SourceSummary,
@@ -131,6 +132,19 @@ export function formatRunMetrics(metrics?: RunMetrics) {
   if (typeof metrics.duration_ms === "number") parts.push(formatDuration(metrics.duration_ms));
   if (typeof metrics.throughput_tokens_per_second === "number") parts.push(`${metrics.throughput_tokens_per_second.toFixed(1)} tok/s`);
   return parts;
+}
+
+export function formatExecutionSummary(execution?: ExecutionSummary) {
+  if (!execution) return "";
+  if (!execution.mode || execution.mode === "host") return "host";
+  const parts: string[] = [execution.mode];
+  if (execution.image) parts.push(`image=${execution.image}`);
+  if (execution.network) parts.push(`network=${execution.network}`);
+  if (typeof execution.cpus === "number" && execution.cpus > 0) parts.push(`cpus=${execution.cpus}`);
+  if (execution.memory) parts.push(`memory=${execution.memory}`);
+  if (typeof execution.pids_limit === "number" && execution.pids_limit > 0) parts.push(`pids=${execution.pids_limit}`);
+  if (execution.auth_source) parts.push(`auth=${execution.auth_source}`);
+  return parts.join(" · ");
 }
 
 export function formatTrackerRateLimit(rateLimit?: TrackerRateLimit) {

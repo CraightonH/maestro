@@ -6,12 +6,13 @@ import (
 )
 
 func apiSnapshot(snapshot orchestrator.Snapshot) snapshotJSON {
-	runs, outputs := apiRunsAndOutputs(snapshot.ActiveRuns, snapshot.RunOutputs)
+	executions := executionBySource(snapshot.SourceSummaries)
+	runs, outputs := apiRunsAndOutputs(snapshot.ActiveRuns, snapshot.RunOutputs, executions)
 	outputMap := outputsByRunID(outputs)
 
 	var activeRun *runJSON
 	if snapshot.ActiveRun != nil {
-		encoded := apiRun(*snapshot.ActiveRun, outputMap[snapshot.ActiveRun.ID])
+		encoded := apiRun(*snapshot.ActiveRun, outputMap[snapshot.ActiveRun.ID], executions[snapshot.ActiveRun.SourceName])
 		activeRun = &encoded
 	}
 
@@ -44,6 +45,7 @@ func apiSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJSON 
 			Tags:             append([]string(nil), item.Tags...),
 			Tracker:          item.Tracker,
 			RateLimit:        apiTrackerRateLimit(item.RateLimit),
+			Execution:        apiExecution(item.Execution),
 			LastPollAt:       item.LastPollAt,
 			LastPollCount:    item.LastPollCount,
 			ClaimedCount:     item.ClaimedCount,
@@ -56,18 +58,18 @@ func apiSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJSON 
 	return out
 }
 
-func apiRunsAndOutputs(runs []domain.AgentRun, outputs []orchestrator.RunOutputView) ([]runJSON, []runOutputJSON) {
+func apiRunsAndOutputs(runs []domain.AgentRun, outputs []orchestrator.RunOutputView, executions map[string]*executionJSON) ([]runJSON, []runOutputJSON) {
 	encodedOutputs := apiRunOutputs(outputs)
 	outputMap := outputsByRunID(encodedOutputs)
 
 	out := make([]runJSON, 0, len(runs))
 	for _, run := range runs {
-		out = append(out, apiRun(run, outputMap[run.ID]))
+		out = append(out, apiRun(run, outputMap[run.ID], executions[run.SourceName]))
 	}
 	return out, encodedOutputs
 }
 
-func apiRun(run domain.AgentRun, output *runOutputJSON) runJSON {
+func apiRun(run domain.AgentRun, output *runOutputJSON, execution *executionJSON) runJSON {
 	return runJSON{
 		ID:             run.ID,
 		AgentName:      run.AgentName,
@@ -75,6 +77,7 @@ func apiRun(run domain.AgentRun, output *runOutputJSON) runJSON {
 		Issue:          apiIssue(run.Issue),
 		SourceName:     run.SourceName,
 		HarnessKind:    run.HarnessKind,
+		Execution:      execution,
 		WorkspacePath:  run.WorkspacePath,
 		Status:         string(run.Status),
 		Attempt:        run.Attempt,
@@ -87,6 +90,32 @@ func apiRun(run domain.AgentRun, output *runOutputJSON) runJSON {
 		Error:          run.Error,
 		Output:         output,
 	}
+}
+
+func apiExecution(item *orchestrator.ExecutionSummary) *executionJSON {
+	if item == nil {
+		return nil
+	}
+	return &executionJSON{
+		Mode:       item.Mode,
+		Image:      item.Image,
+		Network:    item.Network,
+		CPUs:       item.CPUs,
+		Memory:     item.Memory,
+		PIDsLimit:  item.PIDsLimit,
+		AuthSource: item.AuthSource,
+	}
+}
+
+func executionBySource(items []orchestrator.SourceSummary) map[string]*executionJSON {
+	out := make(map[string]*executionJSON, len(items))
+	for _, item := range items {
+		if item.Execution == nil {
+			continue
+		}
+		out[item.Name] = apiExecution(item.Execution)
+	}
+	return out
 }
 
 func apiIssue(issue domain.Issue) issueJSON {

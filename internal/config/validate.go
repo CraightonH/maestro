@@ -210,6 +210,11 @@ func ValidateMVP(cfg *Config) error {
 	if cfg.Hooks.Timeout.Duration <= 0 {
 		return fmt.Errorf("hooks.timeout must be greater than zero")
 	}
+	switch strings.TrimSpace(cfg.Hooks.Execution) {
+	case "", "host", "container":
+	default:
+		return fmt.Errorf("hooks.execution must be one of: host, container")
+	}
 	if strings.Contains(cfg.Controls.BeforeWork.Prompt, "{{") {
 		return fmt.Errorf("controls.before_work.prompt must be plain text for v0.1")
 	}
@@ -284,6 +289,13 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 	if path := strings.TrimSpace(docker.WorkspaceMountPath); path != "" && !filepath.IsAbs(path) {
 		return fmt.Errorf("agent %q docker.workspace_mount_path must be absolute", agentName)
 	}
+	if policy := strings.TrimSpace(docker.PullPolicy); policy != "" {
+		switch policy {
+		case "missing", "always", "never":
+		default:
+			return fmt.Errorf("agent %q docker.pull_policy must be one of missing, always, never", agentName)
+		}
+	}
 	switch mode := strings.TrimSpace(docker.Network); mode {
 	case "", "bridge", "none", "host":
 	default:
@@ -294,6 +306,15 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 	}
 	if docker.PIDsLimit < 0 {
 		return fmt.Errorf("agent %q docker.pids_limit must be zero or greater", agentName)
+	}
+	if err := validateDockerAuthConfig(agentName, docker.Auth); err != nil {
+		return err
+	}
+	if err := validateDockerSecurityConfig(agentName, docker.Security); err != nil {
+		return err
+	}
+	if err := validateDockerCacheConfig(agentName, docker.Cache); err != nil {
+		return err
 	}
 	for _, envName := range docker.EnvPassthrough {
 		trimmed := strings.TrimPrefix(strings.TrimSpace(envName), "$")
@@ -316,6 +337,108 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 		}
 	}
 	return nil
+}
+
+func validateDockerAuthConfig(agentName string, auth *DockerAuthConfig) error {
+	if auth == nil {
+		return nil
+	}
+	mode := NormalizeDockerAuthMode(auth.Mode)
+	if mode == "" {
+		if strings.TrimSpace(auth.Source) != "" || strings.TrimSpace(auth.Target) != "" {
+			return fmt.Errorf("agent %q docker.auth.mode is required when docker.auth is configured", agentName)
+		}
+		return nil
+	}
+	switch mode {
+	case DockerAuthClaudeAPIKey, DockerAuthClaudeProxy, DockerAuthClaudeConfig, DockerAuthCodexAPIKey, DockerAuthCodexConfig:
+	default:
+		return fmt.Errorf("agent %q docker.auth.mode must be one of claude-api-key, claude-proxy, claude-config-mount, codex-api-key, codex-config-mount", agentName)
+	}
+	if DockerAuthModeUsesEnv(mode) {
+		if source := strings.TrimPrefix(strings.TrimSpace(auth.Source), "$"); source != "" && !isValidEnvName(source) {
+			return fmt.Errorf("agent %q docker.auth.source contains invalid env name %q", agentName, auth.Source)
+		}
+		if target := strings.TrimPrefix(strings.TrimSpace(auth.Target), "$"); target != "" && !isValidEnvName(target) {
+			return fmt.Errorf("agent %q docker.auth.target contains invalid env name %q", agentName, auth.Target)
+		}
+		return nil
+	}
+	if strings.TrimSpace(auth.Source) == "" {
+		return fmt.Errorf("agent %q docker.auth.source is required for mode %s", agentName, mode)
+	}
+	if target := strings.TrimSpace(auth.Target); target != "" && !filepath.IsAbs(target) {
+		return fmt.Errorf("agent %q docker.auth.target must be absolute for mode %s", agentName, mode)
+	}
+	return nil
+}
+
+func validateDockerSecurityConfig(agentName string, security *DockerSecurityConfig) error {
+	if security == nil {
+		return nil
+	}
+	for _, capName := range security.DropCapabilities {
+		if strings.TrimSpace(capName) == "" {
+			return fmt.Errorf("agent %q docker.security.drop_capabilities contains an empty capability name", agentName)
+		}
+	}
+	for _, tmpfs := range security.Tmpfs {
+		target := strings.TrimSpace(tmpfs)
+		if target == "" {
+			return fmt.Errorf("agent %q docker.security.tmpfs contains an empty mount target", agentName)
+		}
+		if !filepath.IsAbs(target) {
+			return fmt.Errorf("agent %q docker.security.tmpfs target %q must be absolute", agentName, tmpfs)
+		}
+	}
+	return nil
+}
+
+func validateDockerCacheConfig(agentName string, cache *DockerCacheConfig) error {
+	if cache == nil {
+		return nil
+	}
+	for _, profile := range cache.Profiles {
+		if !KnownDockerCacheProfile(profile) {
+			return fmt.Errorf("agent %q docker.cache.profiles contains unknown profile %q", agentName, profile)
+		}
+	}
+	for _, mount := range cache.Mounts {
+		if strings.TrimSpace(mount.Source) == "" {
+			return fmt.Errorf("agent %q docker.cache.mounts[].source is required", agentName)
+		}
+		if strings.TrimSpace(mount.Target) == "" {
+			return fmt.Errorf("agent %q docker.cache.mounts[].target is required", agentName)
+		}
+		if !filepath.IsAbs(strings.TrimSpace(mount.Target)) {
+			return fmt.Errorf("agent %q docker.cache.mounts[].target must be absolute", agentName)
+		}
+	}
+	return nil
+}
+
+func isValidEnvName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "=") {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+		case r == '_':
+			if i == 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 var scpStyleRepoURLPattern = regexp.MustCompile(`^[^@\s/:]+@[^:/\s]+:.+$`)

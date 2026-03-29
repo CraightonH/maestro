@@ -128,6 +128,9 @@ func applySystemDefaults(cfg *Config) {
 	if cfg.Hooks.Timeout.Duration == 0 {
 		cfg.Hooks.Timeout = Duration{Duration: 30 * time.Second}
 	}
+	if strings.TrimSpace(cfg.Hooks.Execution) == "" {
+		cfg.Hooks.Execution = "host"
+	}
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "127.0.0.1"
 	}
@@ -356,24 +359,69 @@ func resolvePaths(cfg *Config) error {
 			cfg.AgentTypes[i].ContextFiles[j] = filepath.Clean(contextPath)
 		}
 
-		if cfg.AgentTypes[i].Docker != nil {
+			if cfg.AgentTypes[i].Docker != nil {
+				dockerBaseDir := cfg.ConfigDir
+				if strings.TrimSpace(cfg.AgentTypes[i].PackPath) != "" {
+					dockerBaseDir = filepath.Dir(cfg.AgentTypes[i].PackPath)
+				}
 			for j := range cfg.AgentTypes[i].Docker.Mounts {
 				source := cfg.AgentTypes[i].Docker.Mounts[j].Source
 				if source == "" {
 					continue
 				}
-				source, err = expandPath(source)
-				if err != nil {
-					return err
+					source, err = expandPath(source)
+					if err != nil {
+						return err
+					}
+					if !filepath.IsAbs(source) {
+						source = filepath.Join(dockerBaseDir, source)
+					}
+					cfg.AgentTypes[i].Docker.Mounts[j].Source = filepath.Clean(source)
 				}
-				if !filepath.IsAbs(source) {
-					source = filepath.Join(cfg.ConfigDir, source)
-				}
-				cfg.AgentTypes[i].Docker.Mounts[j].Source = filepath.Clean(source)
+			if err := resolveDockerConfigPaths(dockerBaseDir, cfg.AgentTypes[i].Docker); err != nil {
+				return err
 			}
 		}
 	}
 
+	return nil
+}
+
+func resolveDockerConfigPaths(configDir string, docker *DockerConfig) error {
+	if docker == nil {
+		return nil
+	}
+	if docker.Auth != nil && DockerAuthModeUsesMount(docker.Auth.Mode) {
+		source := strings.TrimSpace(docker.Auth.Source)
+		if source != "" {
+			var err error
+			source, err = expandPath(source)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(source) {
+				source = filepath.Join(configDir, source)
+			}
+			docker.Auth.Source = filepath.Clean(source)
+		}
+	}
+	if docker.Cache != nil {
+		for i := range docker.Cache.Mounts {
+			source := strings.TrimSpace(docker.Cache.Mounts[i].Source)
+			if source == "" {
+				continue
+			}
+			var err error
+			source, err = expandPath(source)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(source) {
+				source = filepath.Join(configDir, source)
+			}
+			docker.Cache.Mounts[i].Source = filepath.Clean(source)
+		}
+	}
 	return nil
 }
 

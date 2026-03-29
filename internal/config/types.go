@@ -58,16 +58,57 @@ type DockerMountConfig struct {
 	ReadOnly bool   `yaml:"read_only"`
 }
 
-type DockerConfig struct {
-	Image              string              `yaml:"image"`
-	WorkspaceMountPath string              `yaml:"workspace_mount_path"`
-	Mounts             []DockerMountConfig `yaml:"mounts"`
-	EnvPassthrough     []string            `yaml:"env_passthrough"`
-	Network            string              `yaml:"network"`
-	CPUs               float64             `yaml:"cpus"`
-	Memory             string              `yaml:"memory"`
-	PIDsLimit          int                 `yaml:"pids_limit"`
+type DockerCacheMountConfig struct {
+	Source string `yaml:"source"`
+	Target string `yaml:"target"`
 }
+
+type DockerAuthConfig struct {
+	Mode   string `yaml:"mode"`
+	Source string `yaml:"source"`
+	Target string `yaml:"target"`
+}
+
+type DockerSecurityConfig struct {
+	NoNewPrivileges  *bool    `yaml:"no_new_privileges"`
+	ReadOnlyRootFS   *bool    `yaml:"read_only_root_fs"`
+	DropCapabilities []string `yaml:"drop_capabilities"`
+	Tmpfs            []string `yaml:"tmpfs"`
+}
+
+type DockerCacheConfig struct {
+	Profiles []string                 `yaml:"profiles"`
+	Mounts   []DockerCacheMountConfig `yaml:"mounts"`
+}
+
+type DockerConfig struct {
+	Image              string                `yaml:"image"`
+	WorkspaceMountPath string                `yaml:"workspace_mount_path"`
+	PullPolicy         string                `yaml:"pull_policy"`
+	Mounts             []DockerMountConfig   `yaml:"mounts"`
+	EnvPassthrough     []string              `yaml:"env_passthrough"`
+	Network            string                `yaml:"network"`
+	CPUs               float64               `yaml:"cpus"`
+	Memory             string                `yaml:"memory"`
+	PIDsLimit          int                   `yaml:"pids_limit"`
+	Auth               *DockerAuthConfig     `yaml:"auth"`
+	Security           *DockerSecurityConfig `yaml:"security"`
+	Cache              *DockerCacheConfig    `yaml:"cache"`
+}
+
+const (
+	DockerAuthClaudeAPIKey   = "claude-api-key"
+	DockerAuthClaudeProxy    = "claude-proxy"
+	DockerAuthClaudeConfig   = "claude-config-mount"
+	DockerAuthCodexAPIKey    = "codex-api-key"
+	DockerAuthCodexConfig    = "codex-config-mount"
+	DockerCacheProfileClaude = "claude-cache"
+	DockerCacheProfileCodex  = "codex-cache"
+	DockerCacheProfileNPM    = "npm-cache"
+	DockerCacheProfileGo     = "go-cache"
+	DockerCacheProfilePip    = "pip-cache"
+	DockerCacheProfileCargo  = "cargo-cache"
+)
 
 type Config struct {
 	ConfigPath string `yaml:"-"`
@@ -251,6 +292,7 @@ type HooksConfig struct {
 	AfterRun     string   `yaml:"after_run"`
 	BeforeRemove string   `yaml:"before_remove"`
 	Timeout      Duration `yaml:"timeout"`
+	Execution    string   `yaml:"execution"`
 }
 
 type ControlsConfig struct {
@@ -403,6 +445,51 @@ func cloneDockerConfig(src *DockerConfig) *DockerConfig {
 	if src.EnvPassthrough != nil {
 		cloned.EnvPassthrough = append([]string{}, src.EnvPassthrough...)
 	}
+	cloned.Auth = cloneDockerAuthConfig(src.Auth)
+	cloned.Security = cloneDockerSecurityConfig(src.Security)
+	cloned.Cache = cloneDockerCacheConfig(src.Cache)
+	return &cloned
+}
+
+func cloneDockerAuthConfig(src *DockerAuthConfig) *DockerAuthConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
+}
+
+func cloneDockerSecurityConfig(src *DockerSecurityConfig) *DockerSecurityConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.DropCapabilities != nil {
+		cloned.DropCapabilities = append([]string{}, src.DropCapabilities...)
+	}
+	if src.Tmpfs != nil {
+		cloned.Tmpfs = append([]string{}, src.Tmpfs...)
+	}
+	if src.NoNewPrivileges != nil {
+		cloned.NoNewPrivileges = cloneBoolPointer(src.NoNewPrivileges)
+	}
+	if src.ReadOnlyRootFS != nil {
+		cloned.ReadOnlyRootFS = cloneBoolPointer(src.ReadOnlyRootFS)
+	}
+	return &cloned
+}
+
+func cloneDockerCacheConfig(src *DockerCacheConfig) *DockerCacheConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.Profiles != nil {
+		cloned.Profiles = append([]string{}, src.Profiles...)
+	}
+	if src.Mounts != nil {
+		cloned.Mounts = append([]DockerCacheMountConfig{}, src.Mounts...)
+	}
 	return &cloned
 }
 
@@ -481,6 +568,9 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	if override.WorkspaceMountPath != "" {
 		merged.WorkspaceMountPath = override.WorkspaceMountPath
 	}
+	if override.PullPolicy != "" {
+		merged.PullPolicy = override.PullPolicy
+	}
 	if override.Mounts != nil {
 		merged.Mounts = append([]DockerMountConfig{}, override.Mounts...)
 	}
@@ -498,6 +588,78 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	}
 	if override.PIDsLimit != 0 {
 		merged.PIDsLimit = override.PIDsLimit
+	}
+	merged.Auth = mergeDockerAuthConfig(merged.Auth, override.Auth)
+	merged.Security = mergeDockerSecurityConfig(merged.Security, override.Security)
+	merged.Cache = mergeDockerCacheConfig(merged.Cache, override.Cache)
+	return merged
+}
+
+func mergeDockerAuthConfig(base *DockerAuthConfig, override *DockerAuthConfig) *DockerAuthConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerAuthConfig(override)
+	}
+	merged := cloneDockerAuthConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.Mode != "" {
+		merged.Mode = override.Mode
+	}
+	if override.Source != "" {
+		merged.Source = override.Source
+	}
+	if override.Target != "" {
+		merged.Target = override.Target
+	}
+	return merged
+}
+
+func mergeDockerSecurityConfig(base *DockerSecurityConfig, override *DockerSecurityConfig) *DockerSecurityConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerSecurityConfig(override)
+	}
+	merged := cloneDockerSecurityConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.NoNewPrivileges != nil {
+		merged.NoNewPrivileges = cloneBoolPointer(override.NoNewPrivileges)
+	}
+	if override.ReadOnlyRootFS != nil {
+		merged.ReadOnlyRootFS = cloneBoolPointer(override.ReadOnlyRootFS)
+	}
+	if override.DropCapabilities != nil {
+		merged.DropCapabilities = append([]string{}, override.DropCapabilities...)
+	}
+	if override.Tmpfs != nil {
+		merged.Tmpfs = append([]string{}, override.Tmpfs...)
+	}
+	return merged
+}
+
+func mergeDockerCacheConfig(base *DockerCacheConfig, override *DockerCacheConfig) *DockerCacheConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerCacheConfig(override)
+	}
+	merged := cloneDockerCacheConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.Profiles != nil {
+		merged.Profiles = append([]string{}, override.Profiles...)
+	}
+	if override.Mounts != nil {
+		merged.Mounts = append([]DockerCacheMountConfig{}, override.Mounts...)
 	}
 	return merged
 }
@@ -611,8 +773,111 @@ func ResolveDockerConfig(defaults *DockerConfig, override *DockerConfig) DockerC
 	base := &DockerConfig{
 		WorkspaceMountPath: "/workspace",
 		Network:            "bridge",
+		PullPolicy:         "missing",
+		Security: &DockerSecurityConfig{
+			NoNewPrivileges:  cloneBoolPointer(boolPtr(true)),
+			ReadOnlyRootFS:   cloneBoolPointer(boolPtr(true)),
+			DropCapabilities: []string{"ALL"},
+			Tmpfs:            []string{"/tmp"},
+		},
 	}
 	return *mergeDockerConfig(mergeDockerConfig(base, defaults), override)
+}
+
+func DockerAuthModeUsesMount(mode string) bool {
+	switch NormalizeDockerAuthMode(mode) {
+	case DockerAuthClaudeConfig, DockerAuthCodexConfig:
+		return true
+	default:
+		return false
+	}
+}
+
+func DockerAuthModeUsesEnv(mode string) bool {
+	switch NormalizeDockerAuthMode(mode) {
+	case DockerAuthClaudeAPIKey, DockerAuthClaudeProxy, DockerAuthCodexAPIKey:
+		return true
+	default:
+		return false
+	}
+}
+
+func DockerAuthDefaultSource(mode string) string {
+	switch NormalizeDockerAuthMode(mode) {
+	case DockerAuthClaudeAPIKey:
+		return "ANTHROPIC_API_KEY"
+	case DockerAuthClaudeProxy:
+		return "ANTHROPIC_AUTH_TOKEN"
+	case DockerAuthCodexAPIKey:
+		return "OPENAI_API_KEY"
+	default:
+		return ""
+	}
+}
+
+func DockerAuthDefaultTarget(mode string, homeTarget string) string {
+	switch NormalizeDockerAuthMode(mode) {
+	case DockerAuthClaudeAPIKey:
+		return "ANTHROPIC_API_KEY"
+	case DockerAuthClaudeProxy:
+		return "ANTHROPIC_AUTH_TOKEN"
+	case DockerAuthCodexAPIKey:
+		return "OPENAI_API_KEY"
+	case DockerAuthClaudeConfig:
+		return filepath.Join(homeTarget, ".claude")
+	case DockerAuthCodexConfig:
+		return filepath.Join(homeTarget, ".codex")
+	default:
+		return ""
+	}
+}
+
+func DockerAuthModeWritesCodexAuth(mode string) bool {
+	return NormalizeDockerAuthMode(mode) == DockerAuthCodexAPIKey
+}
+
+func NormalizeDockerAuthMode(mode string) string {
+	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func KnownDockerCacheProfile(profile string) bool {
+	switch NormalizeDockerCacheProfile(profile) {
+	case DockerCacheProfileClaude, DockerCacheProfileCodex, DockerCacheProfileNPM, DockerCacheProfileGo, DockerCacheProfilePip, DockerCacheProfileCargo:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeDockerCacheProfile(profile string) string {
+	return strings.TrimSpace(strings.ToLower(profile))
+}
+
+func DockerCacheProfileTargets(profile string, homeTarget string) []string {
+	switch NormalizeDockerCacheProfile(profile) {
+	case DockerCacheProfileClaude:
+		return []string{filepath.Join(homeTarget, ".cache", "claude")}
+	case DockerCacheProfileCodex:
+		return []string{filepath.Join(homeTarget, ".codex", "cache")}
+	case DockerCacheProfileNPM:
+		return []string{filepath.Join(homeTarget, ".npm")}
+	case DockerCacheProfileGo:
+		return []string{filepath.Join(homeTarget, ".cache", "go-build")}
+	case DockerCacheProfilePip:
+		return []string{filepath.Join(homeTarget, ".cache", "pip")}
+	case DockerCacheProfileCargo:
+		return []string{
+			filepath.Join(homeTarget, ".cargo", "registry"),
+			filepath.Join(homeTarget, ".cargo", "git"),
+		}
+	default:
+		return nil
+	}
+}
+
+func boolPtr(value bool) *bool {
+	v := value
+	return &v
 }
 
 func safeConfigKey(raw string) string {

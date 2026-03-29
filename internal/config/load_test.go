@@ -80,6 +80,9 @@ logging:
 	if got, want := cfg.State.MaxAttempts, 3; got != want {
 		t.Fatalf("max attempts = %d, want %d", got, want)
 	}
+	if got, want := cfg.Hooks.Execution, "host"; got != want {
+		t.Fatalf("hooks execution = %q, want %q", got, want)
+	}
 }
 
 func TestLoadResolvesLinearAssignee(t *testing.T) {
@@ -801,9 +804,22 @@ agent_types:
     max_concurrent: 1
     docker:
       image: maestro-agent:latest
+      pull_policy: always
+      auth:
+        mode: claude-config-mount
+        source: ./auth/claude
+      security:
+        read_only_root_fs: false
+        drop_capabilities: [NET_RAW]
+        tmpfs: [/var/tmp]
+      cache:
+        profiles: [go-cache]
+        mounts:
+          - source: ./cache/go-build
+            target: /tmp/maestro-home/.cache/go-build
       mounts:
         - source: ./auth/claude
-          target: /root/.claude
+          target: /tmp/maestro-home/.claude
           read_only: true
       env_passthrough: [ANTHROPIC_API_KEY]
 workspace:
@@ -827,8 +843,57 @@ logging:
 	if got := agent.Docker.Mounts[0].Source; got != authDir {
 		t.Fatalf("docker mount source = %q, want %q", got, authDir)
 	}
+	if agent.Docker.Auth == nil || agent.Docker.Auth.Source != authDir {
+		t.Fatalf("docker auth source = %q, want %q", agent.Docker.Auth.Source, authDir)
+	}
 	if got := agent.Docker.EnvPassthrough[0]; got != "ANTHROPIC_API_KEY" {
 		t.Fatalf("docker env_passthrough = %q, want ANTHROPIC_API_KEY", got)
+	}
+	if got, want := agent.Docker.PullPolicy, "always"; got != want {
+		t.Fatalf("docker pull_policy = %q, want %q", got, want)
+	}
+	if agent.Docker.Auth == nil || agent.Docker.Auth.Mode != "claude-config-mount" {
+		t.Fatalf("docker auth = %v, want claude-config-mount", agent.Docker.Auth)
+	}
+	if agent.Docker.Security == nil || agent.Docker.Security.ReadOnlyRootFS == nil || *agent.Docker.Security.ReadOnlyRootFS {
+		t.Fatalf("docker security = %v, want read_only_root_fs false", agent.Docker.Security)
+	}
+	if got := agent.Docker.Security.DropCapabilities; len(got) != 1 || got[0] != "NET_RAW" {
+		t.Fatalf("docker drop_capabilities = %v, want [NET_RAW]", got)
+	}
+	if got := agent.Docker.Security.Tmpfs; len(got) != 1 || got[0] != "/var/tmp" {
+		t.Fatalf("docker tmpfs = %v, want [/var/tmp]", got)
+	}
+	if agent.Docker.Cache == nil || len(agent.Docker.Cache.Profiles) != 1 || agent.Docker.Cache.Profiles[0] != "go-cache" {
+		t.Fatalf("docker cache = %v, want go-cache profile", agent.Docker.Cache)
+	}
+	if len(agent.Docker.Cache.Mounts) != 1 || agent.Docker.Cache.Mounts[0].Source != filepath.Join(root, "cache", "go-build") {
+		t.Fatalf("docker cache mounts = %v, want resolved source", agent.Docker.Cache.Mounts)
+	}
+}
+
+func TestResolveDockerConfigAppliesSafeDefaults(t *testing.T) {
+	docker := config.ResolveDockerConfig(nil, nil)
+	if got, want := docker.WorkspaceMountPath, "/workspace"; got != want {
+		t.Fatalf("workspace_mount_path = %q, want %q", got, want)
+	}
+	if got, want := docker.Network, "bridge"; got != want {
+		t.Fatalf("network = %q, want %q", got, want)
+	}
+	if got, want := docker.PullPolicy, "missing"; got != want {
+		t.Fatalf("pull_policy = %q, want %q", got, want)
+	}
+	if docker.Security == nil || docker.Security.NoNewPrivileges == nil || !*docker.Security.NoNewPrivileges {
+		t.Fatalf("security.no_new_privileges = %v, want true", docker.Security)
+	}
+	if docker.Security.ReadOnlyRootFS == nil || !*docker.Security.ReadOnlyRootFS {
+		t.Fatalf("security.read_only_root_fs = %v, want true", docker.Security)
+	}
+	if got := docker.Security.DropCapabilities; len(got) != 1 || got[0] != "ALL" {
+		t.Fatalf("security.drop_capabilities = %v, want [ALL]", got)
+	}
+	if got := docker.Security.Tmpfs; len(got) != 1 || got[0] != "/tmp" {
+		t.Fatalf("security.tmpfs = %v, want [/tmp]", got)
 	}
 }
 
@@ -853,9 +918,17 @@ agent_defaults:
   docker:
     image: default-image:latest
     workspace_mount_path: /workspace
+    pull_policy: missing
     env_passthrough: [OPENAI_API_KEY]
     network: none
     pids_limit: 128
+    auth:
+      mode: codex-api-key
+    security:
+      read_only_root_fs: true
+      tmpfs: [/tmp]
+    cache:
+      profiles: [codex-cache]
 user:
   name: TJ
   gitlab_username: tjohnson
@@ -906,6 +979,21 @@ logging:
 	if got := agent.Docker.EnvPassthrough[0]; got != "OPENAI_API_KEY" {
 		t.Fatalf("docker env_passthrough = %q, want OPENAI_API_KEY", got)
 	}
+	if got, want := agent.Docker.PullPolicy, "missing"; got != want {
+		t.Fatalf("docker pull_policy = %q, want %q", got, want)
+	}
+	if agent.Docker.Auth == nil || agent.Docker.Auth.Mode != "codex-api-key" {
+		t.Fatalf("docker auth = %v, want codex-api-key", agent.Docker.Auth)
+	}
+	if agent.Docker.Security == nil || agent.Docker.Security.ReadOnlyRootFS == nil || !*agent.Docker.Security.ReadOnlyRootFS {
+		t.Fatalf("docker security = %v, want read_only_root_fs true", agent.Docker.Security)
+	}
+	if got := agent.Docker.Security.Tmpfs; len(got) != 1 || got[0] != "/tmp" {
+		t.Fatalf("docker tmpfs = %v, want [/tmp]", got)
+	}
+	if agent.Docker.Cache == nil || len(agent.Docker.Cache.Profiles) != 1 || agent.Docker.Cache.Profiles[0] != "codex-cache" {
+		t.Fatalf("docker cache = %v, want codex-cache profile", agent.Docker.Cache)
+	}
 }
 
 func TestLoadMergesAgentPackDockerConfigPerKey(t *testing.T) {
@@ -928,8 +1016,21 @@ approval_policy: auto
 docker:
   image: base-image:latest
   workspace_mount_path: /pack-workspace
+  pull_policy: never
+  mounts:
+    - source: ./fixtures/tooling
+      target: /opt/tooling
+      read_only: true
+  auth:
+    mode: codex-config-mount
+    source: ./codex
   env_passthrough: [OPENAI_API_KEY]
   network: none
+  cache:
+    profiles: [claude-cache]
+    mounts:
+      - source: ./cache/openai
+        target: /tmp/maestro-home/.codex/cache
 `), 0o644); err != nil {
 		t.Fatalf("write pack: %v", err)
 	}
@@ -989,8 +1090,38 @@ logging:
 	if got := agent.Docker.EnvPassthrough[0]; got != "OPENAI_API_KEY" {
 		t.Fatalf("docker env_passthrough = %q, want OPENAI_API_KEY", got)
 	}
+	if got, want := agent.Docker.PullPolicy, "never"; got != want {
+		t.Fatalf("docker pull_policy = %q, want %q", got, want)
+	}
+	if len(agent.Docker.Mounts) != 1 {
+		t.Fatalf("docker mounts = %v, want 1 mount", agent.Docker.Mounts)
+	}
+	if got, want := agent.Docker.Mounts[0].Source, filepath.Join(packDir, "fixtures", "tooling"); got != want {
+		t.Fatalf("docker mount source = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Mounts[0].Target, "/opt/tooling"; got != want {
+		t.Fatalf("docker mount target = %q, want %q", got, want)
+	}
+	if !agent.Docker.Mounts[0].ReadOnly {
+		t.Fatalf("docker mount read_only = false, want true")
+	}
 	if got, want := agent.Docker.PIDsLimit, 64; got != want {
 		t.Fatalf("docker pids_limit = %d, want %d", got, want)
+	}
+	if agent.Docker.Auth == nil || agent.Docker.Auth.Mode != "codex-config-mount" {
+		t.Fatalf("docker auth = %v, want codex-config-mount", agent.Docker.Auth)
+	}
+	if got, want := agent.Docker.Auth.Source, filepath.Join(packDir, "codex"); got != want {
+		t.Fatalf("docker auth source = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Auth.Target, ""; got != want {
+		t.Fatalf("docker auth target = %q, want empty until runtime default", got)
+	}
+	if agent.Docker.Cache == nil || len(agent.Docker.Cache.Profiles) != 1 || agent.Docker.Cache.Profiles[0] != "claude-cache" {
+		t.Fatalf("docker cache = %v, want claude-cache profile", agent.Docker.Cache)
+	}
+	if len(agent.Docker.Cache.Mounts) != 1 || agent.Docker.Cache.Mounts[0].Source != filepath.Join(packDir, "cache", "openai") {
+		t.Fatalf("docker cache mounts = %v, want resolved source", agent.Docker.Cache.Mounts)
 	}
 }
 

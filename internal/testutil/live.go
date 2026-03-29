@@ -76,10 +76,6 @@ func RequireLiveDockerHarness(t *testing.T, flag string, imageEnv string, authPa
 	}
 	if hasExplicitAuth {
 		cfg.Docker.EnvPassthrough = passthrough
-		if mount, home := defaultClaudeWritableHome(t, defaultAuthSource); mount.Source != "" {
-			cfg.Docker.Mounts = append(cfg.Docker.Mounts, mount)
-			cfg.RunEnv["HOME"] = home
-		}
 		return cfg
 	}
 
@@ -161,16 +157,4 @@ func defaultClaudeAuxMounts(t *testing.T, defaultSource string, authTarget strin
 		Target: filepath.Join(authTarget, "session-env"),
 	})
 	return mounts
-}
-
-func defaultClaudeWritableHome(t *testing.T, defaultSource string) (config.DockerMountConfig, string) {
-	t.Helper()
-	if filepath.Clean(defaultSource) != filepath.Clean(DefaultClaudeAuthSource()) {
-		return config.DockerMountConfig{}, ""
-	}
-	return config.DockerMountConfig{
-			Source: t.TempDir(),
-			Target: "/tmp/maestro-home",
-		},
-		"/tmp/maestro-home"
 }

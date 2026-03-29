@@ -190,7 +190,20 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 	lastActivity := startedAt.Add(2 * time.Minute)
 	snapshot := orchestrator.Snapshot{
 		SourceSummaries: []orchestrator.SourceSummary{
-			{Name: "project-a", DisplayGroup: "Delivery", Tracker: "gitlab"},
+			{
+				Name:         "project-a",
+				DisplayGroup: "Delivery",
+				Tracker:      "gitlab",
+				Execution: &orchestrator.ExecutionSummary{
+					Mode:       "docker",
+					Image:      "maestro-agent:latest",
+					Network:    "bridge",
+					CPUs:       2,
+					Memory:     "4g",
+					PIDsLimit:  256,
+					AuthSource: "env",
+				},
+			},
 			{Name: "project-b", DisplayGroup: "Delivery", Tracker: "gitlab"},
 		},
 		ActiveRuns: []domain.AgentRun{
@@ -247,6 +260,9 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 		"Run: run-1",
 		"Agent: coder (code-pr)",
 		"Harness: claude-code",
+		"Execution: docker",
+		"image=maestro-agent:latest",
+		"auth=env",
 		"Workspace: /tmp/workspace-a",
 		"agent coder started for",
 	} {

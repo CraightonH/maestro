@@ -156,6 +156,7 @@ type sourceSummaryJSON struct {
 	Tags             []string              `json:"tags,omitempty"`
 	Tracker          string                `json:"tracker"`
 	RateLimit        *trackerRateLimitJSON `json:"rate_limit,omitempty"`
+	Execution        *executionJSON        `json:"execution,omitempty"`
 	LastPollAt       time.Time             `json:"last_poll_at,omitempty"`
 	LastPollCount    int                   `json:"last_poll_count"`
 	ClaimedCount     int                   `json:"claimed_count"`
@@ -183,6 +184,7 @@ type runJSON struct {
 	Issue          issueJSON       `json:"issue"`
 	SourceName     string          `json:"source_name"`
 	HarnessKind    string          `json:"harness_kind,omitempty"`
+	Execution      *executionJSON  `json:"execution,omitempty"`
 	WorkspacePath  string          `json:"workspace_path,omitempty"`
 	Status         string          `json:"status"`
 	Attempt        int             `json:"attempt"`
@@ -212,6 +214,16 @@ type trackerRateLimitJSON struct {
 	ResetAt           time.Time `json:"reset_at,omitempty"`
 	RetryAfterSeconds *int64    `json:"retry_after_seconds,omitempty"`
 	UpdatedAt         time.Time `json:"updated_at,omitempty"`
+}
+
+type executionJSON struct {
+	Mode       string  `json:"mode"`
+	Image      string  `json:"image,omitempty"`
+	Network    string  `json:"network,omitempty"`
+	CPUs       float64 `json:"cpus,omitempty"`
+	Memory     string  `json:"memory,omitempty"`
+	PIDsLimit  int     `json:"pids_limit,omitempty"`
+	AuthSource string  `json:"auth_source,omitempty"`
 }
 
 type runOutputJSON struct {
@@ -1034,7 +1046,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshot := s.runtime.Snapshot()
-	runs, outputs := encodeRuns(snapshot.ActiveRuns, snapshot.RunOutputs)
+	runs, outputs := encodeRuns(snapshot.ActiveRuns, snapshot.RunOutputs, snapshot.SourceSummaries)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generated_at": time.Now().UTC(),
 		"count":        len(runs),
@@ -1637,12 +1649,12 @@ func encodeSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJS
 	return apiSourceSummaries(items)
 }
 
-func encodeRuns(runs []domain.AgentRun, outputs []orchestrator.RunOutputView) ([]runJSON, []runOutputJSON) {
-	return apiRunsAndOutputs(runs, outputs)
+func encodeRuns(runs []domain.AgentRun, outputs []orchestrator.RunOutputView, sources []orchestrator.SourceSummary) ([]runJSON, []runOutputJSON) {
+	return apiRunsAndOutputs(runs, outputs, executionBySource(sources))
 }
 
-func encodeRun(run domain.AgentRun, output *runOutputJSON) runJSON {
-	return apiRun(run, output)
+func encodeRun(run domain.AgentRun, output *runOutputJSON, execution *executionJSON) runJSON {
+	return apiRun(run, output, execution)
 }
 
 func encodeIssue(issue domain.Issue) issueJSON {

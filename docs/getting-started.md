@@ -25,11 +25,11 @@ visible on the host immediately.
 
 Common auth patterns:
 
-- Claude direct API: `docker.env_passthrough: [ANTHROPIC_API_KEY]`
-- Claude proxy/gateway: `docker.env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]`
-- Codex direct API: `docker.env_passthrough: [OPENAI_API_KEY]`
-- Codex compatible gateway: `docker.env_passthrough: [OPENAI_API_KEY]` plus `codex.extra_args` for `forced_login_method="api"` and `openai_base_url="https://llm-proxy.example.com"`
-- CLI subscription/config auth: add minimal read-only `docker.mounts` entries for the harness config/auth path
+- Claude direct API: `docker.auth.mode: claude-api-key`
+- Claude proxy/gateway: `docker.auth.mode: claude-proxy` plus `docker.env_passthrough: [ANTHROPIC_BASE_URL]` when the gateway is not the default Anthropic API
+- Codex direct API: `docker.auth.mode: codex-api-key`
+- Codex compatible gateway: `docker.auth.mode: codex-api-key` plus `codex.extra_args` for `forced_login_method="api"` and `openai_base_url="https://llm-proxy.example.com"`
+- CLI subscription/config auth: use `docker.auth.mode: claude-config-mount` or `docker.auth.mode: codex-config-mount` with a minimal read-only auth/config source path
 
 Maestro does not mount your full home directory by default. If you do not provide a `HOME`
 explicitly, Maestro supplies a writable container-local `HOME` automatically.
@@ -469,7 +469,9 @@ The current build supports these hook phases:
 - `hooks.before_run`
 - `hooks.after_run`
 
-All hooks run through the local shell and share `hooks.timeout`.
+By default hooks run through the host shell and share `hooks.timeout`. If you
+set `hooks.execution: container`, Maestro runs the hook command in the same
+Docker environment as the harness for that agent type.
 
 Hook commands receive:
 

@@ -104,6 +104,9 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 	if runtime.GOOS != "windows" {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
 	}
+	if policy := strings.TrimSpace(r.cfg.PullPolicy); policy != "" {
+		args = append(args, "--pull", policy)
+	}
 
 	if strings.TrimSpace(spec.Workdir) != "" {
 		if err := requireExistingPath(spec.Workdir); err != nil {
@@ -113,13 +116,6 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 			"--mount", bindMountArg(spec.Workdir, r.cfg.WorkspaceMountPath, false),
 			"--workdir", r.cfg.WorkspaceMountPath,
 		)
-	}
-
-	for _, mount := range r.cfg.Mounts {
-		if err := requireExistingPath(mount.Source); err != nil {
-			return nil, fmt.Errorf("docker mount %q: %w", mount.Source, err)
-		}
-		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
 	}
 
 	if strings.TrimSpace(r.cfg.Network) != "" {
@@ -134,18 +130,53 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 	if r.cfg.PIDsLimit > 0 {
 		args = append(args, "--pids-limit", strconv.Itoa(r.cfg.PIDsLimit))
 	}
+	args = append(args, r.securityArgs()...)
 
-	envVars, err := r.containerEnv(spec.Env)
+	containerEnv, err := r.containerEnv(spec.Env)
 	if err != nil {
 		return nil, err
 	}
-	if extraMount, err := r.syntheticAuthMount(spec, envVars); err != nil {
-		return nil, err
-	} else if extraMount != nil {
-		args = append(args, "--mount", bindMountArg(extraMount.Source, extraMount.Target, extraMount.ReadOnly))
+	homeTarget := strings.TrimSpace(containerEnv["HOME"])
+	if homeTarget == "" {
+		homeTarget = defaultDockerHome
+		containerEnv["HOME"] = homeTarget
 	}
-	for _, entry := range envVars {
-		args = append(args, "--env", entry)
+	homeSource, err := r.prepareWritableHome(homeTarget)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, "--mount", bindMountArg(homeSource, homeTarget, false))
+
+	for _, mount := range r.cfg.Mounts {
+		if err := requireExistingPath(mount.Source); err != nil {
+			return nil, fmt.Errorf("docker mount %q: %w", mount.Source, err)
+		}
+		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
+	}
+
+	authMounts, err := r.applyAuthConfig(containerEnv, homeSource, homeTarget, spec.Binary)
+	if err != nil {
+		return nil, err
+	}
+	for _, mount := range authMounts {
+		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
+	}
+
+	cacheMounts, err := r.cacheMounts(homeTarget)
+	if err != nil {
+		return nil, err
+	}
+	for _, mount := range cacheMounts {
+		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, false))
+	}
+
+	keys := make([]string, 0, len(containerEnv))
+	for key := range containerEnv {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		args = append(args, "--env", key+"="+containerEnv[key])
 	}
 
 	args = append(args, r.cfg.Image, spec.Binary)
@@ -157,37 +188,35 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 	return cmd, nil
 }
 
-func (r *dockerProcessRunner) syntheticAuthMount(spec ProcessSpec, envVars []string) (*config.DockerMountConfig, error) {
-	if filepath.Base(spec.Binary) != "codex" {
-		return nil, nil
+func (r *dockerProcessRunner) securityArgs() []string {
+	if r.cfg.Security == nil {
+		return nil
 	}
-
-	apiKey, ok := envLookup(envVars, "OPENAI_API_KEY")
-	if !ok || strings.TrimSpace(apiKey) == "" {
-		return nil, nil
+	var args []string
+	if r.cfg.Security.NoNewPrivileges == nil || *r.cfg.Security.NoNewPrivileges {
+		args = append(args, "--security-opt", "no-new-privileges")
 	}
-
-	home, ok := envLookup(envVars, "HOME")
-	if !ok || strings.TrimSpace(home) == "" {
-		home = defaultDockerHome
+	if r.cfg.Security.ReadOnlyRootFS != nil && *r.cfg.Security.ReadOnlyRootFS {
+		args = append(args, "--read-only")
 	}
-	for _, mount := range r.cfg.Mounts {
-		if filepath.Clean(mount.Target) == filepath.Clean(home) {
-			return nil, nil
+	for _, capName := range r.cfg.Security.DropCapabilities {
+		capName = strings.TrimSpace(capName)
+		if capName == "" {
+			continue
 		}
+		args = append(args, "--cap-drop", capName)
 	}
-
-	source, err := writeCodexAuthHome(apiKey)
-	if err != nil {
-		return nil, err
+	for _, tmpfs := range r.cfg.Security.Tmpfs {
+		tmpfs = strings.TrimSpace(tmpfs)
+		if tmpfs == "" {
+			continue
+		}
+		args = append(args, "--tmpfs", tmpfs)
 	}
-	return &config.DockerMountConfig{
-		Source: source,
-		Target: home,
-	}, nil
+	return args
 }
 
-func (r *dockerProcessRunner) containerEnv(explicit map[string]string) ([]string, error) {
+func (r *dockerProcessRunner) containerEnv(explicit map[string]string) (map[string]string, error) {
 	merged := map[string]string{}
 	for key, value := range explicit {
 		merged[key] = value
@@ -209,18 +238,123 @@ func (r *dockerProcessRunner) containerEnv(explicit map[string]string) ([]string
 	if strings.TrimSpace(merged["HOME"]) == "" {
 		merged["HOME"] = defaultDockerHome
 	}
+	return merged, nil
+}
 
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
+func (r *dockerProcessRunner) prepareWritableHome(homeTarget string) (string, error) {
+	homeSource, err := os.MkdirTemp("", "maestro-docker-home-*")
+	if err != nil {
+		return "", fmt.Errorf("create docker home dir: %w", err)
 	}
-	sort.Strings(keys)
+	return homeSource, nil
+}
 
-	env := make([]string, 0, len(keys))
-	for _, key := range keys {
-		env = append(env, key+"="+merged[key])
+func (r *dockerProcessRunner) applyAuthConfig(containerEnv map[string]string, homeSource string, homeTarget string, binary string) ([]config.DockerMountConfig, error) {
+	var mounts []config.DockerMountConfig
+	auth := r.cfg.Auth
+	if auth == nil {
+		if filepath.Base(binary) == "codex" {
+			if apiKey, ok := containerEnv["OPENAI_API_KEY"]; ok && strings.TrimSpace(apiKey) != "" {
+				if err := writeCodexAuthFile(homeSource, apiKey); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return nil, nil
 	}
-	return env, nil
+
+	mode := config.NormalizeDockerAuthMode(auth.Mode)
+	switch mode {
+	case config.DockerAuthClaudeAPIKey, config.DockerAuthClaudeProxy, config.DockerAuthCodexAPIKey:
+		source := strings.TrimSpace(auth.Source)
+		if source == "" {
+			source = config.DockerAuthDefaultSource(mode)
+		}
+		target := strings.TrimSpace(auth.Target)
+		if target == "" {
+			target = config.DockerAuthDefaultTarget(mode, homeTarget)
+		}
+		value, ok := os.LookupEnv(source)
+		if !ok || strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("docker auth source env %q is unset or empty", source)
+		}
+		containerEnv[target] = value
+		if mode == config.DockerAuthCodexAPIKey {
+			if err := writeCodexAuthFile(homeSource, value); err != nil {
+				return nil, err
+			}
+		}
+	case config.DockerAuthClaudeConfig, config.DockerAuthCodexConfig:
+		source := strings.TrimSpace(auth.Source)
+		if source == "" {
+			return nil, fmt.Errorf("docker auth source path is required for mode %s", mode)
+		}
+		target := strings.TrimSpace(auth.Target)
+		if target == "" {
+			target = config.DockerAuthDefaultTarget(mode, homeTarget)
+		}
+		if err := requireExistingPath(source); err != nil {
+			return nil, fmt.Errorf("docker auth mount %q: %w", source, err)
+		}
+		mounts = append(mounts, config.DockerMountConfig{
+			Source:   source,
+			Target:   target,
+			ReadOnly: true,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported docker auth mode %q", auth.Mode)
+	}
+	return mounts, nil
+}
+
+func (r *dockerProcessRunner) cacheMounts(homeTarget string) ([]config.DockerMountConfig, error) {
+	var mounts []config.DockerMountConfig
+	cache := r.cfg.Cache
+	if cache == nil {
+		return nil, nil
+	}
+	hostRoot := dockerCacheRoot()
+	if err := os.MkdirAll(hostRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("create docker cache root: %w", err)
+	}
+	for _, profile := range cache.Profiles {
+		normalized := config.NormalizeDockerCacheProfile(profile)
+		targets := config.DockerCacheProfileTargets(normalized, homeTarget)
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("unsupported docker cache profile %q", profile)
+		}
+		for _, target := range targets {
+			source := filepath.Join(hostRoot, normalized, strings.TrimPrefix(target, homeTarget+"/"))
+			if err := os.MkdirAll(source, 0o755); err != nil {
+				return nil, fmt.Errorf("create docker cache dir %q: %w", source, err)
+			}
+			mounts = append(mounts, config.DockerMountConfig{
+				Source: source,
+				Target: target,
+			})
+		}
+	}
+	for _, mount := range cache.Mounts {
+		if strings.TrimSpace(mount.Source) == "" {
+			return nil, fmt.Errorf("docker cache mount source is required")
+		}
+		if err := os.MkdirAll(mount.Source, 0o755); err != nil {
+			return nil, fmt.Errorf("create docker cache dir %q: %w", mount.Source, err)
+		}
+		mounts = append(mounts, config.DockerMountConfig{
+			Source: mount.Source,
+			Target: mount.Target,
+		})
+	}
+	return mounts, nil
+}
+
+func dockerCacheRoot() string {
+	root, err := os.UserCacheDir()
+	if err != nil || strings.TrimSpace(root) == "" {
+		root = os.TempDir()
+	}
+	return filepath.Join(root, "maestro", "docker-cache")
 }
 
 func bindMountArg(source string, target string, readOnly bool) string {
@@ -238,24 +372,31 @@ func requireExistingPath(path string) error {
 	return nil
 }
 
-func writeCodexAuthHome(apiKey string) (string, error) {
-	homeDir, err := os.MkdirTemp("", "maestro-codex-home-*")
-	if err != nil {
-		return "", fmt.Errorf("create codex auth home: %w", err)
-	}
+func writeCodexAuthFile(homeDir string, apiKey string) error {
 	authDir := filepath.Join(homeDir, ".codex")
 	if err := os.MkdirAll(authDir, 0o755); err != nil {
-		return "", fmt.Errorf("create codex auth dir: %w", err)
+		return fmt.Errorf("create codex auth dir: %w", err)
 	}
 	body, err := json.MarshalIndent(map[string]string{
 		"auth_mode":      "apikey",
 		"OPENAI_API_KEY": apiKey,
 	}, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal codex auth: %w", err)
+		return fmt.Errorf("marshal codex auth: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(authDir, "auth.json"), append(body, '\n'), 0o600); err != nil {
-		return "", fmt.Errorf("write codex auth: %w", err)
+		return fmt.Errorf("write codex auth: %w", err)
+	}
+	return nil
+}
+
+func writeCodexAuthHome(apiKey string) (string, error) {
+	homeDir, err := os.MkdirTemp("", "maestro-codex-home-*")
+	if err != nil {
+		return "", fmt.Errorf("create codex auth home: %w", err)
+	}
+	if err := writeCodexAuthFile(homeDir, apiKey); err != nil {
+		return "", err
 	}
 	return homeDir, nil
 }

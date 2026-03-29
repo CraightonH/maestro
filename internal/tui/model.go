@@ -736,6 +736,9 @@ func (m Model) renderSourceDetail(w int, sources []orchestrator.SourceSummary, r
 	if rateLimit := renderTrackerRateLimit(selected.RateLimit); rateLimit != "" {
 		lines = append(lines, styleDim.Render("Rate limit: ")+rateLimit)
 	}
+	if execution := formatExecutionSummary(selected.Execution); execution != "" {
+		lines = append(lines, styleDim.Render("Execution: ")+styleCyan.Render(execution))
+	}
 
 	// Source events
 	if len(selectedSourceEvts) > 0 {
@@ -860,6 +863,9 @@ func (m Model) renderRunDetail(w int, runs []domain.AgentRun) string {
 		agentLabel += styleDim.Render(" (") + selected.AgentType + styleDim.Render(")")
 	}
 	lines = append(lines, styleDim.Render("Agent: ")+agentLabel+styleDim.Render("  Harness: ")+selected.HarnessKind+styleDim.Render("  Source: ")+selected.SourceName)
+	if execution := m.selectedRunExecution(runs); execution != nil {
+		lines = append(lines, styleDim.Render("Execution: ")+styleCyan.Render(formatExecutionSummary(execution)))
+	}
 
 	// Status + attempt on one line.
 	badge := runStatusBadge(selected)
@@ -1605,6 +1611,19 @@ func (m Model) selectedRunOutput(runs []domain.AgentRun) orchestrator.RunOutputV
 	return orchestrator.RunOutputView{}
 }
 
+func (m Model) selectedRunExecution(runs []domain.AgentRun) *orchestrator.ExecutionSummary {
+	if len(runs) == 0 || m.selectedRun >= len(runs) {
+		return nil
+	}
+	selected := runs[m.selectedRun]
+	for _, summary := range m.snapshot.SourceSummaries {
+		if summary.Name == selected.SourceName {
+			return summary.Execution
+		}
+	}
+	return nil
+}
+
 func (m Model) selectedSourceEvents(summaries []orchestrator.SourceSummary) []orchestrator.Event {
 	if len(summaries) == 0 || m.selectedSource >= len(summaries) {
 		return nil
@@ -1964,6 +1983,35 @@ func renderTrackerRateLimit(rateLimit *domain.TrackerRateLimit) string {
 		parts = append(parts, fmt.Sprintf("retry in %ds", *rateLimit.RetryAfterSeconds))
 	}
 	return strings.Join(parts, "  ")
+}
+
+func formatExecutionSummary(summary *orchestrator.ExecutionSummary) string {
+	if summary == nil {
+		return ""
+	}
+	if strings.TrimSpace(summary.Mode) == "" || strings.EqualFold(summary.Mode, "host") {
+		return "host"
+	}
+	parts := []string{summary.Mode}
+	if strings.TrimSpace(summary.Image) != "" {
+		parts = append(parts, "image="+summary.Image)
+	}
+	if strings.TrimSpace(summary.Network) != "" {
+		parts = append(parts, "network="+summary.Network)
+	}
+	if summary.CPUs > 0 {
+		parts = append(parts, fmt.Sprintf("cpus=%g", summary.CPUs))
+	}
+	if strings.TrimSpace(summary.Memory) != "" {
+		parts = append(parts, "memory="+summary.Memory)
+	}
+	if summary.PIDsLimit > 0 {
+		parts = append(parts, fmt.Sprintf("pids=%d", summary.PIDsLimit))
+	}
+	if strings.TrimSpace(summary.AuthSource) != "" {
+		parts = append(parts, "auth="+summary.AuthSource)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func formatCount(value int64) string {
