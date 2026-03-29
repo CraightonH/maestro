@@ -274,6 +274,7 @@ exits anyway. This prevents `Ctrl-C` from hanging indefinitely on a stuck agent 
 Run `maestro doctor --config /path/to/maestro.yaml` to validate your setup. It checks:
 
 - config loads and passes validation
+- likely overlapping source routes that could cause ambiguous or duplicate dispatch
 - required harness binaries (`claude`, `codex`) are available in `PATH`
 
 Use this before your first run or after changing `agent_types[].harness` entries.

@@ -23,6 +23,7 @@ export function WorkflowWorkspace({
   onNewWorkflow,
   onToggleEditor,
   onStopWorkflow,
+  onForcePollWorkflow,
   onOpenAgent,
   onResolveMessage,
 }: {
@@ -45,6 +46,7 @@ export function WorkflowWorkspace({
   onNewWorkflow: () => void;
   onToggleEditor: () => void;
   onStopWorkflow: () => void;
+  onForcePollWorkflow: () => void;
   onOpenAgent: (name: string) => void;
   onResolveMessage: (requestId: string, reply: string) => Promise<void>;
 }) {
@@ -111,6 +113,7 @@ export function WorkflowWorkspace({
                       Open tracker
                     </a>
                   ) : null}
+                  <button className="tinyButton primaryButton" onClick={onForcePollWorkflow}>Poll now</button>
                   {agentName ? <button className="tinyButton" onClick={() => onOpenAgent(agentName)}>Open agent</button> : null}
                   {currentRun ? <button className="tinyButton primaryButton" onClick={onStopWorkflow}>Stop workflow</button> : null}
                 </div>

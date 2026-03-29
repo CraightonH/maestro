@@ -157,6 +157,31 @@ func (s *Store) Dir() string {
 }
 
 func (s *Store) Load() (Snapshot, error) {
+	snapshot, err := s.LoadReadOnly()
+	if err == nil {
+		return snapshot, nil
+	}
+
+	var corruptErr *CorruptStateError
+	if !errors.As(err, &corruptErr) || corruptErr.ArchivedPath != "" {
+		return snapshot, err
+	}
+
+	archivedPath, archiveErr := s.archiveCorruptFile()
+	if archiveErr != nil {
+		return emptySnapshot(), &CorruptStateError{
+			Path: s.path,
+			Err:  fmt.Errorf("%w; archive corrupt file: %v", corruptErr.Err, archiveErr),
+		}
+	}
+	return emptySnapshot(), &CorruptStateError{
+		Path:         s.path,
+		ArchivedPath: archivedPath,
+		Err:          corruptErr.Err,
+	}
+}
+
+func (s *Store) LoadReadOnly() (Snapshot, error) {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -167,17 +192,9 @@ func (s *Store) Load() (Snapshot, error) {
 
 	snapshot := emptySnapshot()
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
-		archivedPath, archiveErr := s.archiveCorruptFile()
-		if archiveErr != nil {
-			return emptySnapshot(), &CorruptStateError{
-				Path: s.path,
-				Err:  fmt.Errorf("decode state: %w; archive corrupt file: %v", err, archiveErr),
-			}
-		}
 		return emptySnapshot(), &CorruptStateError{
-			Path:         s.path,
-			ArchivedPath: archivedPath,
-			Err:          fmt.Errorf("decode state: %w", err),
+			Path: s.path,
+			Err:  fmt.Errorf("decode state: %w", err),
 		}
 	}
 	if snapshot.Version == 0 {

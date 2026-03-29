@@ -4,6 +4,8 @@ import {
   dryRunConfig,
   fetchBackupDetail,
   fetchDashboardData,
+  forcePollAll,
+  forcePollSource,
   openStream,
   replyToMessage,
   resolveApproval,
@@ -439,6 +441,17 @@ function App() {
     await refresh();
   }
 
+  async function handleForcePollAll() {
+    await forcePollAll();
+    await refresh();
+  }
+
+  async function handleForcePollWorkflow() {
+    if (!selectedSource?.config.name) return;
+    await forcePollSource(selectedSource.config.name);
+    await refresh();
+  }
+
   function upsertSourceBlock(current: string, draftBlock: string, originalName?: string, nextName?: string) {
     const sourceName = (originalName || nextName || "").trim();
     const sectionMatch = current.match(/(^sources:\n)([\s\S]*?)(^\w[\w_-]*:|$)/m);
@@ -616,6 +629,7 @@ function App() {
                 setSelectedSourceName(name);
                 navigate("workflow", { workflowName: name });
               }}
+              onForcePollAll={() => void handleForcePollAll()}
             />
           ) : null}
 
@@ -655,6 +669,7 @@ function App() {
               }}
               onToggleEditor={() => setShowWorkflowEditor((value) => !value)}
               onStopWorkflow={() => void handleStopWorkflow()}
+              onForcePollWorkflow={() => void handleForcePollWorkflow()}
               onOpenAgent={(name) => {
                 setSelectedAgentName(name);
                 navigate("agent", { agentName: name });

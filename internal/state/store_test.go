@@ -205,3 +205,29 @@ func TestStoreLoadArchivesCorruptStateAndReturnsEmptySnapshot(t *testing.T) {
 		t.Fatalf("snapshot = %+v, want empty", snapshot)
 	}
 }
+
+func TestStoreLoadReadOnlyLeavesCorruptStateInPlace(t *testing.T) {
+	root := t.TempDir()
+	store := state.NewStore(root)
+	if err := os.WriteFile(store.Path(), []byte("{not-json"), 0o644); err != nil {
+		t.Fatalf("write corrupt state: %v", err)
+	}
+
+	snapshot, err := store.LoadReadOnly()
+	if err == nil {
+		t.Fatal("expected corruption warning")
+	}
+	var corruptErr *state.CorruptStateError
+	if !errors.As(err, &corruptErr) {
+		t.Fatalf("load error = %T, want CorruptStateError", err)
+	}
+	if corruptErr.ArchivedPath != "" {
+		t.Fatalf("archived path = %q, want empty", corruptErr.ArchivedPath)
+	}
+	if _, statErr := os.Stat(store.Path()); statErr != nil {
+		t.Fatalf("state path stat error = %v, want file to remain in place", statErr)
+	}
+	if len(snapshot.Finished) != 0 || len(snapshot.RetryQueue) != 0 {
+		t.Fatalf("snapshot = %+v, want empty", snapshot)
+	}
+}

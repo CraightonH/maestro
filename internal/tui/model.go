@@ -82,6 +82,7 @@ type snapshotProvider interface {
 	Snapshot() orchestrator.Snapshot
 	ResolveApproval(requestID string, decision string) error
 	ResolveMessage(requestID string, reply string, resolvedVia string) error
+	RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error)
 }
 
 type tickMsg time.Time
@@ -307,6 +308,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "w":
 			m.quickFilter = m.quickFilter.toggle(quickFilterAwaiting)
 			m.clampSelection()
+			return m, nil
+		case "p":
+			m.requestForcePoll(m.selectedForcePollSource())
+			return m, nil
+		case "P":
+			m.requestForcePoll("")
 			return m, nil
 		case "j", "down":
 			switch m.focus {
@@ -1196,6 +1203,8 @@ func (m Model) renderFooter() string {
 	keys := []string{
 		"tab", "focus",
 		"j/k", "move",
+		"p", "poll",
+		"P", "poll all",
 		"v", "compact",
 		"/", "search",
 		"o", "sort runs",
@@ -1218,6 +1227,80 @@ func (m Model) renderFooter() string {
 		parts = append(parts, styleDim.Render(keys[i])+" "+styleDim.Render(keys[i+1]))
 	}
 	return " " + styleDim.Render(strings.Join(parts, styleDim.Render(" · ")))
+}
+
+func (m *Model) selectedForcePollSource() string {
+	if m.focus == focusSources {
+		sources := m.filteredSourceSummaries()
+		if len(sources) > 0 && m.selectedSource >= 0 && m.selectedSource < len(sources) {
+			return sources[m.selectedSource].Name
+		}
+	}
+	if len(m.snapshot.SourceSummaries) == 1 {
+		return m.snapshot.SourceSummaries[0].Name
+	}
+	return ""
+}
+
+func (m *Model) requestForcePoll(sourceName string) {
+	result, err := m.service.RequestForcePoll(sourceName)
+	if err != nil {
+		m.notice = "force poll failed: " + err.Error()
+		return
+	}
+
+	m.notice = forcePollNotice(result, sourceName)
+	m.snapshot = m.service.Snapshot()
+	m.clampSelection()
+}
+
+func forcePollNotice(result orchestrator.ForcePollResult, sourceName string) string {
+	if len(result.Results) == 0 {
+		if strings.TrimSpace(sourceName) != "" {
+			return "force poll requested for " + sourceName
+		}
+		return "force poll requested"
+	}
+	if strings.TrimSpace(sourceName) != "" || (result.Scope == "source" && len(result.Results) == 1) {
+		item := result.Results[0]
+		switch item.Status {
+		case orchestrator.ForcePollQueued:
+			return "force poll queued for " + item.Source
+		case orchestrator.ForcePollDebounced:
+			return "force poll debounced for " + item.Source
+		default:
+			return "poll already in progress for " + item.Source
+		}
+	}
+
+	queued := 0
+	debounced := 0
+	alreadyQueued := 0
+	for _, item := range result.Results {
+		switch item.Status {
+		case orchestrator.ForcePollQueued:
+			queued++
+		case orchestrator.ForcePollDebounced:
+			debounced++
+		case orchestrator.ForcePollAlreadyQueued:
+			alreadyQueued++
+		}
+	}
+
+	parts := make([]string, 0, 3)
+	if queued > 0 {
+		parts = append(parts, fmt.Sprintf("%d queued", queued))
+	}
+	if debounced > 0 {
+		parts = append(parts, fmt.Sprintf("%d debounced", debounced))
+	}
+	if alreadyQueued > 0 {
+		parts = append(parts, fmt.Sprintf("%d already polling", alreadyQueued))
+	}
+	if len(parts) == 0 {
+		return "force poll requested"
+	}
+	return "force poll: " + strings.Join(parts, ", ")
 }
 
 // ---------------------------------------------------------------------------

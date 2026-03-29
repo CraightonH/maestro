@@ -21,7 +21,7 @@ maestro.yaml          issue tracker          agent (Claude/Codex)
 
 Each **source** defines a tracker + filter + agent type. Maestro polls for eligible issues, claims them, prepares a workspace (git clone or reuse), renders the agent prompt with issue context, and launches the agent. When the agent exits, Maestro applies lifecycle transitions (labels, state changes) and optionally hands off to the next source in a pipeline.
 
-**Workflow chaining**: multiple sources can form a pipeline. Source A's `on_complete` changes the issue state so Source B's filter picks it up. Example: implement → review → merge.
+**Workflow chaining**: multiple sources can form a pipeline. Source A's `on_complete` changes labels and/or tracker state so Source B's filter picks it up. Example: implement → review → merge.
 
 ## Quick Start
 
@@ -456,7 +456,8 @@ Maestro creates isolated workspaces per issue under `workspace.root`:
 ```bash
 maestro --config maestro.yaml              # run with TUI
 maestro --config maestro.yaml --no-tui     # run without TUI
-maestro doctor --config maestro.yaml       # validate config + check harness binaries
+maestro --config maestro.yaml --dry-run    # poll once, preview dispatch, render prompts, do not launch agents
+maestro doctor --config maestro.yaml       # validate config, warn on route collisions, check harness binaries
 maestro inspect config --config maestro.yaml         # dump resolved config
 maestro inspect state --config maestro.yaml          # dump state (claimed, retries, finished)
 maestro inspect runs --config maestro.yaml           # run-centric view
@@ -485,12 +486,16 @@ The terminal UI shows live status with lipgloss-styled panels:
 - **Retry Queue**: queued retries with due time and error
 - **Events**: last 5 log events
 
+Operators can force an immediate poll from the runtime surfaces without waiting for the normal interval. Requests are debounced briefly and routed through the existing service loop so tracker polls stay serialized.
+
 ### Keybindings
 
 | Key | Action |
 |-----|--------|
 | `tab` | Switch focus between panels |
 | `j/k` | Navigate within focused panel |
+| `p` | Force-poll the selected source (or the only source) |
+| `P` | Force-poll all sources |
 | `a` | Approve selected approval |
 | `r` | Reject selected approval |
 | `e` | Reply to selected message |
@@ -525,7 +530,9 @@ server:
 | `GET` | `/api/v1/stream` | Server-Sent Events for live updates |
 | `GET` | `/api/v1/status` | Current status snapshot |
 | `GET` | `/api/v1/config` | Resolved config |
+| `POST` | `/api/v1/poll` | Request an immediate poll for all sources |
 | `GET` | `/api/v1/sources` | Source summaries |
+| `POST` | `/api/v1/sources/:name/poll` | Request an immediate poll for one source |
 | `GET` | `/api/v1/runs` | Active and recent runs |
 | `GET` | `/api/v1/retries` | Retry queue |
 | `GET` | `/api/v1/events` | Recent events |
@@ -545,6 +552,8 @@ server:
 | `POST` | `/api/v1/packs/save` | Save agent pack changes |
 
 Open `http://127.0.0.1:7777` for the built-in dashboard.
+
+The overview includes `Poll all now`, and each workflow page includes `Poll now`, both backed by the same debounced runtime poll request path used by the TUI and API.
 
 When the server binds to loopback (`127.0.0.1`, `localhost`, or `::1`), API auth is optional so local use stays frictionless. If you bind the server to any non-loopback host, Maestro requires an API key. Set `server.api_key` for a stable key, or let Maestro generate an ephemeral one at startup.
 

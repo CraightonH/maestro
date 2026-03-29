@@ -21,6 +21,7 @@ type Runtime interface {
 	ResolveApproval(requestID string, decision string) error
 	ResolveMessage(requestID string, reply string, resolvedVia string) error
 	StopRun(runID string, reason string) error
+	RequestForcePoll(sourceName string) (ForcePollResult, error)
 }
 
 type Supervisor struct {
@@ -228,6 +229,31 @@ func (s *Supervisor) StopRun(runID string, reason string) error {
 		return fmt.Errorf("%s", strings.Join(errs, "; "))
 	}
 	return fmt.Errorf("run %q: %w", runID, ErrRunNotFound)
+}
+
+func (s *Supervisor) RequestForcePoll(sourceName string) (ForcePollResult, error) {
+	if sourceName != "" {
+		for _, svc := range s.services {
+			if svc.source.Name != sourceName {
+				continue
+			}
+			return svc.RequestForcePoll(sourceName)
+		}
+		return ForcePollResult{}, fmt.Errorf("source %q: %w", sourceName, ErrSourceNotFound)
+	}
+
+	result := ForcePollResult{
+		Scope:   "all",
+		Results: make([]ForcePollSourceResult, 0, len(s.services)),
+	}
+	for _, svc := range s.services {
+		serviceResult, err := svc.RequestForcePoll("")
+		if err != nil {
+			return ForcePollResult{}, err
+		}
+		result.Results = append(result.Results, serviceResult.Results...)
+	}
+	return result, nil
 }
 
 func (s *Supervisor) Services() []*Service {

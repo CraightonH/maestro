@@ -17,6 +17,7 @@ export function OverviewPage({
   approvalHistory,
   messageHistory,
   onOpenSource,
+  onForcePollAll,
 }: {
   generatedAt?: string;
   quickFilter: "all" | "attention" | "awaiting-approval";
@@ -32,6 +33,7 @@ export function OverviewPage({
   approvalHistory: ApprovalHistoryEntry[];
   messageHistory: MessageHistoryEntry[];
   onOpenSource: (name: string) => void;
+  onForcePollAll: () => void;
 }) {
   return (
     <section className="page">
@@ -66,6 +68,7 @@ export function OverviewPage({
                     </option>
                   ))}
                 </select>
+                <button className="tinyButton primaryButton" onClick={onForcePollAll}>Poll all now</button>
               </div>
             }
           />

@@ -250,7 +250,10 @@ func snapshotIssue(issue domain.Issue) domain.Issue {
 }
 
 func (s *Service) resolveRuntimeAgent(workspacePath string) (config.AgentTypeConfig, error) {
-	agent := s.agent
+	return resolveRuntimeAgent(s.agent, workspacePath)
+}
+
+func resolveRuntimeAgent(agent config.AgentTypeConfig, workspacePath string) (config.AgentTypeConfig, error) {
 	if strings.TrimSpace(agent.RepoPackPath) == "" {
 		if repoPackPath, ok := config.ParseRepoPackRef(agent.AgentPack); ok {
 			agent.RepoPackPath = repoPackPath

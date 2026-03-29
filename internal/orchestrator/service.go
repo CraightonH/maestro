@@ -196,24 +196,28 @@ type Service struct {
 	messageMgr  *messageRouter
 	runMgr      *runManager
 
-	mu              sync.RWMutex
-	claimed         map[string]struct{}
-	finished        map[string]state.TerminalIssue
-	retryQueue      map[string]state.RetryEntry
-	activeRun       *domain.AgentRun
-	lastPollAt      time.Time
-	lastPollCount   int
-	events          []Event
-	runWG           sync.WaitGroup
-	pendingStops    map[string]pendingStop
-	approvals       map[string]ApprovalView
-	approvalOrder   []string
-	approvalHistory []ApprovalHistoryEntry
-	messages        map[string]MessageView
-	messageOrder    []string
-	messageHistory  []MessageHistoryEntry
-	messageWaiters  map[string]chan string
-	runOutputs      map[string]*runOutputBuffer
+	mu                sync.RWMutex
+	claimed           map[string]struct{}
+	finished          map[string]state.TerminalIssue
+	retryQueue        map[string]state.RetryEntry
+	activeRun         *domain.AgentRun
+	lastPollAt        time.Time
+	lastPollCount     int
+	events            []Event
+	runWG             sync.WaitGroup
+	pendingStops      map[string]pendingStop
+	approvals         map[string]ApprovalView
+	approvalOrder     []string
+	approvalHistory   []ApprovalHistoryEntry
+	messages          map[string]MessageView
+	messageOrder      []string
+	messageHistory    []MessageHistoryEntry
+	messageWaiters    map[string]chan string
+	runOutputs        map[string]*runOutputBuffer
+	forcePollCh       chan struct{}
+	forcePollPending  bool
+	polling           bool
+	lastPollAttemptAt time.Time
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -288,6 +292,7 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 		messages:       map[string]MessageView{},
 		messageWaiters: map[string]chan string{},
 		runOutputs:     map[string]*runOutputBuffer{},
+		forcePollCh:    make(chan struct{}, 1),
 	}
 	svc.stateMgr = &stateManager{service: svc}
 	svc.approvalMgr = &approvalRouter{service: svc}

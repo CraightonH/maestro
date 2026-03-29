@@ -6,6 +6,7 @@ import type {
   ConfigRawResponse,
   ConfigValidateResponse,
   EventItem,
+  ForcePollResponse,
   Message,
   PackSaveRequest,
   PackSaveResponse,
@@ -155,6 +156,18 @@ export async function savePack(request: PackSaveRequest) {
 
 export async function stopRun(runId: string) {
   return fetchJSON<{ ok: boolean; run: string; action: string }>(`/api/v1/runs/${encodeURIComponent(runId)}/stop`, {
+    method: "POST",
+  });
+}
+
+export async function forcePollAll() {
+  return fetchJSON<ForcePollResponse>("/api/v1/poll", {
+    method: "POST",
+  });
+}
+
+export async function forcePollSource(sourceName: string) {
+  return fetchJSON<ForcePollResponse>(`/api/v1/sources/${encodeURIComponent(sourceName)}/poll`, {
     method: "POST",
   });
 }

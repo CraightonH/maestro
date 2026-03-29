@@ -280,7 +280,7 @@ maestro reset issue --config /path/to/maestro.yaml group/project#123
 maestro cleanup workspaces --config /path/to/maestro.yaml --dry-run
 ```
 
-`maestro doctor` validates the config and checks that all required harness binaries (`claude`, `codex`) are available in `PATH`.
+`maestro doctor` validates the config, warns about likely source-route collisions, and checks that all required harness binaries (`claude`, `codex`) are available in `PATH`.
 
 `inspect runs` and `inspect state` include per-source health summaries so you can tell at a glance which source is active, retrying, degraded, or idle.
 

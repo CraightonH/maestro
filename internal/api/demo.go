@@ -644,6 +644,16 @@ func (d *DemoRuntime) StopRun(runID string, reason string) error {
 	return fmt.Errorf("run %q not found", runID)
 }
 
+func (d *DemoRuntime) RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error) {
+	return orchestrator.ForcePollResult{
+		Scope: "demo",
+		Results: []orchestrator.ForcePollSourceResult{{
+			Source: sourceName,
+			Status: orchestrator.ForcePollQueued,
+		}},
+	}, nil
+}
+
 func (d *DemoRuntime) advance() {
 	d.mu.Lock()
 	defer d.mu.Unlock()

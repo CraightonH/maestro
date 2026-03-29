@@ -248,6 +248,19 @@ export interface RunsResponse extends CollectionResponse<Run> {
   outputs: RunOutput[];
 }
 
+export interface ForcePollSourceResult {
+  source: string;
+  status: "queued" | "debounced" | "already_queued";
+}
+
+export interface ForcePollResponse {
+  ok: boolean;
+  action: string;
+  scope: string;
+  requested_source?: string;
+  results: ForcePollSourceResult[];
+}
+
 export interface ConfigRawResponse {
   generated_at: string;
   config_path?: string;

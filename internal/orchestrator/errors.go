@@ -6,4 +6,5 @@ var (
 	ErrApprovalNotFound = errors.New("approval request not found")
 	ErrMessageNotFound  = errors.New("message request not found")
 	ErrRunNotFound      = errors.New("run not found")
+	ErrSourceNotFound   = errors.New("source not found")
 )

@@ -247,33 +247,25 @@ func (m *stateManager) expirePendingMessages(reason string) bool {
 func (m *stateManager) shouldSkipIssue(issue domain.Issue) bool {
 	s := m.service
 	changed := false
-	skip := false
 
 	s.mu.Lock()
-	if finished, ok := s.finished[issue.ID]; ok {
-		if issueRecordStale(issue.UpdatedAt, finished.IssueUpdatedAt) {
-			delete(s.finished, issue.ID)
-			changed = true
-		} else {
-			skip = true
-		}
+	finished, hasFinished := s.finished[issue.ID]
+	retry, hasRetry := s.retryQueue[issue.ID]
+	evaluation := evaluateIssueSuppression(issue, finished, hasFinished, retry, hasRetry, time.Now())
+	if evaluation.FinishedStale {
+		delete(s.finished, issue.ID)
+		changed = true
 	}
-	if !skip {
-		if retry, ok := s.retryQueue[issue.ID]; ok {
-			if issueRecordStale(issue.UpdatedAt, retry.IssueUpdatedAt) {
-				delete(s.retryQueue, issue.ID)
-				changed = true
-			} else if time.Now().Before(retry.DueAt) {
-				skip = true
-			}
-		}
+	if evaluation.RetryStale {
+		delete(s.retryQueue, issue.ID)
+		changed = true
 	}
 	s.mu.Unlock()
 
 	if changed {
 		_ = m.saveStateBestEffort()
 	}
-	return skip
+	return evaluation.Skip
 }
 
 func (m *stateManager) takeAttempt(issue domain.Issue) int {

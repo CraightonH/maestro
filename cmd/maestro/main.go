@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -100,8 +101,10 @@ func runCommand(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	var configPath string
 	var noTUI bool
+	var dryRun bool
 	fs.StringVar(&configPath, "config", "", "path to maestro config")
 	fs.BoolVar(&noTUI, "no-tui", false, "run without the terminal UI")
+	fs.BoolVar(&dryRun, "dry-run", false, "poll once and print the dispatch preview without running any harnesses")
 	_ = fs.Parse(args)
 
 	cfg, err := config.Load(configPath)
@@ -110,6 +113,19 @@ func runCommand(args []string) {
 	}
 	if err := config.ValidateMVP(cfg); err != nil {
 		fatalf("validate config: %v", err)
+	}
+
+	if dryRun {
+		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer cancel()
+
+		logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		report, err := orchestrator.DryRun(ctx, cfg, logger)
+		if err != nil {
+			fatalf("dry-run: %v", err)
+		}
+		fmt.Print(formatDryRunReport(cfg, report))
+		return
 	}
 
 	var logOpts []logging.Option

@@ -28,6 +28,48 @@ func (s staticSnapshotProvider) ResolveMessage(requestID string, reply string, r
 	return nil
 }
 
+func (s staticSnapshotProvider) RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error) {
+	return orchestrator.ForcePollResult{
+		Scope: "source",
+		Results: []orchestrator.ForcePollSourceResult{{
+			Source: sourceName,
+			Status: orchestrator.ForcePollQueued,
+		}},
+	}, nil
+}
+
+type forcePollSnapshotProvider struct {
+	snapshot orchestrator.Snapshot
+	polls    []string
+}
+
+func (s *forcePollSnapshotProvider) Snapshot() orchestrator.Snapshot {
+	return s.snapshot
+}
+
+func (s *forcePollSnapshotProvider) ResolveApproval(requestID string, decision string) error {
+	return nil
+}
+
+func (s *forcePollSnapshotProvider) ResolveMessage(requestID string, reply string, resolvedVia string) error {
+	return nil
+}
+
+func (s *forcePollSnapshotProvider) RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error) {
+	s.polls = append(s.polls, sourceName)
+	scope := "all"
+	if sourceName != "" {
+		scope = "source"
+	}
+	return orchestrator.ForcePollResult{
+		Scope: scope,
+		Results: []orchestrator.ForcePollSourceResult{{
+			Source: map[bool]string{true: sourceName, false: "all"}[sourceName != ""],
+			Status: orchestrator.ForcePollQueued,
+		}},
+	}, nil
+}
+
 // stripANSI removes ANSI escape codes from a string for test assertions.
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
@@ -262,6 +304,39 @@ func TestUpdateTabSwitchesFocusAndRunSelection(t *testing.T) {
 	gotModel = updated.(Model)
 	if gotModel.focus != focusApprovals {
 		t.Fatalf("focus = %q", gotModel.focus)
+	}
+}
+
+func TestUpdateRequestsForcePollForSelectedSource(t *testing.T) {
+	provider := &forcePollSnapshotProvider{
+		snapshot: orchestrator.Snapshot{
+			SourceSummaries: []orchestrator.SourceSummary{
+				{Name: "project-a", Tracker: "gitlab"},
+				{Name: "project-b", Tracker: "gitlab"},
+			},
+		},
+	}
+	model := NewModel(provider)
+	model.selectedSource = 1
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	gotModel := updated.(Model)
+
+	if got := strings.Join(provider.polls, ","); got != "project-b" {
+		t.Fatalf("force poll requests = %q, want project-b", got)
+	}
+	if gotModel.notice != "force poll queued for project-b" {
+		t.Fatalf("notice = %q", gotModel.notice)
+	}
+}
+
+func TestFooterShowsForcePollKeyHints(t *testing.T) {
+	model := NewModel(staticSnapshotProvider{})
+	plain := stripANSI(model.renderFooter())
+	for _, want := range []string{"p poll", "P poll all"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("footer missing %q:\n%s", want, plain)
+		}
 	}
 }
 

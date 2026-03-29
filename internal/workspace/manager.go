@@ -45,56 +45,53 @@ func (m *Manager) Prepare(ctx context.Context, issue domain.Issue, agentName str
 }
 
 func (m *Manager) PrepareClone(ctx context.Context, issue domain.Issue, agentName string) (Prepared, error) {
+	prepared, err := m.PreviewClone(issue, agentName)
+	if err != nil {
+		return Prepared{}, err
+	}
 	if err := os.MkdirAll(m.root, 0o755); err != nil {
 		return Prepared{}, err
 	}
 
-	path, err := m.workspacePath(issue.Identifier)
+	// Reuse existing workspace if it contains a valid git repo.
+	if isGitRepo(prepared.Path) {
+		if !isGitRepoHealthy(ctx, prepared.Path) {
+			// Repo is corrupt — safe to remove and re-clone.
+			_ = os.RemoveAll(prepared.Path)
+		} else if err := reuseWorkspace(ctx, prepared.Path, prepared.Branch, m.gitLabHost, m.gitLabToken); err != nil {
+			// Repo is healthy but fetch/checkout failed (network, auth, conflict).
+			// Preserve the workspace and return the error — don't destroy local work.
+			return Prepared{}, fmt.Errorf("reuse workspace %s: %w", prepared.Path, err)
+		} else {
+			return prepared, nil
+		}
+	}
+
+	repoURL, err := cloneRepoURL(issue)
 	if err != nil {
 		return Prepared{}, err
 	}
 
-	branch := BranchName(agentName, issue.Identifier)
-
-	// Reuse existing workspace if it contains a valid git repo.
-	if isGitRepo(path) {
-		if !isGitRepoHealthy(ctx, path) {
-			// Repo is corrupt — safe to remove and re-clone.
-			_ = os.RemoveAll(path)
-		} else if err := reuseWorkspace(ctx, path, branch, m.gitLabHost, m.gitLabToken); err != nil {
-			// Repo is healthy but fetch/checkout failed (network, auth, conflict).
-			// Preserve the workspace and return the error — don't destroy local work.
-			return Prepared{}, fmt.Errorf("reuse workspace %s: %w", path, err)
-		} else {
-			return Prepared{Path: path, Branch: branch}, nil
-		}
-	}
-
-	repoURL := issue.Meta["repo_url"]
-	if strings.TrimSpace(repoURL) == "" {
-		return Prepared{}, fmt.Errorf("issue %q missing repo_url metadata", issue.Identifier)
-	}
-
-	if err := resetWorkspacePath(path); err != nil {
+	if err := resetWorkspacePath(prepared.Path); err != nil {
 		return Prepared{}, err
 	}
 	cleanupOnError := true
 	defer func() {
 		if cleanupOnError {
-			_ = os.RemoveAll(path)
+			_ = os.RemoveAll(prepared.Path)
 		}
 	}()
 
-	if err := cloneRepo(ctx, repoURL, m.gitLabHost, m.gitLabToken, path); err != nil {
+	if err := cloneRepo(ctx, repoURL, m.gitLabHost, m.gitLabToken, prepared.Path); err != nil {
 		return Prepared{}, err
 	}
 
-	if err := checkoutOrCreateBranch(ctx, path, branch); err != nil {
+	if err := checkoutOrCreateBranch(ctx, prepared.Path, prepared.Branch); err != nil {
 		return Prepared{}, err
 	}
 
 	cleanupOnError = false
-	return Prepared{Path: path, Branch: branch}, nil
+	return prepared, nil
 }
 
 // checkoutOrCreateBranch checks out an existing branch (local or remote-tracking)
@@ -127,22 +124,51 @@ func reuseWorkspace(ctx context.Context, path string, branch string, gitLabHost 
 }
 
 func (m *Manager) PrepareEmpty(issue domain.Issue) (Prepared, error) {
+	prepared, err := m.PreviewEmpty(issue)
+	if err != nil {
+		return Prepared{}, err
+	}
 	if err := os.MkdirAll(m.root, 0o755); err != nil {
 		return Prepared{}, err
 	}
+	if err := resetWorkspacePath(prepared.Path); err != nil {
+		return Prepared{}, err
+	}
+	if err := os.MkdirAll(prepared.Path, 0o755); err != nil {
+		return Prepared{}, err
+	}
 
+	return prepared, nil
+}
+
+func (m *Manager) PreviewClone(issue domain.Issue, agentName string) (Prepared, error) {
+	if _, err := cloneRepoURL(issue); err != nil {
+		return Prepared{}, err
+	}
 	path, err := m.workspacePath(issue.Identifier)
 	if err != nil {
 		return Prepared{}, err
 	}
-	if err := resetWorkspacePath(path); err != nil {
-		return Prepared{}, err
-	}
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		return Prepared{}, err
-	}
+	return Prepared{
+		Path:   path,
+		Branch: BranchName(agentName, issue.Identifier),
+	}, nil
+}
 
+func (m *Manager) PreviewEmpty(issue domain.Issue) (Prepared, error) {
+	path, err := m.workspacePath(issue.Identifier)
+	if err != nil {
+		return Prepared{}, err
+	}
 	return Prepared{Path: path}, nil
+}
+
+func cloneRepoURL(issue domain.Issue) (string, error) {
+	repoURL := issue.Meta["repo_url"]
+	if strings.TrimSpace(repoURL) == "" {
+		return "", fmt.Errorf("issue %q missing repo_url metadata", issue.Identifier)
+	}
+	return repoURL, nil
 }
 
 func (m *Manager) PopulateHarnessConfig(workspacePath string, claudeDir string, codexDir string) error {

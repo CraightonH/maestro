@@ -13,7 +13,7 @@ var pollRequestTimeout = 30 * time.Second
 func (s *Service) Run(ctx context.Context) error {
 	s.approvalMgr.startWatcher(ctx)
 	s.messageMgr.startWatcher(ctx)
-	if err := s.tick(ctx); err != nil {
+	if err := s.runTick(ctx, false); err != nil {
 		s.recordEvent("error", "initial poll failed: %v", err)
 	}
 
@@ -32,11 +32,33 @@ func (s *Service) Run(ctx context.Context) error {
 			s.recordEvent("info", "service shutting down")
 			return nil
 		case <-ticker.C:
-			if err := s.tick(ctx); err != nil {
+			if err := s.runTick(ctx, false); err != nil {
 				s.recordEvent("error", "poll failed: %v", err)
+			}
+		case <-s.forcePollCh:
+			if err := s.runTick(ctx, true); err != nil {
+				s.recordSourceEvent("error", s.source.Name, "force poll failed: %v", err)
 			}
 		}
 	}
+}
+
+func (s *Service) runTick(ctx context.Context, clearForcePoll bool) error {
+	s.mu.Lock()
+	if clearForcePoll {
+		s.forcePollPending = false
+	}
+	s.polling = true
+	s.lastPollAttemptAt = time.Now()
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.polling = false
+		s.mu.Unlock()
+	}()
+
+	return s.tick(ctx)
 }
 
 func (s *Service) tick(ctx context.Context) error {
@@ -50,18 +72,7 @@ func (s *Service) tick(ctx context.Context) error {
 		return err
 	}
 
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].CreatedAt.Equal(issues[j].CreatedAt) {
-			return issues[i].Identifier < issues[j].Identifier
-		}
-		if issues[i].CreatedAt.IsZero() {
-			return false
-		}
-		if issues[j].CreatedAt.IsZero() {
-			return true
-		}
-		return issues[i].CreatedAt.Before(issues[j].CreatedAt)
-	})
+	sortIssuesStable(issues)
 
 	s.mu.Lock()
 	s.lastPollAt = time.Now()

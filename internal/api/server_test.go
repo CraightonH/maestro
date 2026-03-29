@@ -25,6 +25,8 @@ type fakeRuntime struct {
 	decisions []string
 	replies   []string
 	stops     []string
+	polls     []string
+	pollErr   error
 }
 
 func (f *fakeRuntime) Snapshot() orchestrator.Snapshot {
@@ -44,6 +46,30 @@ func (f *fakeRuntime) ResolveMessage(requestID string, reply string, resolvedVia
 func (f *fakeRuntime) StopRun(runID string, reason string) error {
 	f.stops = append(f.stops, runID+":"+reason)
 	return nil
+}
+
+func (f *fakeRuntime) RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error) {
+	if f.pollErr != nil {
+		return orchestrator.ForcePollResult{}, f.pollErr
+	}
+	f.polls = append(f.polls, sourceName)
+	scope := "all"
+	results := []orchestrator.ForcePollSourceResult{}
+	if sourceName != "" {
+		scope = "source"
+		results = append(results, orchestrator.ForcePollSourceResult{
+			Source: sourceName,
+			Status: orchestrator.ForcePollQueued,
+		})
+	} else {
+		for _, summary := range f.snapshot.SourceSummaries {
+			results = append(results, orchestrator.ForcePollSourceResult{
+				Source: summary.Name,
+				Status: orchestrator.ForcePollQueued,
+			})
+		}
+	}
+	return orchestrator.ForcePollResult{Scope: scope, Results: results}, nil
 }
 
 func authorizeRequest(server *Server, request *http.Request) {
@@ -339,6 +365,62 @@ func TestRunStopEndpointStopsRun(t *testing.T) {
 	}
 	if got := strings.Join(runtime.stops, ","); !strings.Contains(got, "run-1:stopped from the web console") {
 		t.Fatalf("stops = %q", got)
+	}
+}
+
+func TestForcePollEndpointRequestsAllSources(t *testing.T) {
+	runtime := &fakeRuntime{
+		snapshot: orchestrator.Snapshot{
+			SourceSummaries: []orchestrator.SourceSummary{
+				{Name: "gitlab-a", Tracker: "gitlab"},
+				{Name: "linear-a", Tracker: "linear"},
+			},
+		},
+	}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/poll", nil)
+	authorizeRequest(server, request)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
+	}
+	if got := strings.Join(runtime.polls, ","); got != "" {
+		t.Fatalf("poll requests = %q, want all-sources request", got)
+	}
+	body := recorder.Body.String()
+	for _, want := range []string{`"scope": "all"`, `"source": "gitlab-a"`, `"source": "linear-a"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("force poll body missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestSourceForcePollEndpointRequestsSingleSource(t *testing.T) {
+	runtime := &fakeRuntime{}
+	cfg := &config.Config{
+		Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: 8742},
+	}
+	server := New(cfg, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sources/gitlab-a/poll", nil)
+	authorizeRequest(server, request)
+	server.httpServer.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", recorder.Code)
+	}
+	if got := strings.Join(runtime.polls, ","); got != "gitlab-a" {
+		t.Fatalf("poll requests = %q, want gitlab-a", got)
+	}
+	if body := recorder.Body.String(); !strings.Contains(body, `"requested_source": "gitlab-a"`) {
+		t.Fatalf("force poll body missing requested source:\n%s", body)
 	}
 }
 

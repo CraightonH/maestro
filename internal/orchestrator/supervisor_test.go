@@ -59,6 +59,53 @@ func TestSupervisorStopRunUsesTypedNotFound(t *testing.T) {
 	}
 }
 
+func TestSupervisorRequestForcePollRoutesAllAndSingleSource(t *testing.T) {
+	first := &Service{
+		logger:      supervisorTestLogger(),
+		source:      config.SourceConfig{Name: "source-a"},
+		forcePollCh: make(chan struct{}, 1),
+	}
+	second := &Service{
+		logger:      supervisorTestLogger(),
+		source:      config.SourceConfig{Name: "source-b"},
+		forcePollCh: make(chan struct{}, 1),
+	}
+	supervisor := &Supervisor{services: []*Service{first, second}}
+
+	allResult, err := supervisor.RequestForcePoll("")
+	if err != nil {
+		t.Fatalf("request all force poll: %v", err)
+	}
+	if len(allResult.Results) != 2 {
+		t.Fatalf("all force poll results = %#v, want 2 items", allResult.Results)
+	}
+	for _, item := range allResult.Results {
+		if item.Status != ForcePollQueued {
+			t.Fatalf("all force poll status = %q, want queued", item.Status)
+		}
+	}
+
+	singleResult, err := supervisor.RequestForcePoll("source-b")
+	if err != nil {
+		t.Fatalf("request source force poll: %v", err)
+	}
+	if len(singleResult.Results) != 1 || singleResult.Results[0].Source != "source-b" {
+		t.Fatalf("single force poll results = %#v, want source-b", singleResult.Results)
+	}
+	if singleResult.Results[0].Status != ForcePollAlreadyQueued {
+		t.Fatalf("single force poll status = %q, want already queued", singleResult.Results[0].Status)
+	}
+}
+
+func TestSupervisorRequestForcePollUsesTypedSourceNotFound(t *testing.T) {
+	supervisor := &Supervisor{services: []*Service{}}
+
+	_, err := supervisor.RequestForcePoll("missing")
+	if !errors.Is(err, ErrSourceNotFound) {
+		t.Fatalf("errors.Is(err, ErrSourceNotFound) = false, err=%v", err)
+	}
+}
+
 func TestServicesShareGlobalDispatchLimiter(t *testing.T) {
 	root := t.TempDir()
 	repoURL := createSupervisorGitRepo(t)

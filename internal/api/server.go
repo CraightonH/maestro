@@ -39,6 +39,7 @@ type runtimeView interface {
 	ResolveApproval(requestID string, decision string) error
 	ResolveMessage(requestID string, reply string, resolvedVia string) error
 	StopRun(runID string, reason string) error
+	RequestForcePoll(sourceName string) (orchestrator.ForcePollResult, error)
 }
 
 type Server struct {
@@ -320,7 +321,9 @@ func New(cfg *config.Config, logger *slog.Logger, runtime runtimeView) *Server {
 	mux.HandleFunc("/api/v1/config/backups", server.handleConfigBackups)
 	mux.HandleFunc("/api/v1/config/backups/create", server.handleConfigBackupCreate)
 	mux.HandleFunc("/api/v1/config/backups/", server.handleConfigBackupDetail)
+	mux.HandleFunc("/api/v1/poll", server.handleForcePoll)
 	mux.HandleFunc("/api/v1/sources", server.handleSources)
+	mux.HandleFunc("/api/v1/sources/", server.handleSourceAction)
 	mux.HandleFunc("/api/v1/runs", server.handleRuns)
 	mux.HandleFunc("/api/v1/retries", server.handleRetries)
 	mux.HandleFunc("/api/v1/events", server.handleEvents)
@@ -922,6 +925,68 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot := s.runtime.Snapshot()
 	writeCollection(w, encodeSourceSummaries(snapshot.SourceSummaries))
+}
+
+func (s *Server) handleSourceAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/sources/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 2 || parts[1] != "poll" {
+		http.NotFound(w, r)
+		return
+	}
+
+	sourceName := parts[0]
+	result, err := s.runtime.RequestForcePoll(sourceName)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, orchestrator.ErrSourceNotFound) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]any{
+			"ok":     false,
+			"error":  err.Error(),
+			"action": "force_poll",
+			"source": sourceName,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"action":           "force_poll",
+		"scope":            result.Scope,
+		"requested_source": sourceName,
+		"results":          result.Results,
+	})
+}
+
+func (s *Server) handleForcePoll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+
+	result, err := s.runtime.RequestForcePoll("")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"ok":     false,
+			"error":  err.Error(),
+			"action": "force_poll",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"action":  "force_poll",
+		"scope":   result.Scope,
+		"results": result.Results,
+	})
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
