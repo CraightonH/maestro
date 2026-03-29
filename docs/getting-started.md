@@ -26,13 +26,16 @@ visible on the host immediately.
 Common auth patterns:
 
 - Claude direct API: `docker.auth.mode: claude-api-key`
-- Claude proxy/gateway: `docker.auth.mode: claude-proxy` plus `docker.env_passthrough: [ANTHROPIC_BASE_URL]` when the gateway is not the default Anthropic API
+- Claude proxy/gateway: `docker.auth.mode: claude-proxy` plus `docker.secrets.env: [{preset: anthropic-base-url}]` when the gateway is not the default Anthropic API
 - Codex direct API: `docker.auth.mode: codex-api-key`
 - Codex compatible gateway: `docker.auth.mode: codex-api-key` plus `codex.extra_args` for `forced_login_method="api"` and `openai_base_url="https://llm-proxy.example.com"`
 - CLI subscription/config auth: use `docker.auth.mode: claude-config-mount` or `docker.auth.mode: codex-config-mount` with a minimal read-only auth/config source path
 
 Maestro does not mount your full home directory by default. If you do not provide a `HOME`
 explicitly, Maestro supplies a writable container-local `HOME` automatically.
+Prefer `docker.secrets` and `docker.tools` for any extra env vars or read-only mounts you want the
+container to see. `docker.env_passthrough` and `docker.mounts` still work, but they are the
+broader compatibility path.
 
 ## Minimal GitLab Setup
 
@@ -307,7 +310,7 @@ maestro reset issue --config /path/to/maestro.yaml group/project#123
 maestro cleanup workspaces --config /path/to/maestro.yaml --dry-run
 ```
 
-`maestro doctor` validates the config, warns about likely source-route collisions, and checks that all required harness binaries (`claude`, `codex`) are available in `PATH`.
+`maestro doctor` validates the config, warns about likely source-route collisions and unpinned Docker images, and checks that all required harness binaries (`claude`, `codex`) are available in `PATH`.
 
 `inspect runs` and `inspect state` include per-source health summaries so you can tell at a glance which source is active, retrying, degraded, or idle.
 

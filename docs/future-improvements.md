@@ -57,24 +57,18 @@ Current state:
 - Workspaces are bind-mounted into the container, so git state remains visible on the host.
 - Basic CPU, memory, PID, network mode, auth presets, explicit read-only auth mounts, cache mounts, pull policy, Docker doctor checks, optional containerized hooks, and execution metadata are supported.
 
-The next Docker work should optimize for three things in order:
-
-1. feature parity with host execution
-2. safe-by-default container behavior
-3. operator ergonomics so Docker mode is easy to configure correctly
-
 ### 🐳 Phase 2 Priorities
 
 Recommended order:
 
-1. network policy
-2. secret and tool allowlists
-3. image pinning guidance and enforcement
-4. richer sandbox presets
+1. richer network-policy presets
+2. stronger secret delivery than env vars
+3. tighter runtime isolation tiers
+4. image provenance / policy for shared deployments
 5. warm pools / reuse
 
-The basics are now shipped. The next Docker work should focus on tightening isolation beyond the
-current coarse controls and making shared deployments more reproducible.
+The broad phase-2 usability and safety work is now shipped. The next Docker work should focus on
+tighter isolation, stronger secret handling, and better shared-deployment policy.
 
 ### 🐳 Shipped in Current Docker Support
 
@@ -102,6 +96,20 @@ current coarse controls and making shared deployments more reproducible.
 - execution metadata in API/TUI/web
 - pull policy support
 - cache presets and explicit cache mounts
+- first structured network policy layer:
+  - `none`
+  - `bridge`
+  - `allowlist` via Maestro-managed HTTP/HTTPS proxy
+- structured Docker access controls:
+  - `docker.secrets`
+  - `docker.tools`
+- image pinning support:
+  - doctor warnings for mutable tags
+  - optional `docker.image_pin_mode: require`
+- named security presets:
+  - `default`
+  - `locked-down`
+  - `compat`
 
 ### 🐳 Resource Governance per Agent
 
@@ -116,21 +124,39 @@ offending container.
 
 ### 🐳 Network Policy
 
-Current Docker mode supports coarse network modes (`bridge`, `none`, `host`). The next step is
-limited egress instead of all-or-nothing network access.
+Current Docker mode now supports coarse network modes (`bridge`, `none`, `host`) plus a first
+`docker.network_policy` layer with `none`, `bridge`, and HTTP/HTTPS proxy-enforced allowlists for
+domains/hosts.
 
-Proposed direction:
+Next direction:
 
-- keep `bridge` and `none`
-- add proxy-enforced allowlists for domains/hosts
-- eventually provide presets like:
+- add higher-level presets like:
   - `model-only`
   - `tracker-and-model`
   - `custom-allowlist`
 
 **Why**: Network access is still the biggest remaining safety gap for containerized agents.
 
-**To ship**: Outbound HTTP/HTTPS proxy support plus a config layer for allowed domains/hosts.
+**Next to ship**: higher-level presets and tighter operator ergonomics around common allowlists.
+
+---
+
+### 🐳 Structured Secret Delivery
+
+Current Docker mode now has structured access controls via `docker.secrets` and `docker.tools`, but
+secret env values are still normal environment variables once injected into the container.
+
+Next direction:
+
+- tmpfs-backed secret files under `/run/secrets/...`
+- optional `_FILE` helper env wiring for common tools
+- clearer separation between env-style configuration and secret material
+
+**Why**: Env vars are still inspectable inside the container and are a weaker boundary than file- or
+tmpfs-backed secret delivery.
+
+**Next to ship**: a tmpfs/file-backed secret path layered on top of the existing `docker.secrets`
+config.
 
 ---
 
@@ -143,8 +169,8 @@ Support:
 
 **Why**: Reproducibility and safer shared deployments.
 
-**Next step**: Push guidance and optional enforcement toward digest-pinned images for shared or
-production-like deployments.
+**Next step**: move from tag-vs-digest checks into stronger policy for shared deployments, such as
+required digests by environment and clearer provenance guidance for published images.
 
 ### 🐳 Tiered Isolation Modes
 

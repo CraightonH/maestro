@@ -63,6 +63,27 @@ type DockerCacheMountConfig struct {
 	Target string `yaml:"target"`
 }
 
+type DockerSecretEnvConfig struct {
+	Preset string `yaml:"preset"`
+	Source string `yaml:"source"`
+	Target string `yaml:"target"`
+}
+
+type DockerAccessMountConfig struct {
+	Preset string `yaml:"preset"`
+	Source string `yaml:"source"`
+	Target string `yaml:"target"`
+}
+
+type DockerSecretsConfig struct {
+	Env    []DockerSecretEnvConfig   `yaml:"env"`
+	Mounts []DockerAccessMountConfig `yaml:"mounts"`
+}
+
+type DockerToolsConfig struct {
+	Mounts []DockerAccessMountConfig `yaml:"mounts"`
+}
+
 type DockerAuthConfig struct {
 	Mode   string `yaml:"mode"`
 	Source string `yaml:"source"`
@@ -70,6 +91,7 @@ type DockerAuthConfig struct {
 }
 
 type DockerSecurityConfig struct {
+	Preset           string   `yaml:"preset"`
 	NoNewPrivileges  *bool    `yaml:"no_new_privileges"`
 	ReadOnlyRootFS   *bool    `yaml:"read_only_root_fs"`
 	DropCapabilities []string `yaml:"drop_capabilities"`
@@ -81,33 +103,50 @@ type DockerCacheConfig struct {
 	Mounts   []DockerCacheMountConfig `yaml:"mounts"`
 }
 
+type DockerNetworkPolicyConfig struct {
+	Mode  string   `yaml:"mode"`
+	Allow []string `yaml:"allow"`
+}
+
 type DockerConfig struct {
-	Image              string                `yaml:"image"`
-	WorkspaceMountPath string                `yaml:"workspace_mount_path"`
-	PullPolicy         string                `yaml:"pull_policy"`
-	Mounts             []DockerMountConfig   `yaml:"mounts"`
-	EnvPassthrough     []string              `yaml:"env_passthrough"`
-	Network            string                `yaml:"network"`
-	CPUs               float64               `yaml:"cpus"`
-	Memory             string                `yaml:"memory"`
-	PIDsLimit          int                   `yaml:"pids_limit"`
-	Auth               *DockerAuthConfig     `yaml:"auth"`
-	Security           *DockerSecurityConfig `yaml:"security"`
-	Cache              *DockerCacheConfig    `yaml:"cache"`
+	Image              string                     `yaml:"image"`
+	ImagePinMode       string                     `yaml:"image_pin_mode"`
+	WorkspaceMountPath string                     `yaml:"workspace_mount_path"`
+	PullPolicy         string                     `yaml:"pull_policy"`
+	Mounts             []DockerMountConfig        `yaml:"mounts"`
+	EnvPassthrough     []string                   `yaml:"env_passthrough"`
+	Network            string                     `yaml:"network"`
+	NetworkPolicy      *DockerNetworkPolicyConfig `yaml:"network_policy"`
+	CPUs               float64                    `yaml:"cpus"`
+	Memory             string                     `yaml:"memory"`
+	PIDsLimit          int                        `yaml:"pids_limit"`
+	Secrets            *DockerSecretsConfig       `yaml:"secrets"`
+	Tools              *DockerToolsConfig         `yaml:"tools"`
+	Auth               *DockerAuthConfig          `yaml:"auth"`
+	Security           *DockerSecurityConfig      `yaml:"security"`
+	Cache              *DockerCacheConfig         `yaml:"cache"`
 }
 
 const (
-	DockerAuthClaudeAPIKey   = "claude-api-key"
-	DockerAuthClaudeProxy    = "claude-proxy"
-	DockerAuthClaudeConfig   = "claude-config-mount"
-	DockerAuthCodexAPIKey    = "codex-api-key"
-	DockerAuthCodexConfig    = "codex-config-mount"
-	DockerCacheProfileClaude = "claude-cache"
-	DockerCacheProfileCodex  = "codex-cache"
-	DockerCacheProfileNPM    = "npm-cache"
-	DockerCacheProfileGo     = "go-cache"
-	DockerCacheProfilePip    = "pip-cache"
-	DockerCacheProfileCargo  = "cargo-cache"
+	DockerAuthClaudeAPIKey         = "claude-api-key"
+	DockerAuthClaudeProxy          = "claude-proxy"
+	DockerAuthClaudeConfig         = "claude-config-mount"
+	DockerAuthCodexAPIKey          = "codex-api-key"
+	DockerAuthCodexConfig          = "codex-config-mount"
+	DockerImagePinModeAllow        = "allow"
+	DockerImagePinModeRequire      = "require"
+	DockerCacheProfileClaude       = "claude-cache"
+	DockerCacheProfileCodex        = "codex-cache"
+	DockerCacheProfileNPM          = "npm-cache"
+	DockerCacheProfileGo           = "go-cache"
+	DockerCacheProfilePip          = "pip-cache"
+	DockerCacheProfileCargo        = "cargo-cache"
+	DockerNetworkPolicyNone        = "none"
+	DockerNetworkPolicyBridge      = "bridge"
+	DockerNetworkPolicyAllowlist   = "allowlist"
+	DockerSecurityPresetDefault    = "default"
+	DockerSecurityPresetLockedDown = "locked-down"
+	DockerSecurityPresetCompat     = "compat"
 )
 
 type Config struct {
@@ -445,9 +484,23 @@ func cloneDockerConfig(src *DockerConfig) *DockerConfig {
 	if src.EnvPassthrough != nil {
 		cloned.EnvPassthrough = append([]string{}, src.EnvPassthrough...)
 	}
+	cloned.NetworkPolicy = cloneDockerNetworkPolicyConfig(src.NetworkPolicy)
+	cloned.Secrets = cloneDockerSecretsConfig(src.Secrets)
+	cloned.Tools = cloneDockerToolsConfig(src.Tools)
 	cloned.Auth = cloneDockerAuthConfig(src.Auth)
 	cloned.Security = cloneDockerSecurityConfig(src.Security)
 	cloned.Cache = cloneDockerCacheConfig(src.Cache)
+	return &cloned
+}
+
+func cloneDockerNetworkPolicyConfig(src *DockerNetworkPolicyConfig) *DockerNetworkPolicyConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.Allow != nil {
+		cloned.Allow = append([]string{}, src.Allow...)
+	}
 	return &cloned
 }
 
@@ -464,6 +517,7 @@ func cloneDockerSecurityConfig(src *DockerSecurityConfig) *DockerSecurityConfig 
 		return nil
 	}
 	cloned := *src
+	cloned.Preset = src.Preset
 	if src.DropCapabilities != nil {
 		cloned.DropCapabilities = append([]string{}, src.DropCapabilities...)
 	}
@@ -565,6 +619,9 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	if override.Image != "" {
 		merged.Image = override.Image
 	}
+	if override.ImagePinMode != "" {
+		merged.ImagePinMode = override.ImagePinMode
+	}
 	if override.WorkspaceMountPath != "" {
 		merged.WorkspaceMountPath = override.WorkspaceMountPath
 	}
@@ -580,6 +637,7 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	if override.Network != "" {
 		merged.Network = override.Network
 	}
+	merged.NetworkPolicy = mergeDockerNetworkPolicyConfig(merged.NetworkPolicy, override.NetworkPolicy)
 	if override.CPUs != 0 {
 		merged.CPUs = override.CPUs
 	}
@@ -589,9 +647,31 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	if override.PIDsLimit != 0 {
 		merged.PIDsLimit = override.PIDsLimit
 	}
+	merged.Secrets = mergeDockerSecretsConfig(merged.Secrets, override.Secrets)
+	merged.Tools = mergeDockerToolsConfig(merged.Tools, override.Tools)
 	merged.Auth = mergeDockerAuthConfig(merged.Auth, override.Auth)
 	merged.Security = mergeDockerSecurityConfig(merged.Security, override.Security)
 	merged.Cache = mergeDockerCacheConfig(merged.Cache, override.Cache)
+	return merged
+}
+
+func mergeDockerNetworkPolicyConfig(base *DockerNetworkPolicyConfig, override *DockerNetworkPolicyConfig) *DockerNetworkPolicyConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerNetworkPolicyConfig(override)
+	}
+	merged := cloneDockerNetworkPolicyConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.Mode != "" {
+		merged.Mode = override.Mode
+	}
+	if override.Allow != nil {
+		merged.Allow = append([]string{}, override.Allow...)
+	}
 	return merged
 }
 
@@ -623,25 +703,20 @@ func mergeDockerSecurityConfig(base *DockerSecurityConfig, override *DockerSecur
 		return nil
 	}
 	if base == nil {
+		if override != nil && strings.TrimSpace(override.Preset) != "" {
+			merged := DockerSecurityPresetConfig(override.Preset)
+			return overlayDockerSecurityConfig(merged, override)
+		}
 		return cloneDockerSecurityConfig(override)
 	}
 	merged := cloneDockerSecurityConfig(base)
 	if override == nil {
 		return merged
 	}
-	if override.NoNewPrivileges != nil {
-		merged.NoNewPrivileges = cloneBoolPointer(override.NoNewPrivileges)
+	if strings.TrimSpace(override.Preset) != "" {
+		merged = DockerSecurityPresetConfig(override.Preset)
 	}
-	if override.ReadOnlyRootFS != nil {
-		merged.ReadOnlyRootFS = cloneBoolPointer(override.ReadOnlyRootFS)
-	}
-	if override.DropCapabilities != nil {
-		merged.DropCapabilities = append([]string{}, override.DropCapabilities...)
-	}
-	if override.Tmpfs != nil {
-		merged.Tmpfs = append([]string{}, override.Tmpfs...)
-	}
-	return merged
+	return overlayDockerSecurityConfig(merged, override)
 }
 
 func mergeDockerCacheConfig(base *DockerCacheConfig, override *DockerCacheConfig) *DockerCacheConfig {
@@ -771,17 +846,136 @@ func ResolveClaudeConfig(defaults *ClaudeConfig, override *ClaudeConfig) ClaudeC
 
 func ResolveDockerConfig(defaults *DockerConfig, override *DockerConfig) DockerConfig {
 	base := &DockerConfig{
+		ImagePinMode:       DockerImagePinModeAllow,
 		WorkspaceMountPath: "/workspace",
 		Network:            "bridge",
 		PullPolicy:         "missing",
-		Security: &DockerSecurityConfig{
+		Security:           DockerSecurityPresetConfig(DockerSecurityPresetDefault),
+	}
+	return *mergeDockerConfig(mergeDockerConfig(base, defaults), override)
+}
+
+func overlayDockerSecurityConfig(base *DockerSecurityConfig, override *DockerSecurityConfig) *DockerSecurityConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerSecurityConfig(override)
+	}
+	merged := cloneDockerSecurityConfig(base)
+	if override == nil {
+		return merged
+	}
+	if strings.TrimSpace(override.Preset) != "" {
+		merged.Preset = NormalizeDockerSecurityPreset(override.Preset)
+	}
+	if override.NoNewPrivileges != nil {
+		merged.NoNewPrivileges = cloneBoolPointer(override.NoNewPrivileges)
+	}
+	if override.ReadOnlyRootFS != nil {
+		merged.ReadOnlyRootFS = cloneBoolPointer(override.ReadOnlyRootFS)
+	}
+	if override.DropCapabilities != nil {
+		merged.DropCapabilities = append([]string{}, override.DropCapabilities...)
+	}
+	if override.Tmpfs != nil {
+		merged.Tmpfs = append([]string{}, override.Tmpfs...)
+	}
+	return merged
+}
+
+func KnownDockerImagePinMode(mode string) bool {
+	switch NormalizeDockerImagePinMode(mode) {
+	case "", DockerImagePinModeAllow, DockerImagePinModeRequire:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeDockerImagePinMode(mode string) string {
+	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func DockerImageIsPinned(image string) bool {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(image), "sha256:") {
+		return isDockerHexDigest(image[len("sha256:"):])
+	}
+	at := strings.LastIndex(image, "@")
+	if at < 0 {
+		return false
+	}
+	digest := strings.TrimSpace(image[at+1:])
+	if !strings.HasPrefix(strings.ToLower(digest), "sha256:") {
+		return false
+	}
+	return isDockerHexDigest(digest[len("sha256:"):])
+}
+
+func isDockerHexDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func KnownDockerSecurityPreset(name string) bool {
+	switch NormalizeDockerSecurityPreset(name) {
+	case "", DockerSecurityPresetDefault, DockerSecurityPresetLockedDown, DockerSecurityPresetCompat:
+		return true
+	default:
+		return false
+	}
+}
+
+func NormalizeDockerSecurityPreset(name string) string {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" {
+		return ""
+	}
+	return name
+}
+
+func DockerSecurityPresetConfig(name string) *DockerSecurityConfig {
+	switch NormalizeDockerSecurityPreset(name) {
+	case "", DockerSecurityPresetDefault:
+		return &DockerSecurityConfig{
+			Preset:           DockerSecurityPresetDefault,
 			NoNewPrivileges:  cloneBoolPointer(boolPtr(true)),
 			ReadOnlyRootFS:   cloneBoolPointer(boolPtr(true)),
 			DropCapabilities: []string{"ALL"},
 			Tmpfs:            []string{"/tmp"},
-		},
+		}
+	case DockerSecurityPresetLockedDown:
+		return &DockerSecurityConfig{
+			Preset:           DockerSecurityPresetLockedDown,
+			NoNewPrivileges:  cloneBoolPointer(boolPtr(true)),
+			ReadOnlyRootFS:   cloneBoolPointer(boolPtr(true)),
+			DropCapabilities: []string{"ALL"},
+			Tmpfs:            []string{"/tmp", "/var/tmp"},
+		}
+	case DockerSecurityPresetCompat:
+		return &DockerSecurityConfig{
+			Preset:          DockerSecurityPresetCompat,
+			NoNewPrivileges: cloneBoolPointer(boolPtr(true)),
+			ReadOnlyRootFS:  cloneBoolPointer(boolPtr(false)),
+		}
+	default:
+		return &DockerSecurityConfig{Preset: NormalizeDockerSecurityPreset(name)}
 	}
-	return *mergeDockerConfig(mergeDockerConfig(base, defaults), override)
 }
 
 func DockerAuthModeUsesMount(mode string) bool {
@@ -838,6 +1032,36 @@ func DockerAuthModeWritesCodexAuth(mode string) bool {
 
 func NormalizeDockerAuthMode(mode string) string {
 	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func NormalizeDockerNetworkPolicyMode(mode string) string {
+	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func NormalizeDockerNetworkAllowEntry(raw string) string {
+	entry := strings.TrimSpace(raw)
+	if entry == "" {
+		return ""
+	}
+	if strings.HasPrefix(entry, "*.") {
+		return "*." + strings.TrimSuffix(strings.ToLower(strings.TrimPrefix(entry, "*.")), ".")
+	}
+	return strings.TrimSuffix(strings.ToLower(entry), ".")
+}
+
+func EffectiveDockerNetwork(docker *DockerConfig) string {
+	if docker == nil {
+		return ""
+	}
+	if docker.NetworkPolicy != nil {
+		switch NormalizeDockerNetworkPolicyMode(docker.NetworkPolicy.Mode) {
+		case DockerNetworkPolicyNone:
+			return DockerNetworkPolicyNone
+		case DockerNetworkPolicyBridge, DockerNetworkPolicyAllowlist:
+			return DockerNetworkPolicyBridge
+		}
+	}
+	return strings.TrimSpace(docker.Network)
 }
 
 func KnownDockerCacheProfile(profile string) bool {

@@ -140,10 +140,20 @@ export function formatExecutionSummary(execution?: ExecutionSummary) {
   const parts: string[] = [execution.mode];
   if (execution.image) parts.push(`image=${execution.image}`);
   if (execution.network) parts.push(`network=${execution.network}`);
+  if (execution.network_policy_mode) parts.push(`policy=${execution.network_policy_mode}`);
+  if (execution.network_allow && execution.network_allow.length > 0) {
+    const shown = execution.network_allow.slice(0, 2).join(",");
+    const suffix = execution.network_allow.length > 2 ? `,+${execution.network_allow.length - 2}` : "";
+    parts.push(`allow=${shown}${suffix}`);
+  }
   if (typeof execution.cpus === "number" && execution.cpus > 0) parts.push(`cpus=${execution.cpus}`);
   if (execution.memory) parts.push(`memory=${execution.memory}`);
   if (typeof execution.pids_limit === "number" && execution.pids_limit > 0) parts.push(`pids=${execution.pids_limit}`);
   if (execution.auth_source) parts.push(`auth=${execution.auth_source}`);
+  if (execution.security_preset) parts.push(`security=${execution.security_preset}`);
+  if (typeof execution.env_count === "number" && execution.env_count > 0) parts.push(`env=${execution.env_count}`);
+  if (typeof execution.secret_mount_count === "number" && execution.secret_mount_count > 0) parts.push(`secrets=${execution.secret_mount_count}`);
+  if (typeof execution.tool_mount_count === "number" && execution.tool_mount_count > 0) parts.push(`tools=${execution.tool_mount_count}`);
   return parts.join(" · ");
 }
 

@@ -176,13 +176,19 @@ type Snapshot struct {
 }
 
 type ExecutionSummary struct {
-	Mode       string
-	Image      string
-	Network    string
-	CPUs       float64
-	Memory     string
-	PIDsLimit  int
-	AuthSource string
+	Mode              string
+	Image             string
+	Network           string
+	NetworkPolicyMode string
+	NetworkAllow      []string
+	CPUs              float64
+	Memory            string
+	PIDsLimit         int
+	AuthSource        string
+	SecurityPreset    string
+	EnvCount          int
+	SecretMountCount  int
+	ToolMountCount    int
 }
 
 type Dependencies struct {
@@ -466,13 +472,29 @@ func summarizeExecution(agent config.AgentTypeConfig) *ExecutionSummary {
 	if agent.Docker == nil {
 		return summary
 	}
+	docker := config.ResolveDockerConfig(nil, agent.Docker)
 	summary.Mode = "docker"
-	summary.Image = agent.Docker.Image
-	summary.Network = strings.TrimSpace(agent.Docker.Network)
-	summary.CPUs = agent.Docker.CPUs
-	summary.Memory = strings.TrimSpace(agent.Docker.Memory)
-	summary.PIDsLimit = agent.Docker.PIDsLimit
+	summary.Image = docker.Image
+	summary.Network = config.EffectiveDockerNetwork(&docker)
+	if docker.NetworkPolicy != nil {
+		summary.NetworkPolicyMode = config.NormalizeDockerNetworkPolicyMode(docker.NetworkPolicy.Mode)
+		summary.NetworkAllow = append([]string(nil), docker.NetworkPolicy.Allow...)
+	}
+	summary.CPUs = docker.CPUs
+	summary.Memory = strings.TrimSpace(docker.Memory)
+	summary.PIDsLimit = docker.PIDsLimit
 	summary.AuthSource = summarizeDockerAuthSource(agent)
+	if docker.Security != nil {
+		summary.SecurityPreset = strings.TrimSpace(docker.Security.Preset)
+	}
+	homeTarget := config.DockerHomeDefault
+	if value := strings.TrimSpace(agent.Env["HOME"]); value != "" {
+		homeTarget = value
+	}
+	access := config.ResolveDockerAccess(agent.Docker, homeTarget)
+	summary.EnvCount = len(access.Env)
+	summary.SecretMountCount = len(access.SecretMounts)
+	summary.ToolMountCount = len(access.ToolMounts)
 	return summary
 }
 
@@ -481,25 +503,22 @@ func summarizeDockerAuthSource(agent config.AgentTypeConfig) string {
 		return "host"
 	}
 
+	homeTarget := config.DockerHomeDefault
+	if value := strings.TrimSpace(agent.Env["HOME"]); value != "" {
+		homeTarget = value
+	}
+	access := config.ResolveDockerAccess(agent.Docker, homeTarget)
 	envAuth := false
-	for key := range agent.Env {
-		if isDockerAuthEnv(key) {
+	for _, grant := range access.Env {
+		if isDockerAuthEnv(grant.Target) {
 			envAuth = true
 			break
 		}
 	}
-	if !envAuth {
-		for _, key := range agent.Docker.EnvPassthrough {
-			if isDockerAuthEnv(key) {
-				envAuth = true
-				break
-			}
-		}
-	}
 
 	mountAuth := false
-	for _, mount := range agent.Docker.Mounts {
-		if looksLikeDockerAuthMount(mount) {
+	for _, grant := range access.SecretMounts {
+		if config.DockerMountLooksSecret(grant.Source, grant.Target) {
 			mountAuth = true
 			break
 		}
@@ -513,6 +532,9 @@ func summarizeDockerAuthSource(agent config.AgentTypeConfig) string {
 	case mountAuth:
 		return "mounted config"
 	default:
+		if agent.Docker.Auth == nil {
+			return "none"
+		}
 		return "preset"
 	}
 }
@@ -524,26 +546,6 @@ func isDockerAuthEnv(key string) bool {
 	default:
 		return false
 	}
-}
-
-func looksLikeDockerAuthMount(mount config.DockerMountConfig) bool {
-	target := strings.ToLower(strings.TrimSpace(mount.Target))
-	source := strings.ToLower(strings.TrimSpace(mount.Source))
-	for _, candidate := range []string{target, source} {
-		if candidate == "" {
-			continue
-		}
-		if strings.Contains(candidate, ".claude") || strings.Contains(candidate, ".codex") {
-			return true
-		}
-		if strings.Contains(candidate, "auth.json") || strings.Contains(candidate, "credentials") || strings.Contains(candidate, "settings") {
-			return true
-		}
-		if strings.Contains(candidate, "token") || strings.Contains(candidate, "config") {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Service) recordEvent(level string, message string, args ...any) {

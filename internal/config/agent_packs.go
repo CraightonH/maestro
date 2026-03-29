@@ -276,6 +276,36 @@ func resolveLocalPackAssets(pack *AgentPackConfig, packDir string) error {
 			pack.Docker.Mounts[i].Source = filepath.Join(packDir, pack.Docker.Mounts[i].Source)
 			pack.Docker.Mounts[i].Source = filepath.Clean(pack.Docker.Mounts[i].Source)
 		}
+		if pack.Docker.Auth != nil && DockerAuthModeUsesMount(pack.Docker.Auth.Mode) && strings.TrimSpace(pack.Docker.Auth.Source) != "" && !filepath.IsAbs(pack.Docker.Auth.Source) {
+			pack.Docker.Auth.Source = filepath.Clean(filepath.Join(packDir, pack.Docker.Auth.Source))
+		}
+		if pack.Docker.Cache != nil {
+			for i := range pack.Docker.Cache.Mounts {
+				if filepath.IsAbs(pack.Docker.Cache.Mounts[i].Source) {
+					pack.Docker.Cache.Mounts[i].Source = filepath.Clean(pack.Docker.Cache.Mounts[i].Source)
+					continue
+				}
+				pack.Docker.Cache.Mounts[i].Source = filepath.Clean(filepath.Join(packDir, pack.Docker.Cache.Mounts[i].Source))
+			}
+		}
+		if pack.Docker.Secrets != nil {
+			for i := range pack.Docker.Secrets.Mounts {
+				if filepath.IsAbs(pack.Docker.Secrets.Mounts[i].Source) {
+					pack.Docker.Secrets.Mounts[i].Source = filepath.Clean(pack.Docker.Secrets.Mounts[i].Source)
+					continue
+				}
+				pack.Docker.Secrets.Mounts[i].Source = filepath.Clean(filepath.Join(packDir, pack.Docker.Secrets.Mounts[i].Source))
+			}
+		}
+		if pack.Docker.Tools != nil {
+			for i := range pack.Docker.Tools.Mounts {
+				if filepath.IsAbs(pack.Docker.Tools.Mounts[i].Source) {
+					pack.Docker.Tools.Mounts[i].Source = filepath.Clean(pack.Docker.Tools.Mounts[i].Source)
+					continue
+				}
+				pack.Docker.Tools.Mounts[i].Source = filepath.Clean(filepath.Join(packDir, pack.Docker.Tools.Mounts[i].Source))
+			}
+		}
 	}
 
 	claudeDir, err := resolveOptionalPackDir(packDir, "claude")

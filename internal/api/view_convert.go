@@ -97,13 +97,19 @@ func apiExecution(item *orchestrator.ExecutionSummary) *executionJSON {
 		return nil
 	}
 	return &executionJSON{
-		Mode:       item.Mode,
-		Image:      item.Image,
-		Network:    item.Network,
-		CPUs:       item.CPUs,
-		Memory:     item.Memory,
-		PIDsLimit:  item.PIDsLimit,
-		AuthSource: item.AuthSource,
+		Mode:              item.Mode,
+		Image:             item.Image,
+		Network:           item.Network,
+		NetworkPolicyMode: item.NetworkPolicyMode,
+		NetworkAllow:      append([]string(nil), item.NetworkAllow...),
+		CPUs:              item.CPUs,
+		Memory:            item.Memory,
+		PIDsLimit:         item.PIDsLimit,
+		AuthSource:        item.AuthSource,
+		SecurityPreset:    item.SecurityPreset,
+		EnvCount:          item.EnvCount,
+		SecretMountCount:  item.SecretMountCount,
+		ToolMountCount:    item.ToolMountCount,
 	}
 }
 

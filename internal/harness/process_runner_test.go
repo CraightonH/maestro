@@ -172,6 +172,125 @@ func TestDockerProcessRunnerBuildsContainerCommand(t *testing.T) {
 	}
 }
 
+func TestDockerProcessRunnerAppliesStructuredSecretsAndTools(t *testing.T) {
+	tmp := t.TempDir()
+	dockerBinary := filepath.Join(tmp, "docker")
+	if err := os.WriteFile(dockerBinary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ANTHROPIC_BASE_URL", "https://proxy.example.invalid")
+
+	netrcPath := filepath.Join(tmp, "netrc")
+	if err := os.WriteFile(netrcPath, []byte("machine example.invalid login test password secret\n"), 0o600); err != nil {
+		t.Fatalf("write netrc: %v", err)
+	}
+	gitConfigPath := filepath.Join(tmp, "gitconfig")
+	if err := os.WriteFile(gitConfigPath, []byte("[user]\n\tname = TJ\n"), 0o644); err != nil {
+		t.Fatalf("write gitconfig: %v", err)
+	}
+	workdir := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Secrets: &config.DockerSecretsConfig{
+			Env: []config.DockerSecretEnvConfig{{
+				Preset: config.DockerSecretEnvPresetAnthropicBaseURL,
+			}},
+			Mounts: []config.DockerAccessMountConfig{{
+				Preset: config.DockerMountPresetNetrc,
+				Source: netrcPath,
+			}},
+		},
+		Tools: &config.DockerToolsConfig{
+			Mounts: []config.DockerAccessMountConfig{{
+				Preset: config.DockerMountPresetGitConfig,
+				Source: gitConfigPath,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	cmd, err := runner.CommandContext(context.Background(), ProcessSpec{
+		Binary:  "claude",
+		Args:    []string{"--version"},
+		Workdir: workdir,
+	})
+	if err != nil {
+		t.Fatalf("command context: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, "\n")
+	if !strings.Contains(args, "--env\nANTHROPIC_BASE_URL=https://proxy.example.invalid") {
+		t.Fatalf("args = %q, want structured secret env", args)
+	}
+	if !strings.Contains(args, "--mount\ntype=bind,src="+netrcPath+",dst="+filepath.Join(defaultDockerHome, ".netrc")+",readonly") {
+		t.Fatalf("args = %q, want structured secret mount", args)
+	}
+	if !strings.Contains(args, "--mount\ntype=bind,src="+gitConfigPath+",dst="+filepath.Join(defaultDockerHome, ".gitconfig")+",readonly") {
+		t.Fatalf("args = %q, want structured tool mount", args)
+	}
+}
+
+func TestDockerProcessRunnerBuildsAllowlistNetworkPolicyCommand(t *testing.T) {
+	tmp := t.TempDir()
+	dockerBinary := filepath.Join(tmp, "docker")
+	if err := os.WriteFile(dockerBinary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workdir := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		NetworkPolicy: &config.DockerNetworkPolicyConfig{
+			Mode:  config.DockerNetworkPolicyAllowlist,
+			Allow: []string{"api.openai.com", "*.anthropic.com", "localhost"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	cmd, err := runner.CommandContext(context.Background(), ProcessSpec{
+		Binary:  "codex",
+		Args:    []string{"app-server"},
+		Workdir: workdir,
+	})
+	if err != nil {
+		t.Fatalf("command context: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, "\n")
+	if !strings.Contains(args, "--network\nbridge") {
+		t.Fatalf("args = %q, want bridge network for allowlist mode", args)
+	}
+	if !strings.Contains(args, "--add-host\nhost.docker.internal:host-gateway") {
+		t.Fatalf("args = %q, want host-gateway alias", args)
+	}
+	if !strings.Contains(args, "--env\nHTTP_PROXY=http://") || !strings.Contains(args, "@host.docker.internal:") {
+		t.Fatalf("args = %q, want managed HTTP_PROXY", args)
+	}
+	if !strings.Contains(args, "--env\nHTTPS_PROXY=http://") {
+		t.Fatalf("args = %q, want managed HTTPS_PROXY", args)
+	}
+	if !strings.Contains(args, "--env\nALL_PROXY=http://") {
+		t.Fatalf("args = %q, want managed ALL_PROXY", args)
+	}
+	if !strings.Contains(args, "--env\nNO_PROXY=127.0.0.1,localhost,::1") {
+		t.Fatalf("args = %q, want default NO_PROXY loopback exemptions", args)
+	}
+}
+
 func TestDockerProcessRunnerCodexApiKeyWritesAuthHome(t *testing.T) {
 	tmp := t.TempDir()
 	dockerBinary := filepath.Join(tmp, "docker")
@@ -225,6 +344,54 @@ func TestDockerProcessRunnerCodexApiKeyWritesAuthHome(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(args, "\n"), ",dst="+filepath.Join(defaultDockerHome, ".codex", "cache")) {
 		t.Fatalf("args = %q, want codex cache profile mount", strings.Join(args, "\n"))
+	}
+}
+
+func TestDockerProcessRunnerAppliesSecurityPresetCompat(t *testing.T) {
+	tmp := t.TempDir()
+	dockerBinary := filepath.Join(tmp, "docker")
+	if err := os.WriteFile(dockerBinary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workdir := filepath.Join(tmp, "workspace")
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Security: &config.DockerSecurityConfig{
+			Preset:         config.DockerSecurityPresetCompat,
+			ReadOnlyRootFS: boolPtrHarnessTest(true),
+		},
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	cmd, err := runner.CommandContext(context.Background(), ProcessSpec{
+		Binary:  "claude",
+		Args:    []string{"--version"},
+		Workdir: workdir,
+	})
+	if err != nil {
+		t.Fatalf("command context: %v", err)
+	}
+
+	args := strings.Join(cmd.Args, "\n")
+	if !strings.Contains(args, "--security-opt\nno-new-privileges") {
+		t.Fatalf("args = %q, want no-new-privileges from compat preset", args)
+	}
+	if !strings.Contains(args, "--read-only") {
+		t.Fatalf("args = %q, want read-only from explicit override", args)
+	}
+	if strings.Contains(args, "--cap-drop") {
+		t.Fatalf("args = %q, want compat preset to omit cap drops", args)
+	}
+	if strings.Contains(args, "--tmpfs") {
+		t.Fatalf("args = %q, want compat preset to omit tmpfs mounts", args)
 	}
 }
 
@@ -292,6 +459,11 @@ func containsArgPair(args []string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func boolPtrHarnessTest(value bool) *bool {
+	v := value
+	return &v
 }
 
 func mountSourceForTarget(args []string, target string) (string, bool) {

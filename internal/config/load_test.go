@@ -874,6 +874,9 @@ logging:
 
 func TestResolveDockerConfigAppliesSafeDefaults(t *testing.T) {
 	docker := config.ResolveDockerConfig(nil, nil)
+	if got, want := docker.ImagePinMode, config.DockerImagePinModeAllow; got != want {
+		t.Fatalf("image_pin_mode = %q, want %q", got, want)
+	}
 	if got, want := docker.WorkspaceMountPath, "/workspace"; got != want {
 		t.Fatalf("workspace_mount_path = %q, want %q", got, want)
 	}
@@ -894,6 +897,42 @@ func TestResolveDockerConfigAppliesSafeDefaults(t *testing.T) {
 	}
 	if got := docker.Security.Tmpfs; len(got) != 1 || got[0] != "/tmp" {
 		t.Fatalf("security.tmpfs = %v, want [/tmp]", got)
+	}
+	if got, want := docker.Security.Preset, config.DockerSecurityPresetDefault; got != want {
+		t.Fatalf("security.preset = %q, want %q", got, want)
+	}
+}
+
+func TestResolveDockerConfigAppliesSecurityPresetBeforeOverrides(t *testing.T) {
+	docker := config.ResolveDockerConfig(nil, &config.DockerConfig{
+		ImagePinMode: config.DockerImagePinModeRequire,
+		Security: &config.DockerSecurityConfig{
+			Preset:           config.DockerSecurityPresetCompat,
+			ReadOnlyRootFS:   boolPtrTest(true),
+			DropCapabilities: []string{"NET_RAW"},
+		},
+	})
+
+	if got, want := docker.ImagePinMode, config.DockerImagePinModeRequire; got != want {
+		t.Fatalf("image_pin_mode = %q, want %q", got, want)
+	}
+	if docker.Security == nil {
+		t.Fatal("security = nil, want resolved security config")
+	}
+	if got, want := docker.Security.Preset, config.DockerSecurityPresetCompat; got != want {
+		t.Fatalf("security.preset = %q, want %q", got, want)
+	}
+	if docker.Security.NoNewPrivileges == nil || !*docker.Security.NoNewPrivileges {
+		t.Fatalf("security.no_new_privileges = %v, want true", docker.Security.NoNewPrivileges)
+	}
+	if docker.Security.ReadOnlyRootFS == nil || !*docker.Security.ReadOnlyRootFS {
+		t.Fatalf("security.read_only_root_fs = %v, want true override", docker.Security.ReadOnlyRootFS)
+	}
+	if got := docker.Security.DropCapabilities; len(got) != 1 || got[0] != "NET_RAW" {
+		t.Fatalf("security.drop_capabilities = %v, want [NET_RAW]", got)
+	}
+	if len(docker.Security.Tmpfs) != 0 {
+		t.Fatalf("security.tmpfs = %v, want cleared compat preset tmpfs", docker.Security.Tmpfs)
 	}
 }
 
@@ -993,6 +1032,75 @@ logging:
 	}
 	if agent.Docker.Cache == nil || len(agent.Docker.Cache.Profiles) != 1 || agent.Docker.Cache.Profiles[0] != "codex-cache" {
 		t.Fatalf("docker cache = %v, want codex-cache profile", agent.Docker.Cache)
+	}
+}
+
+func TestLoadAppliesAgentDefaultDockerNetworkPolicy(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+agent_defaults:
+  docker:
+    image: default-image:latest
+    network_policy:
+      mode: allowlist
+      allow: [api.openai.com, "*.anthropic.com"]
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil || agent.Docker.NetworkPolicy == nil {
+		t.Fatalf("docker network policy = %v, want inherited default policy", agent.Docker)
+	}
+	if got, want := agent.Docker.NetworkPolicy.Mode, "allowlist"; got != want {
+		t.Fatalf("docker network policy mode = %q, want %q", got, want)
+	}
+	if got := agent.Docker.NetworkPolicy.Allow; len(got) != 2 || got[0] != "api.openai.com" || got[1] != "*.anthropic.com" {
+		t.Fatalf("docker network policy allow = %v, want inherited allowlist", got)
 	}
 }
 
@@ -1122,6 +1230,178 @@ logging:
 	}
 	if len(agent.Docker.Cache.Mounts) != 1 || agent.Docker.Cache.Mounts[0].Source != filepath.Join(packDir, "cache", "openai") {
 		t.Fatalf("docker cache mounts = %v, want resolved source", agent.Docker.Cache.Mounts)
+	}
+}
+
+func TestLoadResolvesDockerStructuredAccessSources(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+    docker:
+      image: maestro-agent:latest
+      secrets:
+        env:
+          - preset: anthropic-base-url
+        mounts:
+          - preset: netrc
+            source: ./secrets/netrc
+      tools:
+        mounts:
+          - preset: git-config
+            source: ./tools/gitconfig
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil || agent.Docker.Secrets == nil || agent.Docker.Tools == nil {
+		t.Fatalf("docker structured access = %#v, want secrets and tools", agent.Docker)
+	}
+	if got, want := agent.Docker.Secrets.Env[0].Preset, config.DockerSecretEnvPresetAnthropicBaseURL; got != want {
+		t.Fatalf("docker secrets env preset = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Secrets.Mounts[0].Source, filepath.Join(root, "secrets", "netrc"); got != want {
+		t.Fatalf("docker secrets mount source = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Tools.Mounts[0].Source, filepath.Join(root, "tools", "gitconfig"); got != want {
+		t.Fatalf("docker tools mount source = %q, want %q", got, want)
+	}
+}
+
+func TestLoadMergesDockerStructuredAccessPerKey(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	packDir := filepath.Join(root, "agent-packs", "repo-maintainer")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatalf("mkdir pack dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "prompt.md"), []byte("Agent {{.Agent.Name}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "agent.yaml"), []byte(`
+name: repo-maintainer
+harness: codex
+workspace: git-clone
+prompt: prompt.md
+approval_policy: auto
+docker:
+  image: base-image:latest
+  secrets:
+    env:
+      - preset: anthropic-base-url
+    mounts:
+      - source: ./secrets/netrc
+        target: /run/secrets/netrc
+  tools:
+    mounts:
+      - source: ./tools/gitconfig
+        target: /tmp/maestro-home/.gitconfig
+`), 0o644); err != nil {
+		t.Fatalf("write pack: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+agent_packs_dir: ./agent-packs
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: repo-maintainer
+agent_types:
+  - name: repo-maintainer
+    agent_pack: repo-maintainer
+    docker:
+      image: override-image:latest
+      secrets:
+        env:
+          - source: OPENAI_API_KEY
+        mounts:
+          - source: ./secrets/openai
+            target: /run/secrets/openai
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil {
+		t.Fatal("docker config = nil, want merged config")
+	}
+	if got, want := agent.Docker.Image, "override-image:latest"; got != want {
+		t.Fatalf("docker image = %q, want %q", got, want)
+	}
+	if len(agent.Docker.Secrets.Env) != 1 || agent.Docker.Secrets.Env[0].Source != "OPENAI_API_KEY" {
+		t.Fatalf("docker secrets env = %#v, want override to replace pack secrets env", agent.Docker.Secrets.Env)
+	}
+	if len(agent.Docker.Secrets.Mounts) != 1 || agent.Docker.Secrets.Mounts[0].Source != filepath.Join(root, "secrets", "openai") {
+		t.Fatalf("docker secrets mounts = %#v, want override secrets mounts", agent.Docker.Secrets.Mounts)
+	}
+	if len(agent.Docker.Tools.Mounts) != 1 || agent.Docker.Tools.Mounts[0].Source != filepath.Join(packDir, "tools", "gitconfig") {
+		t.Fatalf("docker tools mounts = %#v, want inherited pack tools mount", agent.Docker.Tools.Mounts)
 	}
 }
 

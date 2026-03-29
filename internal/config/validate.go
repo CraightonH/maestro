@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -66,7 +67,7 @@ func ValidateMVP(cfg *Config) error {
 		if agent.Harness == "claude-code" && agent.Codex != nil {
 			return fmt.Errorf("agent %q has harness claude-code but includes codex config", agent.Name)
 		}
-		if err := validateDockerConfig(agent.Name, agent.Docker); err != nil {
+		if err := validateDockerConfig(agent); err != nil {
 			return err
 		}
 		if cfg.CodexDefaults != nil && cfg.CodexDefaults.MaxTurns < 0 {
@@ -279,12 +280,20 @@ func validateRepoURL(raw string) error {
 	return nil
 }
 
-func validateDockerConfig(agentName string, docker *DockerConfig) error {
+func validateDockerConfig(agent AgentTypeConfig) error {
+	agentName := agent.Name
+	docker := agent.Docker
 	if docker == nil {
 		return nil
 	}
 	if strings.TrimSpace(docker.Image) == "" {
 		return fmt.Errorf("agent %q docker.image is required", agentName)
+	}
+	if mode := NormalizeDockerImagePinMode(docker.ImagePinMode); mode != "" && !KnownDockerImagePinMode(mode) {
+		return fmt.Errorf("agent %q docker.image_pin_mode must be one of allow, require", agentName)
+	}
+	if NormalizeDockerImagePinMode(docker.ImagePinMode) == DockerImagePinModeRequire && !DockerImageIsPinned(docker.Image) {
+		return fmt.Errorf("agent %q docker.image must be digest-pinned when docker.image_pin_mode=require", agentName)
 	}
 	if path := strings.TrimSpace(docker.WorkspaceMountPath); path != "" && !filepath.IsAbs(path) {
 		return fmt.Errorf("agent %q docker.workspace_mount_path must be absolute", agentName)
@@ -301,6 +310,9 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 	default:
 		return fmt.Errorf("agent %q docker.network must be one of bridge, none, host", agentName)
 	}
+	if err := validateDockerNetworkPolicyConfig(agentName, docker.NetworkPolicy); err != nil {
+		return err
+	}
 	if docker.CPUs < 0 {
 		return fmt.Errorf("agent %q docker.cpus must be zero or greater", agentName)
 	}
@@ -308,6 +320,12 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 		return fmt.Errorf("agent %q docker.pids_limit must be zero or greater", agentName)
 	}
 	if err := validateDockerAuthConfig(agentName, docker.Auth); err != nil {
+		return err
+	}
+	if err := validateDockerSecretsConfig(agentName, docker.Secrets); err != nil {
+		return err
+	}
+	if err := validateDockerToolsConfig(agentName, docker.Tools); err != nil {
 		return err
 	}
 	if err := validateDockerSecurityConfig(agentName, docker.Security); err != nil {
@@ -321,6 +339,9 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 		if trimmed == "" || strings.Contains(trimmed, "=") {
 			return fmt.Errorf("agent %q docker.env_passthrough contains invalid name %q", agentName, envName)
 		}
+	}
+	if err := validateDockerNetworkPolicyCompatibility(agent); err != nil {
+		return err
 	}
 	for _, mount := range docker.Mounts {
 		if strings.TrimSpace(mount.Source) == "" {
@@ -336,7 +357,130 @@ func validateDockerConfig(agentName string, docker *DockerConfig) error {
 			return fmt.Errorf("agent %q docker.mounts[] must be read_only in phase 1", agentName)
 		}
 	}
+	if err := validateDockerAccessConflicts(agent); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateDockerNetworkPolicyConfig(agentName string, policy *DockerNetworkPolicyConfig) error {
+	if policy == nil {
+		return nil
+	}
+	mode := NormalizeDockerNetworkPolicyMode(policy.Mode)
+	if mode == "" {
+		if len(policy.Allow) > 0 {
+			return fmt.Errorf("agent %q docker.network_policy.mode is required when docker.network_policy.allow is configured", agentName)
+		}
+		return nil
+	}
+	switch mode {
+	case DockerNetworkPolicyNone, DockerNetworkPolicyBridge, DockerNetworkPolicyAllowlist:
+	default:
+		return fmt.Errorf("agent %q docker.network_policy.mode must be one of none, bridge, allowlist", agentName)
+	}
+	if mode != DockerNetworkPolicyAllowlist && len(policy.Allow) > 0 {
+		return fmt.Errorf("agent %q docker.network_policy.allow is only supported when docker.network_policy.mode is allowlist", agentName)
+	}
+	if mode == DockerNetworkPolicyAllowlist && len(policy.Allow) == 0 {
+		return fmt.Errorf("agent %q docker.network_policy.allow must include at least one host or domain for allowlist mode", agentName)
+	}
+	for _, raw := range policy.Allow {
+		entry := NormalizeDockerNetworkAllowEntry(raw)
+		if entry == "" {
+			return fmt.Errorf("agent %q docker.network_policy.allow contains an empty entry", agentName)
+		}
+		if strings.Contains(entry, "://") {
+			return fmt.Errorf("agent %q docker.network_policy.allow entry %q must not include a URL scheme", agentName, raw)
+		}
+		if strings.ContainsAny(entry, "/?#") {
+			return fmt.Errorf("agent %q docker.network_policy.allow entry %q must be a host or domain only", agentName, raw)
+		}
+		switch {
+		case strings.HasPrefix(entry, "*."):
+			if err := validateDockerNetworkHostname(entry[2:]); err != nil {
+				return fmt.Errorf("agent %q docker.network_policy.allow entry %q is invalid: %w", agentName, raw, err)
+			}
+		case net.ParseIP(strings.Trim(entry, "[]")) != nil:
+		default:
+			if err := validateDockerNetworkHostname(entry); err != nil {
+				return fmt.Errorf("agent %q docker.network_policy.allow entry %q is invalid: %w", agentName, raw, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateDockerNetworkPolicyCompatibility(agent AgentTypeConfig) error {
+	if agent.Docker == nil || agent.Docker.NetworkPolicy == nil {
+		return nil
+	}
+
+	mode := NormalizeDockerNetworkPolicyMode(agent.Docker.NetworkPolicy.Mode)
+	network := strings.TrimSpace(agent.Docker.Network)
+	switch mode {
+	case DockerNetworkPolicyNone:
+		if network != "" && network != DockerNetworkPolicyNone {
+			return fmt.Errorf("agent %q docker.network=%q conflicts with docker.network_policy.mode=none", agent.Name, network)
+		}
+	case DockerNetworkPolicyBridge:
+		if network != "" && network != DockerNetworkPolicyBridge {
+			return fmt.Errorf("agent %q docker.network=%q conflicts with docker.network_policy.mode=bridge", agent.Name, network)
+		}
+	case DockerNetworkPolicyAllowlist:
+		if network != "" && network != DockerNetworkPolicyBridge {
+			return fmt.Errorf("agent %q docker.network=%q conflicts with docker.network_policy.mode=allowlist; allowlist mode requires bridge networking", agent.Name, network)
+		}
+		for key := range agent.Env {
+			if isProxyEnvName(key) {
+				return fmt.Errorf("agent %q env %q conflicts with docker.network_policy.mode=allowlist; Maestro manages proxy env in allowlist mode", agent.Name, key)
+			}
+		}
+		for _, key := range agent.Docker.EnvPassthrough {
+			if isProxyEnvName(key) {
+				return fmt.Errorf("agent %q docker.env_passthrough %q conflicts with docker.network_policy.mode=allowlist; Maestro manages proxy env in allowlist mode", agent.Name, key)
+			}
+		}
+	}
+	return nil
+}
+
+func validateDockerNetworkHostname(host string) error {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return fmt.Errorf("host is empty")
+	}
+	if strings.Contains(host, ":") {
+		return fmt.Errorf("ports are not supported")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" {
+			return fmt.Errorf("host contains an empty label")
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("label %q must not start or end with '-'", label)
+		}
+		for _, r := range label {
+			switch {
+			case r >= 'a' && r <= 'z':
+			case r >= '0' && r <= '9':
+			case r >= 'A' && r <= 'Z':
+			case r == '-':
+			default:
+				return fmt.Errorf("label %q contains invalid character %q", label, r)
+			}
+		}
+	}
+	return nil
+}
+
+func isProxyEnvName(name string) bool {
+	switch strings.ToLower(strings.TrimPrefix(strings.TrimSpace(name), "$")) {
+	case "http_proxy", "https_proxy", "all_proxy", "no_proxy":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateDockerAuthConfig(agentName string, auth *DockerAuthConfig) error {
@@ -373,9 +517,62 @@ func validateDockerAuthConfig(agentName string, auth *DockerAuthConfig) error {
 	return nil
 }
 
+func validateDockerSecretsConfig(agentName string, secrets *DockerSecretsConfig) error {
+	if secrets == nil {
+		return nil
+	}
+	for _, item := range secrets.Env {
+		source, target, _, err := ResolveDockerSecretEnvConfig(item)
+		if err != nil {
+			return fmt.Errorf("agent %q docker.secrets.env[] %v", agentName, err)
+		}
+		if !isValidEnvName(source) {
+			return fmt.Errorf("agent %q docker.secrets.env[].source contains invalid env name %q", agentName, source)
+		}
+		if !isValidEnvName(target) {
+			return fmt.Errorf("agent %q docker.secrets.env[].target contains invalid env name %q", agentName, target)
+		}
+	}
+	for _, item := range secrets.Mounts {
+		if strings.TrimSpace(item.Source) == "" {
+			return fmt.Errorf("agent %q docker.secrets.mounts[].source is required", agentName)
+		}
+		_, target, _, err := ResolveDockerAccessMountConfig(item, DockerHomeDefault)
+		if err != nil {
+			return fmt.Errorf("agent %q docker.secrets.mounts[] %v", agentName, err)
+		}
+		if !filepath.IsAbs(strings.TrimSpace(target)) {
+			return fmt.Errorf("agent %q docker.secrets.mounts[].target must be absolute", agentName)
+		}
+	}
+	return nil
+}
+
+func validateDockerToolsConfig(agentName string, tools *DockerToolsConfig) error {
+	if tools == nil {
+		return nil
+	}
+	for _, item := range tools.Mounts {
+		if strings.TrimSpace(item.Source) == "" {
+			return fmt.Errorf("agent %q docker.tools.mounts[].source is required", agentName)
+		}
+		_, target, _, err := ResolveDockerAccessMountConfig(item, DockerHomeDefault)
+		if err != nil {
+			return fmt.Errorf("agent %q docker.tools.mounts[] %v", agentName, err)
+		}
+		if !filepath.IsAbs(strings.TrimSpace(target)) {
+			return fmt.Errorf("agent %q docker.tools.mounts[].target must be absolute", agentName)
+		}
+	}
+	return nil
+}
+
 func validateDockerSecurityConfig(agentName string, security *DockerSecurityConfig) error {
 	if security == nil {
 		return nil
+	}
+	if preset := NormalizeDockerSecurityPreset(security.Preset); preset != "" && !KnownDockerSecurityPreset(preset) {
+		return fmt.Errorf("agent %q docker.security.preset must be one of default, locked-down, compat", agentName)
 	}
 	for _, capName := range security.DropCapabilities {
 		if strings.TrimSpace(capName) == "" {
@@ -415,6 +612,138 @@ func validateDockerCacheConfig(agentName string, cache *DockerCacheConfig) error
 		}
 	}
 	return nil
+}
+
+func validateDockerAccessConflicts(agent AgentTypeConfig) error {
+	if agent.Docker == nil {
+		return nil
+	}
+
+	docker := agent.Docker
+	homeTarget := dockerConfigHomeTarget(agent)
+	envTargets := map[string]string{}
+	for key := range agent.Env {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(key), "$")
+		if trimmed != "" {
+			envTargets[trimmed] = "agent env"
+		}
+	}
+	for _, key := range docker.EnvPassthrough {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(key), "$")
+		if trimmed != "" {
+			envTargets[trimmed] = "docker.env_passthrough"
+		}
+	}
+	if docker.Auth != nil && DockerAuthModeUsesEnv(docker.Auth.Mode) {
+		target := strings.TrimSpace(docker.Auth.Target)
+		if target == "" {
+			target = DockerAuthDefaultTarget(docker.Auth.Mode, homeTarget)
+		}
+		target = strings.TrimPrefix(target, "$")
+		if target != "" {
+			envTargets[target] = "docker.auth"
+		}
+	}
+	if docker.Secrets != nil {
+		for i, item := range docker.Secrets.Env {
+			_, target, _, err := ResolveDockerSecretEnvConfig(item)
+			if err != nil {
+				continue
+			}
+			if owner, ok := envTargets[target]; ok {
+				return fmt.Errorf("agent %q docker.secrets.env[%d] target %q conflicts with %s", agent.Name, i, target, owner)
+			}
+			envTargets[target] = fmt.Sprintf("docker.secrets.env[%d]", i)
+		}
+	}
+
+	mountTargets := map[string]string{}
+	workspaceTarget := strings.TrimSpace(docker.WorkspaceMountPath)
+	if workspaceTarget == "" {
+		workspaceTarget = "/workspace"
+	}
+	mountTargets[filepath.Clean(workspaceTarget)] = "workspace mount"
+	for _, mount := range docker.Mounts {
+		target := strings.TrimSpace(mount.Target)
+		if target != "" {
+			mountTargets[filepath.Clean(target)] = "docker.mounts"
+		}
+	}
+	if docker.Auth != nil && DockerAuthModeUsesMount(docker.Auth.Mode) {
+		target := strings.TrimSpace(docker.Auth.Target)
+		if target == "" {
+			target = DockerAuthDefaultTarget(docker.Auth.Mode, homeTarget)
+		}
+		if target != "" {
+			mountTargets[filepath.Clean(target)] = "docker.auth"
+		}
+	}
+	if docker.Cache != nil {
+		for _, profile := range docker.Cache.Profiles {
+			for _, target := range DockerCacheProfileTargets(profile, homeTarget) {
+				mountTargets[filepath.Clean(target)] = "docker.cache.profiles"
+			}
+		}
+		for _, mount := range docker.Cache.Mounts {
+			if strings.TrimSpace(mount.Target) != "" {
+				mountTargets[filepath.Clean(mount.Target)] = "docker.cache.mounts"
+			}
+		}
+	}
+	if docker.Secrets != nil {
+		for i, item := range docker.Secrets.Mounts {
+			_, target, _, err := ResolveDockerAccessMountConfig(item, homeTarget)
+			if err != nil {
+				continue
+			}
+			if owner, ok := conflictingDockerMountTarget(mountTargets, target); ok {
+				return fmt.Errorf("agent %q docker.secrets.mounts[%d] target %q conflicts with %s", agent.Name, i, target, owner)
+			}
+			mountTargets[filepath.Clean(target)] = fmt.Sprintf("docker.secrets.mounts[%d]", i)
+		}
+	}
+	if docker.Tools != nil {
+		for i, item := range docker.Tools.Mounts {
+			_, target, _, err := ResolveDockerAccessMountConfig(item, homeTarget)
+			if err != nil {
+				continue
+			}
+			if owner, ok := conflictingDockerMountTarget(mountTargets, target); ok {
+				return fmt.Errorf("agent %q docker.tools.mounts[%d] target %q conflicts with %s", agent.Name, i, target, owner)
+			}
+			mountTargets[filepath.Clean(target)] = fmt.Sprintf("docker.tools.mounts[%d]", i)
+		}
+	}
+	return nil
+}
+
+func dockerConfigHomeTarget(agent AgentTypeConfig) string {
+	if value := strings.TrimSpace(agent.Env["HOME"]); value != "" {
+		return value
+	}
+	return DockerHomeDefault
+}
+
+func conflictingDockerMountTarget(existing map[string]string, target string) (string, bool) {
+	target = filepath.Clean(strings.TrimSpace(target))
+	for existingTarget, owner := range existing {
+		if dockerPathOverlaps(existingTarget, target) {
+			return owner, true
+		}
+	}
+	return "", false
+}
+
+func dockerPathOverlaps(left string, right string) bool {
+	left = filepath.Clean(strings.TrimSpace(left))
+	right = filepath.Clean(strings.TrimSpace(right))
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	return strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator))
 }
 
 func isValidEnvName(name string) bool {

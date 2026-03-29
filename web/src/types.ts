@@ -34,10 +34,16 @@ export interface ExecutionSummary {
   mode: string;
   image?: string;
   network?: string;
+  network_policy_mode?: string;
+  network_allow?: string[];
   cpus?: number;
   memory?: string;
   pids_limit?: number;
   auth_source?: string;
+  security_preset?: string;
+  env_count?: number;
+  secret_mount_count?: number;
+  tool_mount_count?: number;
 }
 
 export interface TrackerRateLimit {

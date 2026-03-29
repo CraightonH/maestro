@@ -227,17 +227,28 @@ Docker mode keeps Maestro orchestration on the host and containerizes only the h
 - git changes stay visible on the host immediately; there is no copy-back step
 - Maestro runs the container as the current host uid/gid where supported so workspace files keep usable ownership
 
-Phase-1 Docker config:
+Docker config:
 
 - `docker.image`: required image that already contains `claude` or `codex`
+- `docker.image_pin_mode`: `allow` (default) or `require`; `maestro doctor` still warns on mutable tag-based references either way
 - `docker.workspace_mount_path`: optional container path for the workspace bind mount
 - `docker.pull_policy`: `missing` (default), `always`, or `never`
-- `docker.network`: `bridge`, `none`, or `host`
+- `docker.network`: legacy coarse mode fallback: `bridge`, `none`, or `host`
+- `docker.network_policy`: optional phase-2 policy layer:
+  - `mode: none`: force `--network none`
+  - `mode: bridge`: force Docker bridge networking
+  - `mode: allowlist`: keep bridge networking and inject a Maestro-managed HTTP/HTTPS proxy with an explicit host/domain allowlist
+  - `allow`: required for `allowlist`; accepts exact hosts/domains or `*.suffix.example` patterns
 - `docker.cpus`, `docker.memory`, `docker.pids_limit`: basic resource limits
-- `docker.env_passthrough`: explicit host env vars to inject into the container
-- `docker.mounts`: explicit extra read-only bind mounts for auth/config files or directories
+- `docker.secrets`: preferred structured allowlist for extra host env vars or read-only secret/config mounts
+  - `env[]`: explicit env allowlist entries via `preset` or `source`/`target`
+  - `mounts[]`: explicit read-only secret/config mounts via `source`/`target` or a target `preset`
+- `docker.tools`: preferred structured allowlist for extra read-only tool/config mounts
+  - `mounts[]`: explicit read-only mounts via `source`/`target` or a target `preset`
+- `docker.env_passthrough`: legacy raw env injection path, still supported for compatibility
+- `docker.mounts`: legacy explicit read-only bind mounts, still supported for compatibility
 - `docker.auth`: presets for common auth flows
-- `docker.security`: hardening flags and writable-rootfs overrides
+- `docker.security`: named presets plus raw hardening overrides
 - `docker.cache`: optional writable cache mounts and common cache presets
 
 Authentication patterns:
@@ -246,9 +257,17 @@ Authentication patterns:
 - Claude API-key auth: use `docker.auth.mode: claude-api-key`
 - Claude proxy/gateway auth: use `docker.auth.mode: claude-proxy` and set `ANTHROPIC_BASE_URL` when the gateway is not `https://api.anthropic.com`
 - Codex API-key auth: use `docker.auth.mode: codex-api-key`
+- prefer `docker.secrets` and `docker.tools` for additional access beyond `docker.auth`; reserve raw `docker.env_passthrough` and `docker.mounts` for compatibility with older configs
 - Maestro keeps the container home writable by default and does not mount the operator's full home directory
-- if `docker.security` is omitted, Maestro applies a hardened default profile: `no_new_privileges: true`, `read_only_root_fs: true`, `drop_capabilities: [ALL]`, `tmpfs: [/tmp]`
+- if `docker.security` is omitted, Maestro applies the `default` preset: `no_new_privileges: true`, `read_only_root_fs: true`, `drop_capabilities: [ALL]`, `tmpfs: [/tmp]`
+- `docker.security.preset: locked-down` keeps the default baseline and adds `/var/tmp` as tmpfs
+- `docker.security.preset: compat` keeps `no_new_privileges: true` but drops the read-only rootfs, cap-drop, and tmpfs baseline so you can opt back into individual controls as needed
+- raw `docker.security.*` fields apply on top of the selected preset
 - if `HOME` is not provided explicitly, Maestro gives the container a writable local `HOME` automatically
+- `docker.network_policy.mode: allowlist` is intentionally scoped to HTTP/HTTPS egress through a Maestro-managed proxy; it is not a general-purpose firewall product
+- allowlist mode rejects conflicting proxy env configuration (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, including lowercase variants) because Maestro owns those env vars in that mode
+- allowlist mode requires bridge networking; `maestro doctor` verifies support for the required Docker host-gateway resolution where possible
+- `maestro doctor` also shows the effective Docker env injections and read-only secret/tool mounts each agent will receive
 - cache presets are available for common language/tool caches:
   - `claude-cache`
   - `codex-cache`
@@ -267,7 +286,8 @@ agent_types:
     workspace: git-clone
     approval_policy: manual
     docker:
-      image: ghcr.io/acme/maestro-claude:latest
+      image: ghcr.io/acme/maestro-claude@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      image_pin_mode: require
       workspace_mount_path: /workspace
       pull_policy: missing
       network: none
@@ -277,12 +297,22 @@ agent_types:
       auth:
         mode: claude-proxy
         source: ANTHROPIC_AUTH_TOKEN
+      secrets:
+        env:
+          - preset: anthropic-base-url
+        mounts:
+          - preset: netrc
+            source: ~/.netrc
+      tools:
+        mounts:
+          - preset: git-config
+            source: ~/.gitconfig
       security:
+        preset: default
         read_only_root_fs: true
         tmpfs: [/tmp]
       cache:
         profiles: [claude-cache]
-      env_passthrough: [ANTHROPIC_BASE_URL]
 ```
 
 Concrete examples:
@@ -309,8 +339,9 @@ agent_types:
       auth:
         mode: claude-api-key
         source: ANTHROPIC_API_KEY
-      env_passthrough:
-        - ANTHROPIC_BASE_URL
+      secrets:
+        env:
+          - preset: anthropic-base-url
       cache:
         profiles: [claude-cache]
 ```
@@ -346,6 +377,32 @@ agent_types:
         profiles: [codex-cache]
 ```
 
+Docker with allowlisted egress:
+
+```yaml
+agent_types:
+  - name: dev-codex-allowlist
+    agent_pack: dev-codex
+    harness: codex
+    workspace: git-clone
+    approval_policy: manual
+    codex:
+      model: gpt-5.4
+      reasoning: high
+    docker:
+      image: ghcr.io/acme/maestro-codex@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      network_policy:
+        mode: allowlist
+        allow:
+          - api.openai.com
+          - "*.openai.com"
+      auth:
+        mode: codex-api-key
+        source: OPENAI_API_KEY
+      cache:
+        profiles: [codex-cache]
+```
+
 For Codex proxy mode:
 
 - use a model name that your proxy actually exposes
@@ -357,7 +414,7 @@ Current phase-1 limits:
 
 - only the harness process is containerized by default; set `hooks.execution: container` if outer Maestro hooks should run in the same Docker environment
 - additional `docker.mounts` entries must be `read_only: true`
-- Maestro does not yet enforce fine-grained allowlists for tools, secrets, or writable paths
+- raw `docker.env_passthrough` and `docker.mounts` remain broad compatibility paths; prefer `docker.secrets` and `docker.tools` for explicit allowlists
 - Docker availability is checked when the harness is constructed; if `docker` is missing, startup fails with a direct error
 
 ## Prompt Template Data

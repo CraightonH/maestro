@@ -584,6 +584,68 @@ func TestValidateMVPAcceptsDockerHarnessConfig(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsDockerStructuredAccessConfig(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          promptPath,
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Secrets: &config.DockerSecretsConfig{
+					Env: []config.DockerSecretEnvConfig{{
+						Preset: config.DockerSecretEnvPresetAnthropicBaseURL,
+					}},
+					Mounts: []config.DockerAccessMountConfig{{
+						Preset: config.DockerMountPresetNetrc,
+						Source: filepath.Join(root, "netrc"),
+					}},
+				},
+				Tools: &config.DockerToolsConfig{
+					Mounts: []config.DockerAccessMountConfig{{
+						Preset: config.DockerMountPresetGitConfig,
+						Source: filepath.Join(root, "gitconfig"),
+					}},
+				},
+			},
+		}},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected structured docker access config to validate: %v", err)
+	}
+}
+
 func TestValidateMVPRejectsWritableDockerMount(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")
@@ -680,6 +742,92 @@ func TestValidateMVPRejectsInvalidDockerPullPolicy(t *testing.T) {
 	}
 }
 
+func TestValidateMVPRejectsInvalidDockerImagePinMode(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:        "maestro-agent:latest",
+				ImagePinMode: "warn",
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "image_pin_mode") {
+		t.Fatalf("validation error = %v, want image_pin_mode error", err)
+	}
+}
+
+func TestValidateMVPRejectsUnpinnedRequiredDockerImage(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:        "maestro-agent:latest",
+				ImagePinMode: config.DockerImagePinModeRequire,
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "digest-pinned") {
+		t.Fatalf("validation error = %v, want digest pinning error", err)
+	}
+}
+
 func TestValidateMVPRejectsInvalidDockerAuthMode(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: testDefaults(1),
@@ -725,6 +873,51 @@ func TestValidateMVPRejectsInvalidDockerAuthMode(t *testing.T) {
 	}
 }
 
+func TestValidateMVPRejectsInvalidDockerSecurityPreset(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Security: &config.DockerSecurityConfig{
+					Preset: "strictest",
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "docker.security.preset") {
+		t.Fatalf("validation error = %v, want docker.security.preset error", err)
+	}
+}
+
 func TestValidateMVPRejectsInvalidDockerCacheProfile(t *testing.T) {
 	cfg := &config.Config{
 		Defaults: testDefaults(1),
@@ -767,6 +960,196 @@ func TestValidateMVPRejectsInvalidDockerCacheProfile(t *testing.T) {
 	err := config.ValidateMVP(cfg)
 	if err == nil || !strings.Contains(err.Error(), "docker.cache.profiles") {
 		t.Fatalf("validation error = %v, want docker.cache.profiles error", err)
+	}
+}
+
+func TestValidateMVPRejectsDockerStructuredSecretEnvConflict(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:          "maestro-agent:latest",
+				EnvPassthrough: []string{"ANTHROPIC_BASE_URL"},
+				Secrets: &config.DockerSecretsConfig{
+					Env: []config.DockerSecretEnvConfig{{
+						Preset: config.DockerSecretEnvPresetAnthropicBaseURL,
+					}},
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "docker.secrets.env[0]") {
+		t.Fatalf("validation error = %v, want docker.secrets.env conflict", err)
+	}
+}
+
+func TestValidateMVPRejectsDockerStructuredMountOverlap(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Secrets: &config.DockerSecretsConfig{
+					Mounts: []config.DockerAccessMountConfig{{
+						Source: "/tmp/netrc",
+						Target: "/workspace",
+					}},
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with workspace mount") {
+		t.Fatalf("validation error = %v, want workspace mount conflict", err)
+	}
+}
+
+func TestValidateMVPRejectsContradictoryDockerNetworkPolicy(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:   "maestro-agent:latest",
+				Network: "host",
+				NetworkPolicy: &config.DockerNetworkPolicyConfig{
+					Mode:  config.DockerNetworkPolicyAllowlist,
+					Allow: []string{"api.openai.com"},
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "conflicts with docker.network_policy.mode=allowlist") {
+		t.Fatalf("validation error = %v, want network policy conflict", err)
+	}
+}
+
+func TestValidateMVPRejectsAllowlistNetworkPolicyProxyEnvOverride(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             "/tmp/state",
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          "/tmp/prompt.md",
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Env:             map[string]string{"HTTPS_PROXY": "http://example.com:8080"},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				NetworkPolicy: &config.DockerNetworkPolicyConfig{
+					Mode:  config.DockerNetworkPolicyAllowlist,
+					Allow: []string{"api.openai.com"},
+				},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "Maestro manages proxy env") {
+		t.Fatalf("validation error = %v, want proxy env conflict", err)
 	}
 }
 

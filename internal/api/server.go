@@ -217,13 +217,19 @@ type trackerRateLimitJSON struct {
 }
 
 type executionJSON struct {
-	Mode       string  `json:"mode"`
-	Image      string  `json:"image,omitempty"`
-	Network    string  `json:"network,omitempty"`
-	CPUs       float64 `json:"cpus,omitempty"`
-	Memory     string  `json:"memory,omitempty"`
-	PIDsLimit  int     `json:"pids_limit,omitempty"`
-	AuthSource string  `json:"auth_source,omitempty"`
+	Mode              string   `json:"mode"`
+	Image             string   `json:"image,omitempty"`
+	Network           string   `json:"network,omitempty"`
+	NetworkPolicyMode string   `json:"network_policy_mode,omitempty"`
+	NetworkAllow      []string `json:"network_allow,omitempty"`
+	CPUs              float64  `json:"cpus,omitempty"`
+	Memory            string   `json:"memory,omitempty"`
+	PIDsLimit         int      `json:"pids_limit,omitempty"`
+	AuthSource        string   `json:"auth_source,omitempty"`
+	SecurityPreset    string   `json:"security_preset,omitempty"`
+	EnvCount          int      `json:"env_count,omitempty"`
+	SecretMountCount  int      `json:"secret_mount_count,omitempty"`
+	ToolMountCount    int      `json:"tool_mount_count,omitempty"`
 }
 
 type runOutputJSON struct {

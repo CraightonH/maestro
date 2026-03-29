@@ -233,7 +233,8 @@ agent_types:
 
     # Optional: run only the harness process inside Docker while Maestro stays on the host.
     docker:
-      image: ghcr.io/acme/maestro-claude:latest
+      image: ghcr.io/acme/maestro-claude@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      image_pin_mode: require             # allow (default) or require
       workspace_mount_path: /workspace   # default: /workspace
       pull_policy: missing                # missing (default), always, or never
       network: bridge                    # bridge (default), none, or host
@@ -243,16 +244,22 @@ agent_types:
       auth:
         mode: claude-proxy
         source: ANTHROPIC_AUTH_TOKEN
+      secrets:
+        env:
+          - preset: anthropic-base-url
+        mounts:
+          - preset: netrc
+            source: ~/.netrc
+      tools:
+        mounts:
+          - preset: git-config
+            source: ~/.gitconfig
       security:
+        preset: default                  # default, locked-down, or compat
         read_only_root_fs: true
         tmpfs: [/tmp]
       cache:
         profiles: [claude-cache]
-      env_passthrough: [ANTHROPIC_BASE_URL]
-      mounts:
-        - source: ~/.config/claude
-          target: /tmp/maestro-home/.claude
-          read_only: true
 
 # ---------------------------------------------------------------------------
 # Source defaults — shared settings applied per-tracker-type to reduce
@@ -287,13 +294,27 @@ agent_defaults:
 # - Docker is selected per `agent_type`, so one Maestro instance can mix host-run and Docker-run agents
 #   across different sources.
 # - The prepared host workspace is bind-mounted into the container so git changes remain visible on the host.
-# - Additional docker.mounts entries must be explicit read-only auth/config mounts in phase 1.
+# - Prefer `docker.secrets` and `docker.tools` for explicit allowlists. Raw `docker.env_passthrough`
+#   and `docker.mounts` remain supported for compatibility.
 # - Docker defaults are hardened: no-new-privileges, read-only rootfs, cap-drop ALL, and tmpfs /tmp.
-# - Do not mount your full home directory by default; prefer explicit env_passthrough or minimal read-only auth mounts.
+# - Named security presets are available under `docker.security.preset`:
+#   `default` keeps the existing hardened baseline, `locked-down` adds `/var/tmp` tmpfs,
+#   and `compat` keeps `no-new-privileges` but relaxes the read-only rootfs/cap-drop/tmpfs defaults.
+# - Raw `docker.security.*` fields still override the selected preset field-by-field.
+# - `maestro doctor` warns when a Docker image is not digest-pinned; set `docker.image_pin_mode: require`
+#   to make digest pinning mandatory for a given agent type.
+# - `docker.network` still supports coarse `bridge` / `none` / `host` modes.
+# - `docker.network_policy` adds phase-2 Docker egress control:
+#   `mode: none`, `mode: bridge`, or `mode: allowlist` with explicit allowed hosts/domains.
+# - `mode: allowlist` currently scopes HTTP/HTTPS egress through a Maestro-managed proxy and rejects
+#   conflicting proxy env overrides because Maestro owns those variables in that mode.
+# - Do not mount your full home directory by default; prefer narrow `docker.secrets` / `docker.tools`
+#   entries or minimal auth presets.
 # - Claude can use direct API keys (`docker.auth.mode: claude-api-key`) or bearer-token proxy auth
 #   (`docker.auth.mode: claude-proxy` plus ANTHROPIC_BASE_URL).
 # - Codex can use mounted CLI auth or API-key auth (`docker.auth.mode: codex-api-key`).
 #   For OpenAI-compatible proxies, pass OPENAI_API_KEY and set `openai_base_url` via `codex.extra_args`.
+# - `maestro doctor` shows the effective Docker env injections and read-only mounts per agent.
 # - Cache presets are available for common language/tool caches via `docker.cache.profiles`.
 # - When no HOME is provided explicitly, Maestro gives the container a writable local HOME automatically.
 
@@ -314,9 +335,32 @@ agent_defaults:
 #       auth:
 #         mode: claude-proxy
 #         source: ANTHROPIC_AUTH_TOKEN
-#       env_passthrough: [ANTHROPIC_BASE_URL]
+#       secrets:
+#         env:
+#           - preset: anthropic-base-url
 #       cache:
 #         profiles: [claude-cache]
+#
+# Example: Dockerized Codex agent with allowlisted HTTP/HTTPS egress
+#
+# agent_types:
+#   - name: dev-codex-allowlist
+#     agent_pack: dev-codex
+#     harness: codex
+#     workspace: git-clone
+#     approval_policy: manual
+#     docker:
+#       image: ghcr.io/acme/maestro-codex@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+#       network_policy:
+#         mode: allowlist
+#         allow:
+#           - api.openai.com
+#           - "*.openai.com"
+#       auth:
+#         mode: codex-api-key
+#         source: OPENAI_API_KEY
+#       cache:
+#         profiles: [codex-cache]
 #
 # Example: Dockerized Codex agent using an OpenAI-compatible proxy
 #

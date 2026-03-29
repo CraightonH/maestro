@@ -15,7 +15,7 @@ import (
 	"github.com/tjohnson/maestro/internal/config"
 )
 
-const defaultDockerHome = "/tmp/maestro-home"
+const defaultDockerHome = config.DockerHomeDefault
 
 type ProcessSpec struct {
 	Binary  string
@@ -118,9 +118,6 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 		)
 	}
 
-	if strings.TrimSpace(r.cfg.Network) != "" {
-		args = append(args, "--network", r.cfg.Network)
-	}
 	if r.cfg.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(r.cfg.CPUs, 'f', -1, 64))
 	}
@@ -136,6 +133,11 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 	if err != nil {
 		return nil, err
 	}
+	networkArgs, err := r.networkArgs(containerEnv)
+	if err != nil {
+		return nil, err
+	}
+	args = append(args, networkArgs...)
 	homeTarget := strings.TrimSpace(containerEnv["HOME"])
 	if homeTarget == "" {
 		homeTarget = defaultDockerHome
@@ -151,6 +153,14 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 		if err := requireExistingPath(mount.Source); err != nil {
 			return nil, fmt.Errorf("docker mount %q: %w", mount.Source, err)
 		}
+		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
+	}
+
+	accessMounts, err := r.accessMounts(homeTarget)
+	if err != nil {
+		return nil, err
+	}
+	for _, mount := range accessMounts {
 		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
 	}
 
@@ -186,6 +196,45 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 	cmd.Dir = spec.Workdir
 	cmd.Env = DockerClientEnv(nil)
 	return cmd, nil
+}
+
+func (r *dockerProcessRunner) networkArgs(containerEnv map[string]string) ([]string, error) {
+	if r.cfg.NetworkPolicy == nil {
+		if strings.TrimSpace(r.cfg.Network) == "" {
+			return nil, nil
+		}
+		return []string{"--network", r.cfg.Network}, nil
+	}
+
+	switch config.NormalizeDockerNetworkPolicyMode(r.cfg.NetworkPolicy.Mode) {
+	case config.DockerNetworkPolicyNone:
+		return []string{"--network", config.DockerNetworkPolicyNone}, nil
+	case config.DockerNetworkPolicyBridge:
+		return []string{"--network", config.DockerNetworkPolicyBridge}, nil
+	case config.DockerNetworkPolicyAllowlist:
+		proxy, err := ensureDockerAllowlistProxy(r.cfg.NetworkPolicy.Allow)
+		if err != nil {
+			return nil, fmt.Errorf("start docker allowlist proxy: %w", err)
+		}
+		proxyURL := proxy.containerURL()
+		containerEnv["HTTP_PROXY"] = proxyURL
+		containerEnv["HTTPS_PROXY"] = proxyURL
+		containerEnv["ALL_PROXY"] = proxyURL
+		containerEnv["http_proxy"] = proxyURL
+		containerEnv["https_proxy"] = proxyURL
+		containerEnv["all_proxy"] = proxyURL
+		containerEnv["NO_PROXY"] = appendNoProxy(containerEnv["NO_PROXY"], "127.0.0.1", "localhost", "::1")
+		containerEnv["no_proxy"] = appendNoProxy(containerEnv["no_proxy"], "127.0.0.1", "localhost", "::1")
+		return []string{
+			"--network", config.DockerNetworkPolicyBridge,
+			"--add-host", "host.docker.internal:host-gateway",
+		}, nil
+	default:
+		if strings.TrimSpace(r.cfg.Network) == "" {
+			return nil, nil
+		}
+		return []string{"--network", r.cfg.Network}, nil
+	}
 }
 
 func (r *dockerProcessRunner) securityArgs() []string {
@@ -234,6 +283,22 @@ func (r *dockerProcessRunner) containerEnv(explicit map[string]string) (map[stri
 			return nil, fmt.Errorf("docker env_passthrough %q is unset or empty", key)
 		}
 		merged[key] = value
+	}
+	if r.cfg.Secrets != nil {
+		for _, item := range r.cfg.Secrets.Env {
+			source, target, _, err := config.ResolveDockerSecretEnvConfig(item)
+			if err != nil {
+				return nil, fmt.Errorf("docker secrets env: %w", err)
+			}
+			if _, ok := merged[target]; ok {
+				continue
+			}
+			value, ok := os.LookupEnv(source)
+			if !ok || strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("docker secrets env source %q is unset or empty", source)
+			}
+			merged[target] = value
+		}
 	}
 	if strings.TrimSpace(merged["HOME"]) == "" {
 		merged["HOME"] = defaultDockerHome
@@ -303,6 +368,43 @@ func (r *dockerProcessRunner) applyAuthConfig(containerEnv map[string]string, ho
 		})
 	default:
 		return nil, fmt.Errorf("unsupported docker auth mode %q", auth.Mode)
+	}
+	return mounts, nil
+}
+
+func (r *dockerProcessRunner) accessMounts(homeTarget string) ([]config.DockerMountConfig, error) {
+	var mounts []config.DockerMountConfig
+	if r.cfg.Secrets != nil {
+		for _, item := range r.cfg.Secrets.Mounts {
+			source, target, _, err := config.ResolveDockerAccessMountConfig(item, homeTarget)
+			if err != nil {
+				return nil, fmt.Errorf("docker secrets mount: %w", err)
+			}
+			if err := requireExistingPath(source); err != nil {
+				return nil, fmt.Errorf("docker secrets mount %q: %w", source, err)
+			}
+			mounts = append(mounts, config.DockerMountConfig{
+				Source:   source,
+				Target:   target,
+				ReadOnly: true,
+			})
+		}
+	}
+	if r.cfg.Tools != nil {
+		for _, item := range r.cfg.Tools.Mounts {
+			source, target, _, err := config.ResolveDockerAccessMountConfig(item, homeTarget)
+			if err != nil {
+				return nil, fmt.Errorf("docker tools mount: %w", err)
+			}
+			if err := requireExistingPath(source); err != nil {
+				return nil, fmt.Errorf("docker tools mount %q: %w", source, err)
+			}
+			mounts = append(mounts, config.DockerMountConfig{
+				Source:   source,
+				Target:   target,
+				ReadOnly: true,
+			})
+		}
 	}
 	return mounts, nil
 }

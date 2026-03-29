@@ -359,25 +359,22 @@ func resolvePaths(cfg *Config) error {
 			cfg.AgentTypes[i].ContextFiles[j] = filepath.Clean(contextPath)
 		}
 
-			if cfg.AgentTypes[i].Docker != nil {
-				dockerBaseDir := cfg.ConfigDir
-				if strings.TrimSpace(cfg.AgentTypes[i].PackPath) != "" {
-					dockerBaseDir = filepath.Dir(cfg.AgentTypes[i].PackPath)
-				}
+		if cfg.AgentTypes[i].Docker != nil {
+			dockerBaseDir := cfg.ConfigDir
 			for j := range cfg.AgentTypes[i].Docker.Mounts {
 				source := cfg.AgentTypes[i].Docker.Mounts[j].Source
 				if source == "" {
 					continue
 				}
-					source, err = expandPath(source)
-					if err != nil {
-						return err
-					}
-					if !filepath.IsAbs(source) {
-						source = filepath.Join(dockerBaseDir, source)
-					}
-					cfg.AgentTypes[i].Docker.Mounts[j].Source = filepath.Clean(source)
+				source, err = expandPath(source)
+				if err != nil {
+					return err
 				}
+				if !filepath.IsAbs(source) {
+					source = filepath.Join(dockerBaseDir, source)
+				}
+				cfg.AgentTypes[i].Docker.Mounts[j].Source = filepath.Clean(source)
+			}
 			if err := resolveDockerConfigPaths(dockerBaseDir, cfg.AgentTypes[i].Docker); err != nil {
 				return err
 			}
@@ -420,6 +417,40 @@ func resolveDockerConfigPaths(configDir string, docker *DockerConfig) error {
 				source = filepath.Join(configDir, source)
 			}
 			docker.Cache.Mounts[i].Source = filepath.Clean(source)
+		}
+	}
+	if docker.Secrets != nil {
+		for i := range docker.Secrets.Mounts {
+			source := strings.TrimSpace(docker.Secrets.Mounts[i].Source)
+			if source == "" {
+				continue
+			}
+			var err error
+			source, err = expandPath(source)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(source) {
+				source = filepath.Join(configDir, source)
+			}
+			docker.Secrets.Mounts[i].Source = filepath.Clean(source)
+		}
+	}
+	if docker.Tools != nil {
+		for i := range docker.Tools.Mounts {
+			source := strings.TrimSpace(docker.Tools.Mounts[i].Source)
+			if source == "" {
+				continue
+			}
+			var err error
+			source, err = expandPath(source)
+			if err != nil {
+				return err
+			}
+			if !filepath.IsAbs(source) {
+				source = filepath.Join(configDir, source)
+			}
+			docker.Tools.Mounts[i].Source = filepath.Clean(source)
 		}
 	}
 	return nil

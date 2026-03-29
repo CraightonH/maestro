@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -351,7 +352,8 @@ func runDockerDoctor(w io.Writer, agents []config.AgentTypeConfig) error {
 		fmt.Fprintf(w, "  FAIL docker daemon unreachable: %s\n", strings.TrimSpace(string(infoOut)))
 		return err
 	}
-	fmt.Fprintf(w, "  OK  docker daemon reachable (%s)\n", strings.TrimSpace(string(infoOut)))
+	serverVersion := strings.TrimSpace(string(infoOut))
+	fmt.Fprintf(w, "  OK  docker daemon reachable (%s)\n", serverVersion)
 
 	seen := map[string]struct{}{}
 	for _, agent := range agents {
@@ -366,18 +368,128 @@ func runDockerDoctor(w io.Writer, agents []config.AgentTypeConfig) error {
 			continue
 		}
 		key := image + "|" + binary
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-
 		fmt.Fprintf(w, "  Agent %s image %s\n", agent.Name, image)
-		if err := runDockerImageDoctor(w, dockerPath, image, binary); err != nil {
+		if err := runDockerNetworkPolicyDoctor(w, agent, serverVersion); err != nil {
+			return err
+		}
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			if !config.DockerImageIsPinned(image) {
+				fmt.Fprintln(w, "    WARN image is not digest-pinned; prefer repo@sha256:... for reproducible runs")
+			} else {
+				fmt.Fprintln(w, "    OK  image is digest-pinned")
+			}
+			if err := runDockerImageDoctor(w, dockerPath, image, binary); err != nil {
+				return err
+			}
+		}
+		if err := runDockerAccessDoctor(w, agent); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func runDockerNetworkPolicyDoctor(w io.Writer, agent config.AgentTypeConfig, serverVersion string) error {
+	if agent.Docker == nil || agent.Docker.NetworkPolicy == nil {
+		return nil
+	}
+	mode := config.NormalizeDockerNetworkPolicyMode(agent.Docker.NetworkPolicy.Mode)
+	if mode == "" {
+		return nil
+	}
+	switch mode {
+	case config.DockerNetworkPolicyAllowlist:
+		fmt.Fprintf(w, "    OK  network policy allowlist (%d host(s)/domain(s))\n", len(agent.Docker.NetworkPolicy.Allow))
+		if !dockerVersionAtLeast(serverVersion, 20, 10) {
+			fmt.Fprintln(w, "    FAIL allowlist mode requires Docker server 20.10+ for host-gateway resolution")
+			return fmt.Errorf("docker network policy allowlist requires Docker server 20.10+")
+		}
+		fmt.Fprintf(w, "    OK  host-gateway resolution supported by Docker %s\n", serverVersion)
+	default:
+		fmt.Fprintf(w, "    OK  network policy %s\n", mode)
+	}
+	return nil
+}
+
+func runDockerAccessDoctor(w io.Writer, agent config.AgentTypeConfig) error {
+	if agent.Docker == nil {
+		return nil
+	}
+
+	homeTarget := config.DockerHomeDefault
+	if value := strings.TrimSpace(agent.Env["HOME"]); value != "" {
+		homeTarget = value
+	}
+	access := config.ResolveDockerAccess(agent.Docker, homeTarget)
+	if len(access.Env) == 0 && len(access.SecretMounts) == 0 && len(access.ToolMounts) == 0 {
+		fmt.Fprintln(w, "    OK  no extra Docker env or mounts configured")
+		return nil
+	}
+
+	if len(access.Env) > 0 {
+		fmt.Fprintln(w, "    Env")
+		for _, grant := range access.Env {
+			value, ok := os.LookupEnv(grant.Source)
+			if !ok || strings.TrimSpace(value) == "" {
+				fmt.Fprintf(w, "      FAIL %s <= $%s (%s) is unset or empty\n", grant.Target, grant.Source, grant.Origin)
+				return fmt.Errorf("agent %s docker env %s is unset", agent.Name, grant.Source)
+			}
+			fmt.Fprintf(w, "      OK  %s <= $%s (%s)\n", grant.Target, grant.Source, grant.Origin)
+		}
+	}
+	if len(access.SecretMounts) > 0 {
+		fmt.Fprintln(w, "    Secret mounts")
+		for _, grant := range access.SecretMounts {
+			if _, err := os.Stat(grant.Source); err != nil {
+				fmt.Fprintf(w, "      FAIL %s <= %s (%s) is unavailable\n", grant.Target, grant.Source, grant.Origin)
+				return fmt.Errorf("agent %s docker mount %s: %w", agent.Name, grant.Source, err)
+			}
+			fmt.Fprintf(w, "      OK  %s <= %s (%s)\n", grant.Target, grant.Source, grant.Origin)
+		}
+	}
+	if len(access.ToolMounts) > 0 {
+		fmt.Fprintln(w, "    Tool mounts")
+		for _, grant := range access.ToolMounts {
+			if _, err := os.Stat(grant.Source); err != nil {
+				fmt.Fprintf(w, "      FAIL %s <= %s (%s) is unavailable\n", grant.Target, grant.Source, grant.Origin)
+				return fmt.Errorf("agent %s docker mount %s: %w", agent.Name, grant.Source, err)
+			}
+			fmt.Fprintf(w, "      OK  %s <= %s (%s)\n", grant.Target, grant.Source, grant.Origin)
+		}
+	}
+	return nil
+}
+
+func dockerVersionAtLeast(version string, wantMajor int, wantMinor int) bool {
+	parts := strings.Split(strings.TrimSpace(version), ".")
+	if len(parts) < 2 {
+		return false
+	}
+	major, err := strconv.Atoi(leadingDigits(parts[0]))
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(leadingDigits(parts[1]))
+	if err != nil {
+		return false
+	}
+	if major != wantMajor {
+		return major > wantMajor
+	}
+	return minor >= wantMinor
+}
+
+func leadingDigits(raw string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(raw) {
+		if r < '0' || r > '9' {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func runDockerImageDoctor(w io.Writer, dockerPath, image, binary string) error {

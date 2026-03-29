@@ -1999,6 +1999,16 @@ func formatExecutionSummary(summary *orchestrator.ExecutionSummary) string {
 	if strings.TrimSpace(summary.Network) != "" {
 		parts = append(parts, "network="+summary.Network)
 	}
+	if strings.TrimSpace(summary.NetworkPolicyMode) != "" {
+		parts = append(parts, "policy="+summary.NetworkPolicyMode)
+	}
+	if len(summary.NetworkAllow) > 0 {
+		display := strings.Join(summary.NetworkAllow, ",")
+		if len(summary.NetworkAllow) > 2 {
+			display = strings.Join(summary.NetworkAllow[:2], ",") + fmt.Sprintf(",+%d", len(summary.NetworkAllow)-2)
+		}
+		parts = append(parts, "allow="+display)
+	}
 	if summary.CPUs > 0 {
 		parts = append(parts, fmt.Sprintf("cpus=%g", summary.CPUs))
 	}
@@ -2010,6 +2020,18 @@ func formatExecutionSummary(summary *orchestrator.ExecutionSummary) string {
 	}
 	if strings.TrimSpace(summary.AuthSource) != "" {
 		parts = append(parts, "auth="+summary.AuthSource)
+	}
+	if strings.TrimSpace(summary.SecurityPreset) != "" {
+		parts = append(parts, "security="+summary.SecurityPreset)
+	}
+	if summary.EnvCount > 0 {
+		parts = append(parts, fmt.Sprintf("env=%d", summary.EnvCount))
+	}
+	if summary.SecretMountCount > 0 {
+		parts = append(parts, fmt.Sprintf("secrets=%d", summary.SecretMountCount))
+	}
+	if summary.ToolMountCount > 0 {
+		parts = append(parts, fmt.Sprintf("tools=%d", summary.ToolMountCount))
 	}
 	return strings.Join(parts, " · ")
 }

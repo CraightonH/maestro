@@ -84,10 +84,12 @@ containerized.
 Operational notes:
 
 - the prepared workspace is bind-mounted into the container, so git changes remain visible on the host
-- `docker.env_passthrough` is the normal way to inject explicit credentials into the container
+- prefer `docker.secrets` and `docker.tools` to explicitly allow extra env vars and read-only mounts into the container
+- `docker.env_passthrough` and `docker.mounts` remain available for compatibility, but they are the broader legacy path
 - for Claude, bearer-token proxy auth uses `ANTHROPIC_AUTH_TOKEN`, plus `ANTHROPIC_BASE_URL` when the proxy is not `https://api.anthropic.com`
 - for Codex proxy/API-key mode, pass `OPENAI_API_KEY`, set the proxy URL through `codex.extra_args` as `openai_base_url="..."`, and force API auth with `forced_login_method="api"`
-- for mounted CLI auth, prefer minimal read-only `docker.mounts` entries rather than mounting your whole home directory
+- for mounted CLI auth, prefer the built-in `docker.auth` presets or narrow `docker.secrets.mounts` entries rather than mounting your whole home directory
+- `maestro doctor` shows the effective Docker env injections and read-only secret/tool mounts for each Docker-backed agent
 - if `HOME` is not set explicitly for the container, Maestro provides a writable container-local `HOME`
 
 ## Run Log Persistence
@@ -293,7 +295,7 @@ Run `maestro doctor --config /path/to/maestro.yaml` to validate your setup. It c
 - config loads and passes validation
 - likely overlapping source routes that could cause ambiguous or duplicate dispatch
 - required host harness binaries (`claude`, `codex`) are available in `PATH`
-- Docker-backed agent images are present or pullable, the Docker daemon/context is reachable, and the visible `DOCKER_*` client env looks sane
+- Docker-backed agent images are present or pullable, the Docker daemon/context is reachable, the visible `DOCKER_*` client env looks sane, mutable non-digest image references are flagged, and Docker network-policy support is checked where possible
 
 Use this before your first run or after changing `agent_types[].harness` entries or Docker-backed agent settings.
 
