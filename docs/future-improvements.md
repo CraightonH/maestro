@@ -51,63 +51,6 @@ other hooks.
 
 ## Docker / Container Sandboxing
 
-### 🐳 Docker Harness Wrapper
-
-Optional Docker-based isolation for agent execution. Instead of spawning `claude` or
-`codex` directly on the host, Maestro creates a container with the agent binary, mounts
-the workspace, applies resource limits, and streams logs back.
-
-**Why**: All agents currently share the host filesystem, network, and credentials. A
-prompt-injected agent could read other workspaces, exfiltrate tokens, or interfere with
-other agents. Docker isolation eliminates these vectors and enables reproducible
-per-agent-type environments (Node.js image vs Python image).
-
-**Design**:
-
-```
-internal/harness/docker/
-├── adapter.go       # Wraps any harness.Harness with container lifecycle
-├── container.go     # Create, start, wait, stop, logs via Go Docker SDK
-├── network.go       # Network policy / filtering proxy setup
-└── pool.go          # Optional warm container pool (future)
-```
-
-The adapter wraps existing Claude/Codex adapters — the agent binary runs inside the
-container, but log parsing, approval detection, and stream-json handling stay the same.
-
-**Config**:
-
-```yaml
-agent_types:
-  - name: code-agent
-    harness: claude-code
-    sandbox:
-      enabled: true
-      image: "maestro-agent:latest"
-      resources:
-        memory: "4Gi"
-        cpu: 2
-        pids: 4096
-      network:
-        mode: "filtered"         # none | filtered | host
-        allowed_domains:
-          - "gitlab.example.com"
-          - "registry.npmjs.org"
-      filesystem:
-        readonly_root: true
-        writable_paths: ["/tmp", "/workspace"]
-      security:
-        drop_all_caps: true
-        no_new_privileges: true
-        runtime: ""              # "" = default, "runsc" = gVisor
-```
-
-**To ship**: Go Docker SDK dep, container lifecycle management, log streaming via
-`stdcopy.StdCopy`, volume-per-workspace mapping, tmpfs-based secrets, agent base
-image(s), network filtering proxy, integration tests.
-
----
-
 ### 🐳 Resource Governance per Agent
 
 Per-agent-type CPU, memory, disk I/O, and PID limits enforced by container cgroups.
@@ -202,19 +145,6 @@ Different concurrency limits based on issue state: max 1 agent on "Todo" but max
 
 **To ship**: Extend limiter to accept state parameter, count active runs by issue state,
 check per-state limits before dispatch.
-
----
-
-### 🔗 Blocker-Aware Scheduling
-
-Skip issues blocked by non-terminal issues. If B depends on A and A is open, don't
-dispatch B.
-
-**Why**: Prevents wasted agent runs on blocked work. Common in Linear (issue relations)
-and GitLab (blocking issues).
-
-**To ship**: Tracker adapter extension for blocking/blocked-by relations, filter
-candidates during dispatch.
 
 ---
 
@@ -514,6 +444,59 @@ Tracker adapter for Jira (Cloud and Server/Data Center).
 
 **To ship**: Implement `tracker.Tracker` using Jira REST API. Map statuses and labels to
 Maestro's lifecycle model.
+
+---
+
+### 🚨 Sentry Source Adapter
+
+Treat Sentry as a filtered operational work source for high-signal issue groups, not as a
+raw event firehose.
+
+**Why**: Sentry already has the right primitives for “something actionable is broken now”:
+issue groups, assignees, comments/activity, unresolved/resolved/ignored states, and rich
+stack trace context. It is a good fit for investigation, regression response, and
+auto-fix workflows when the intake is tightly scoped.
+
+**Recommended scope**:
+- Poll Sentry issue groups, not individual events
+- Support high-signal filters only:
+  - project
+  - environment
+  - status (`unresolved`, optionally `ignored` / `resolved`)
+  - regression-only or inbox/new issue style queries
+  - minimum event/user count thresholds
+  - assignee / owner filters where available
+- Keep lifecycle light:
+  - unresolved
+  - resolved
+  - ignored
+- Optionally add comments/activity back to Sentry, but do not force a heavyweight workflow
+  model onto it
+
+**Why this shape**: Sentry's own docs and ecosystem integrations mostly treat it as the
+source of operational signals that then either trigger action directly or sync into a
+planning tracker. Their issue APIs are centered around filtered issue lists and light
+state mutation, and their Linear/Jira integrations are geared around creating and syncing
+external work rather than replacing a dedicated project tracker.
+
+**To ship**:
+- Implement `tracker.Tracker` using Sentry's issue APIs
+- Map a Sentry issue/group into `domain.Issue`
+- Support polling via organization issue listing plus query/project/environment filters
+- Support minimal state writeback via `resolved` / `unresolved` / `ignored`
+- Parse rate-limit headers and keep polling conservative
+- Add Sentry-specific filter config instead of overloading generic label semantics
+
+**Likely config**:
+`tracker: sentry` with `connection.base_url`, `connection.org`, `connection.project`,
+`token_env`, and filter fields such as `environment`, `query`, `regression_only`,
+`min_events`, `min_users`, and `assigned_to`.
+
+**Non-goals for v1**:
+- raw event ingestion
+- incident/on-call escalation replacement
+- trying to mirror every Sentry alert rule in Maestro config
+- forcing full planning-tracker semantics (milestones, elaborate workflow states, etc.)
 
 ---
 

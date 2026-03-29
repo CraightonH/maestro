@@ -228,7 +228,7 @@ func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	hr, err := newHarness(cfg.AgentTypes[0].Harness)
+	hr, err := newHarness(cfg.AgentTypes[0])
 	if err != nil {
 		return nil, err
 	}
@@ -252,14 +252,19 @@ func newTracker(source config.SourceConfig) (tracker.Tracker, error) {
 	}
 }
 
-func newHarness(kind string) (harness.Harness, error) {
-	switch kind {
+func newHarness(agent config.AgentTypeConfig) (harness.Harness, error) {
+	runner, err := harness.NewProcessRunner(agent.Docker)
+	if err != nil {
+		return nil, err
+	}
+
+	switch agent.Harness {
 	case "claude-code":
-		return claudeharness.NewAdapter()
+		return claudeharness.NewAdapter(claudeharness.WithProcessRunner(runner))
 	case "codex":
-		return codexharness.NewAdapter()
+		return codexharness.NewAdapter(codexharness.WithProcessRunner(runner))
 	default:
-		return nil, fmt.Errorf("unsupported harness %q", kind)
+		return nil, fmt.Errorf("unsupported harness %q", agent.Harness)
 	}
 }
 

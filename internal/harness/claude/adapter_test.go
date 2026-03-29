@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 )
@@ -75,6 +76,102 @@ func TestAdapterStartAndWaitWithStubBinary(t *testing.T) {
 	}
 	if !strings.Contains(args, "--effort\nmedium") {
 		t.Fatalf("args = %q, want effort override", args)
+	}
+}
+
+func TestAdapterStartAndWaitWithDockerRunner(t *testing.T) {
+	tmp := t.TempDir()
+	argsPath := filepath.Join(tmp, "docker-args.txt")
+	authDir := filepath.Join(tmp, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	script := "#!/bin/sh\nprintf '%s\n' \"$@\" > \"" + argsPath + "\"\ncat >/tmp/claude-input.$$ \nprintf '%s\n' '{\"type\":\"assistant\",\"session_id\":\"session-1\"}'\nprintf '{\"type\":\"result\",\"session_id\":\"session-1\",\"result\":\"docker:'\nprintf '%s' \"$(cat /tmp/claude-input.$$)\"\nprintf '%s\n' '\"}'\nrm -f /tmp/claude-input.$$\n"
+	if err := os.WriteFile(filepath.Join(tmp, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub docker: %v", err)
+	}
+
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ANTHROPIC_API_KEY", "host-token")
+
+	runner, err := harness.NewProcessRunner(&config.DockerConfig{
+		Image:              "claude-image:latest",
+		WorkspaceMountPath: "/workspace",
+		Mounts: []config.DockerMountConfig{{
+			Source:   authDir,
+			Target:   "/root/.claude",
+			ReadOnly: true,
+		}},
+		EnvPassthrough: []string{"ANTHROPIC_API_KEY"},
+		Network:        "none",
+		CPUs:           1.5,
+		Memory:         "2g",
+		PIDsLimit:      128,
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	adapter, err := NewAdapter(WithProcessRunner(runner))
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	var stdout strings.Builder
+	run, err := adapter.Start(context.Background(), harness.RunConfig{
+		RunID:   "run-docker",
+		Prompt:  "hello docker\n",
+		Workdir: tmp,
+		Stdout:  &stdout,
+		Env: map[string]string{
+			"EXPLICIT": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("start harness: %v", err)
+	}
+
+	if err := run.Wait(); err != nil {
+		t.Fatalf("wait harness: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "docker:hello docker") {
+		t.Fatalf("stdout = %q", got)
+	}
+
+	rawArgs, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(rawArgs)
+	if !strings.Contains(args, "--mount\ntype=bind,src="+tmp+",dst=/workspace") {
+		t.Fatalf("args = %q, want workspace mount", args)
+	}
+	if !strings.Contains(args, "--workdir\n/workspace") {
+		t.Fatalf("args = %q, want workdir /workspace", args)
+	}
+	if !strings.Contains(args, "--mount\ntype=bind,src="+authDir+",dst=/root/.claude,readonly") {
+		t.Fatalf("args = %q, want readonly auth mount", args)
+	}
+	if !strings.Contains(args, "--env\nANTHROPIC_API_KEY=host-token") {
+		t.Fatalf("args = %q, want env passthrough", args)
+	}
+	if !strings.Contains(args, "--env\nEXPLICIT=1") {
+		t.Fatalf("args = %q, want explicit env", args)
+	}
+	if !strings.Contains(args, "--network\nnone") {
+		t.Fatalf("args = %q, want network none", args)
+	}
+	if !strings.Contains(args, "--cpus\n1.5") || !strings.Contains(args, "--memory\n2g") || !strings.Contains(args, "--pids-limit\n128") {
+		t.Fatalf("args = %q, want resource limits", args)
+	}
+	if !strings.Contains(args, "claude-image:latest\nclaude\n--print") {
+		t.Fatalf("args = %q, want image and claude invocation", args)
+	}
+	if strings.Contains(args, "--add-dir\n"+tmp) {
+		t.Fatalf("args = %q, want container-visible add-dir path", args)
+	}
+	if !strings.Contains(args, "--add-dir\n/workspace") {
+		t.Fatalf("args = %q, want --add-dir /workspace", args)
 	}
 }
 

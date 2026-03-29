@@ -118,8 +118,9 @@ Sample config: [examples/linear-codex-auto.yaml](../examples/linear-codex-auto.y
 
 Before dispatching an issue, Maestro re-fetches it from the tracker to verify it is still eligible. If the
 issue has become terminal, no longer matches the source filter, or has gained a lifecycle label since the
-last poll, dispatch is silently skipped. This prevents races between the poll interval and external tracker
-changes (e.g., a human closing the issue between poll and dispatch).
+last poll, dispatch is skipped. When `sources[].respect_blockers` is enabled, Maestro also checks tracker
+blocker links and skips any issue blocked by a non-terminal dependency. These skip reasons are recorded in
+recent events so operators can see messages like `skipping OPS-123 because it is blocked by OPS-122`.
 
 ## Tracker Writeback
 

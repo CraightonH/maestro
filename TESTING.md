@@ -180,6 +180,11 @@ Optional overrides:
 - `MAESTRO_CLAUDE_MODEL` to pin a different Claude model alias for the live smoke. Default: `sonnet`.
 - `MAESTRO_WORKSPACE=none` to exercise the real tracker/orchestrator path without cloning a private repo.
 
+If the selected agent type uses `docker:`, the local `docker` client and daemon/context must
+also be usable from this shell. Non-default setups that rely on `DOCKER_HOST`,
+`DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_TLS_VERIFY`, or `DOCKER_CERT_PATH` are supported,
+but they still need to be set correctly before running the smoke.
+
 By default, `scripts/smoke_gitlab.sh` now provisions its own disposable GitLab issue with a unique
 label and closes it during cleanup. If you want to point the smoke at an existing issue pool
 instead, set:
@@ -276,6 +281,42 @@ go test ./internal/harness/claude -run TestLiveClaudeHarnessContinuation -v
 go test ./internal/harness/claude -run TestLiveClaudeManualApproval -v
 ```
 
+## Live Claude validation in Docker
+
+This validates the Docker-backed Claude runner against a real container image and a real
+Claude-authenticated environment. The test creates a file in the mounted workspace from inside the
+container and verifies the host sees it.
+
+Required environment variables:
+
+- `MAESTRO_TEST_LIVE_CLAUDE_DOCKER=1`
+- `MAESTRO_TEST_DOCKER_CLAUDE_IMAGE`
+
+Authentication options:
+
+- API-key mode:
+  - set `ANTHROPIC_API_KEY`
+- Bearer-token proxy mode:
+  - set `ANTHROPIC_AUTH_TOKEN`
+  - set `ANTHROPIC_BASE_URL` if the proxy is not `https://api.anthropic.com`
+- Subscription/config mount mode:
+  - by default the test will try `~/.claude`
+  - or override with `MAESTRO_TEST_DOCKER_CLAUDE_AUTH_SOURCE`
+  - optional override target with `MAESTRO_TEST_DOCKER_CLAUDE_AUTH_TARGET`
+  - Dockerized Claude needs file-backed auth inside the container. A host-only OAuth/keychain login is not enough.
+  - In practice that means either `ANTHROPIC_API_KEY` or a long-lived token configured with `claude setup-token`.
+
+Image requirements:
+
+- the image must include the `claude` CLI
+- the image should include standard Linux runtime dependencies such as `ca-certificates` and `git`
+
+Run:
+
+```bash
+go test ./internal/harness/claude -run TestLiveClaudeHarnessDocker -v
+```
+
 ## Service-level validation with a real Claude session
 
 This test uses the real Claude CLI with a fake tracker and a temporary local git repository. It
@@ -310,6 +351,46 @@ go test ./internal/orchestrator -run TestServiceWithLiveCodexHarness -v
 go test ./internal/harness/codex -run TestLiveCodexManualApproval -v
 go test ./internal/harness/codex -run TestLiveCodexMessageRequest -v
 go test ./internal/orchestrator -run TestServiceWithLiveCodexManualApproval -v
+```
+
+## Live Codex validation in Docker
+
+This validates the Docker-backed Codex runner against a real container image and a real
+Codex-authenticated environment. The test creates a file in the mounted workspace from inside the
+container and verifies the host sees it.
+
+Required environment variables:
+
+- `MAESTRO_TEST_LIVE_CODEX_DOCKER=1`
+- `MAESTRO_TEST_DOCKER_CODEX_IMAGE`
+
+Authentication options:
+
+- API-key mode:
+  - set `OPENAI_API_KEY`
+  - set `OPENAI_BASE_URL` too if the endpoint is not the default OpenAI API
+  - when `OPENAI_BASE_URL` is set, the live tests force API-key auth mode and pass
+    `openai_base_url` via Codex config instead of relying on the deprecated environment variable
+    path
+  - set `MAESTRO_TEST_DOCKER_CODEX_MODEL` if your proxy expects a specific model; otherwise the
+    tests default to `openai/gpt-5-mini`
+- Subscription/config mount mode:
+  - by default the test will try `~/.codex`
+  - or override with `MAESTRO_TEST_DOCKER_CODEX_AUTH_SOURCE`
+  - optional override target with `MAESTRO_TEST_DOCKER_CODEX_AUTH_TARGET`
+
+Image requirements:
+
+- the image must include the `codex` CLI
+- the image should include standard Linux runtime dependencies such as `ca-certificates` and `git`
+
+Run:
+
+```bash
+go test ./internal/harness/codex -run TestLiveCodexHarnessDocker -v
+go test ./internal/harness/codex -run TestLiveCodexManualApprovalDocker -v
+go test ./internal/harness/codex -run TestLiveCodexMessageRequestDocker -v
+go test ./internal/harness/codex -run TestLiveCodexHarnessContinuationDocker -v
 ```
 
 ## Notes

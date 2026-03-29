@@ -20,4 +20,5 @@ type Issue struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	Meta        map[string]string
+	Blockers    []Issue
 }

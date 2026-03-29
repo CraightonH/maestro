@@ -19,6 +19,7 @@ import (
 
 type Adapter struct {
 	binary string
+	runner harness.ProcessRunner
 
 	mu        sync.Mutex
 	procs     map[string]*codexRun
@@ -44,10 +45,11 @@ type codexRun struct {
 	metricsCallback   func(domain.RunMetrics)
 
 	// Multi-turn state
-	threadID   string
-	cwd        string
-	turnNumber atomic.Int64
-	ctx        context.Context
+	threadID    string
+	hostWorkdir string
+	cwd         string
+	turnNumber  atomic.Int64
+	ctx         context.Context
 
 	writeMu sync.Mutex
 
@@ -170,14 +172,39 @@ type toolRequestUserInputOption struct {
 	Description string `json:"description"`
 }
 
-func NewAdapter() (*Adapter, error) {
-	binary, err := exec.LookPath("codex")
+type Option func(*adapterOptions)
+
+type adapterOptions struct {
+	runner harness.ProcessRunner
+}
+
+func WithProcessRunner(runner harness.ProcessRunner) Option {
+	return func(opts *adapterOptions) {
+		opts.runner = runner
+	}
+}
+
+func NewAdapter(options ...Option) (*Adapter, error) {
+	opts := adapterOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+	if opts.runner == nil {
+		runner, err := harness.NewProcessRunner(nil)
+		if err != nil {
+			return nil, err
+		}
+		opts.runner = runner
+	}
+
+	binary, err := opts.runner.ResolveBinary("codex")
 	if err != nil {
-		return nil, fmt.Errorf("find codex executable: %w", err)
+		return nil, err
 	}
 
 	return &Adapter{
 		binary:    binary,
+		runner:    opts.runner,
 		procs:     map[string]*codexRun{},
 		approvals: make(chan harness.ApprovalRequest, 32),
 		messages:  make(chan harness.MessageRequest, 32),
@@ -199,9 +226,16 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	args = append(args, cfg.ExtraArgs...)
 	args = append(args, "app-server", "--listen", "stdio://")
 
-	cmd := exec.CommandContext(ctx, a.binary, args...)
-	cmd.Dir = cfg.Workdir
-	cmd.Env = harness.MergeEnv(cfg.Env)
+	processWorkdir := a.runner.VisibleWorkdir(cfg.Workdir)
+	cmd, err := a.runner.CommandContext(ctx, harness.ProcessSpec{
+		Binary:  a.binary,
+		Args:    args,
+		Workdir: cfg.Workdir,
+		Env:     cfg.Env,
+	})
+	if err != nil {
+		return nil, err
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -231,6 +265,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		continuationFunc:  cfg.ContinuationFunc,
 		metricsCallback:   cfg.MetricsCallback,
 		ctx:               ctx,
+		hostWorkdir:       cfg.Workdir,
 		pending:           map[int64]chan rpcResponse{},
 		pendingApproval:   map[string]pendingApproval{},
 		pendingMessage:    map[string]pendingMessage{},
@@ -260,14 +295,14 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		a.cleanup(cfg.RunID)
 		return nil, err
 	}
-	threadID, err := run.startThread(cfg.Workdir)
+	threadID, err := run.startThread(processWorkdir)
 	if err != nil {
 		a.cleanup(cfg.RunID)
 		return nil, err
 	}
 	run.threadID = threadID
-	run.cwd = cfg.Workdir
-	if _, err := run.startTurn(threadID, cfg.Workdir, cfg.Prompt); err != nil {
+	run.cwd = processWorkdir
+	if _, err := run.startTurn(threadID, processWorkdir, cfg.Prompt); err != nil {
 		a.cleanup(cfg.RunID)
 		return nil, err
 	}

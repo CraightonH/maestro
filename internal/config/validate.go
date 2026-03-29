@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,6 +65,9 @@ func ValidateMVP(cfg *Config) error {
 		}
 		if agent.Harness == "claude-code" && agent.Codex != nil {
 			return fmt.Errorf("agent %q has harness claude-code but includes codex config", agent.Name)
+		}
+		if err := validateDockerConfig(agent.Name, agent.Docker); err != nil {
+			return err
 		}
 		if cfg.CodexDefaults != nil && cfg.CodexDefaults.MaxTurns < 0 {
 			return fmt.Errorf("codex_defaults max_turns must be at least 1")
@@ -266,6 +270,50 @@ func validateRepoURL(raw string) error {
 	}
 	if parsed.User != nil {
 		return fmt.Errorf("repo urls must not embed credentials; use connection.token_env instead")
+	}
+	return nil
+}
+
+func validateDockerConfig(agentName string, docker *DockerConfig) error {
+	if docker == nil {
+		return nil
+	}
+	if strings.TrimSpace(docker.Image) == "" {
+		return fmt.Errorf("agent %q docker.image is required", agentName)
+	}
+	if path := strings.TrimSpace(docker.WorkspaceMountPath); path != "" && !filepath.IsAbs(path) {
+		return fmt.Errorf("agent %q docker.workspace_mount_path must be absolute", agentName)
+	}
+	switch mode := strings.TrimSpace(docker.Network); mode {
+	case "", "bridge", "none", "host":
+	default:
+		return fmt.Errorf("agent %q docker.network must be one of bridge, none, host", agentName)
+	}
+	if docker.CPUs < 0 {
+		return fmt.Errorf("agent %q docker.cpus must be zero or greater", agentName)
+	}
+	if docker.PIDsLimit < 0 {
+		return fmt.Errorf("agent %q docker.pids_limit must be zero or greater", agentName)
+	}
+	for _, envName := range docker.EnvPassthrough {
+		trimmed := strings.TrimPrefix(strings.TrimSpace(envName), "$")
+		if trimmed == "" || strings.Contains(trimmed, "=") {
+			return fmt.Errorf("agent %q docker.env_passthrough contains invalid name %q", agentName, envName)
+		}
+	}
+	for _, mount := range docker.Mounts {
+		if strings.TrimSpace(mount.Source) == "" {
+			return fmt.Errorf("agent %q docker.mounts[].source is required", agentName)
+		}
+		if strings.TrimSpace(mount.Target) == "" {
+			return fmt.Errorf("agent %q docker.mounts[].target is required", agentName)
+		}
+		if !filepath.IsAbs(strings.TrimSpace(mount.Target)) {
+			return fmt.Errorf("agent %q docker.mounts[].target must be absolute", agentName)
+		}
+		if !mount.ReadOnly {
+			return fmt.Errorf("agent %q docker.mounts[] must be read_only in phase 1", agentName)
+		}
 	}
 	return nil
 }

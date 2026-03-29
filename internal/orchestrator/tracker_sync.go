@@ -45,7 +45,7 @@ func (s *Service) reconcileActiveRun(ctx context.Context, polled []domain.Issue)
 		s.stopActiveRunFromTracker(ctx, run.ID, domain.RunStatusFailed, fmt.Sprintf("issue %s marked %s in tracker", current.Identifier, failedLabel))
 	case trackerbase.IsTerminal(*current):
 		s.stopActiveRunFromTracker(ctx, run.ID, domain.RunStatusDone, fmt.Sprintf("issue %s became terminal in tracker", current.Identifier))
-	case !trackerbase.MatchesFilterWithPrefix(*current, s.source.Filter, prefix):
+	case !trackerbase.MatchesFilterWithPrefix(*current, s.source.EffectiveIssueFilter(), prefix):
 		s.stopActiveRunFromTracker(ctx, run.ID, domain.RunStatusFailed, fmt.Sprintf("issue %s no longer matches source filter", current.Identifier))
 	}
 }

@@ -29,9 +29,27 @@ var childEnvAllowlist = []string{
 	"XDG_STATE_HOME",
 }
 
+var dockerClientEnvAllowlist = []string{
+	"DOCKER_CERT_PATH",
+	"DOCKER_CONFIG",
+	"DOCKER_CONTEXT",
+	"DOCKER_HOST",
+	"DOCKER_TLS_VERIFY",
+}
+
 func MergeEnv(extra map[string]string) []string {
+	return mergeEnvWithAllowlist(childEnvAllowlist, extra)
+}
+
+func DockerClientEnv(extra map[string]string) []string {
+	allowlist := append([]string{}, childEnvAllowlist...)
+	allowlist = append(allowlist, dockerClientEnvAllowlist...)
+	return mergeEnvWithAllowlist(allowlist, extra)
+}
+
+func mergeEnvWithAllowlist(allowlist []string, extra map[string]string) []string {
 	merged := make(map[string]string, len(childEnvAllowlist)+len(extra))
-	for _, key := range childEnvAllowlist {
+	for _, key := range allowlist {
 		if value, ok := os.LookupEnv(key); ok {
 			merged[key] = value
 		}

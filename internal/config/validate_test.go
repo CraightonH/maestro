@@ -450,6 +450,121 @@ func TestValidateMVPAcceptsClaudeMultiTurnOverride(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsDockerHarnessConfig(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	authDir := filepath.Join(root, "auth")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          promptPath,
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image:              "maestro-agent:latest",
+				WorkspaceMountPath: "/workspace",
+				Mounts: []config.DockerMountConfig{{
+					Source:   authDir,
+					Target:   "/root/.claude",
+					ReadOnly: true,
+				}},
+				EnvPassthrough: []string{"ANTHROPIC_API_KEY"},
+				Network:        "none",
+				CPUs:           2,
+				Memory:         "4g",
+				PIDsLimit:      256,
+			},
+		}},
+	}
+
+	if err := config.ValidateMVP(cfg); err != nil {
+		t.Fatalf("expected docker config to validate: %v", err)
+	}
+}
+
+func TestValidateMVPRejectsWritableDockerMount(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "platform-dev",
+			Tracker:   "gitlab",
+			AgentType: "code-pr",
+			Connection: config.SourceConnection{
+				BaseURL: "https://gitlab.example.com",
+				Project: "team/project",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "code-pr",
+			Harness:         "claude-code",
+			Workspace:       "git-clone",
+			Prompt:          promptPath,
+			ApprovalPolicy:  "manual",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Mounts: []config.DockerMountConfig{{
+					Source:   filepath.Join(root, "auth"),
+					Target:   "/root/.claude",
+					ReadOnly: false,
+				}},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "read_only") {
+		t.Fatalf("validation error = %v, want read_only error", err)
+	}
+}
+
 func TestValidateMVPAcceptsClaudeDefaultsMultiTurn(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")

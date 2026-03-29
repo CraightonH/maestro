@@ -23,6 +23,7 @@ type AgentPackConfig struct {
 	MaxConcurrent  int               `yaml:"max_concurrent"`
 	Codex          *CodexConfig      `yaml:"codex"`
 	Claude         *ClaudeConfig     `yaml:"claude"`
+	Docker         *DockerConfig     `yaml:"docker"`
 	Env            map[string]string `yaml:"env"`
 	Tools          []string          `yaml:"tools"`
 	Skills         []string          `yaml:"skills"`
@@ -227,6 +228,7 @@ func mergeAgentPack(agent *AgentTypeConfig, pack *AgentPackConfig) {
 	}
 	agent.Codex = mergeCodexConfig(pack.Codex, agent.Codex)
 	agent.Claude = mergeClaudeConfig(pack.Claude, agent.Claude)
+	agent.Docker = mergeDockerConfig(pack.Docker, agent.Docker)
 	agent.Tools = appendUnique(pack.Tools, agent.Tools)
 	agent.Skills = appendUnique(pack.Skills, agent.Skills)
 	agent.ContextFiles = appendUnique(pack.ContextFiles, agent.ContextFiles)
@@ -263,6 +265,17 @@ func resolveLocalPackAssets(pack *AgentPackConfig, packDir string) error {
 		}
 		pack.ContextFiles[i] = filepath.Join(packDir, pack.ContextFiles[i])
 		pack.ContextFiles[i] = filepath.Clean(pack.ContextFiles[i])
+	}
+
+	if pack.Docker != nil {
+		for i := range pack.Docker.Mounts {
+			if filepath.IsAbs(pack.Docker.Mounts[i].Source) {
+				pack.Docker.Mounts[i].Source = filepath.Clean(pack.Docker.Mounts[i].Source)
+				continue
+			}
+			pack.Docker.Mounts[i].Source = filepath.Join(packDir, pack.Docker.Mounts[i].Source)
+			pack.Docker.Mounts[i].Source = filepath.Clean(pack.Docker.Mounts[i].Source)
+		}
 	}
 
 	claudeDir, err := resolveOptionalPackDir(packDir, "claude")

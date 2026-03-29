@@ -72,7 +72,7 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 	if err != nil {
 		return nil, err
 	}
-	hr, err := newHarness(agent.Harness)
+	hr, err := newHarness(agent)
 	if err != nil {
 		return nil, err
 	}

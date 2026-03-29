@@ -212,6 +212,9 @@ func mergeSourceDefaults(target *SourceConfig, defaults SourceDefaultsEntry) {
 	if target.MaxAttempts == 0 {
 		target.MaxAttempts = defaults.MaxAttempts
 	}
+	if target.RespectBlockers == nil {
+		target.RespectBlockers = cloneBoolPointer(defaults.RespectBlockers)
+	}
 }
 
 func mergeFilterDefaults(target FilterConfig, defaults FilterConfig) FilterConfig {
@@ -228,6 +231,14 @@ func mergeFilterDefaults(target FilterConfig, defaults FilterConfig) FilterConfi
 		target.States = append([]string(nil), defaults.States...)
 	}
 	return target
+}
+
+func cloneBoolPointer(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func applyAgentDefaults(cfg *Config) {
@@ -267,6 +278,7 @@ func mergeAgentDefaults(target *AgentTypeConfig, defaults AgentDefaultsConfig) {
 	if target.StallTimeout.Duration == 0 {
 		target.StallTimeout = defaults.StallTimeout
 	}
+	target.Docker = mergeDockerConfig(defaults.Docker, target.Docker)
 	target.Env = mergeStringMap(defaults.Env, target.Env)
 	target.Tools = appendUnique(defaults.Tools, target.Tools)
 	target.Skills = appendUnique(defaults.Skills, target.Skills)
@@ -342,6 +354,23 @@ func resolvePaths(cfg *Config) error {
 				contextPath = filepath.Join(cfg.ConfigDir, contextPath)
 			}
 			cfg.AgentTypes[i].ContextFiles[j] = filepath.Clean(contextPath)
+		}
+
+		if cfg.AgentTypes[i].Docker != nil {
+			for j := range cfg.AgentTypes[i].Docker.Mounts {
+				source := cfg.AgentTypes[i].Docker.Mounts[j].Source
+				if source == "" {
+					continue
+				}
+				source, err = expandPath(source)
+				if err != nil {
+					return err
+				}
+				if !filepath.IsAbs(source) {
+					source = filepath.Join(cfg.ConfigDir, source)
+				}
+				cfg.AgentTypes[i].Docker.Mounts[j].Source = filepath.Clean(source)
+			}
 		}
 	}
 

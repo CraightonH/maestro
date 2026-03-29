@@ -473,6 +473,79 @@ logging:
 	}
 }
 
+func TestLoadAppliesRespectBlockersDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	promptPath := filepath.Join(promptDir, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+source_defaults:
+  gitlab:
+    respect_blockers: false
+user:
+  name: TJ
+  gitlab_username: tj
+sources:
+  - name: inherited
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+  - name: override
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    respect_blockers: true
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: manual
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if got := cfg.Sources[0].EffectiveRespectBlockers(); got {
+		t.Fatalf("inherited respect_blockers = %t, want false", got)
+	}
+	if got := cfg.Sources[1].EffectiveRespectBlockers(); !got {
+		t.Fatalf("override respect_blockers = %t, want true", got)
+	}
+}
+
 func TestLoadMergesAgentPackDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("GITLAB_TOKEN", "secret-token")
 
@@ -682,6 +755,242 @@ logging:
 	}
 	if agent.Codex.ExtraArgs == nil || len(agent.Codex.ExtraArgs) != 0 {
 		t.Fatalf("extra args = %v, want explicit empty override", agent.Codex.ExtraArgs)
+	}
+}
+
+func TestLoadResolvesDockerMountSources(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	authDir := filepath.Join(root, "auth", "claude")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+    docker:
+      image: maestro-agent:latest
+      mounts:
+        - source: ./auth/claude
+          target: /root/.claude
+          read_only: true
+      env_passthrough: [ANTHROPIC_API_KEY]
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil {
+		t.Fatal("docker config = nil, want parsed config")
+	}
+	if got := agent.Docker.Mounts[0].Source; got != authDir {
+		t.Fatalf("docker mount source = %q, want %q", got, authDir)
+	}
+	if got := agent.Docker.EnvPassthrough[0]; got != "ANTHROPIC_API_KEY" {
+		t.Fatalf("docker env_passthrough = %q, want ANTHROPIC_API_KEY", got)
+	}
+}
+
+func TestLoadAppliesAgentDefaultDockerConfig(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+agent_defaults:
+  docker:
+    image: default-image:latest
+    workspace_mount_path: /workspace
+    env_passthrough: [OPENAI_API_KEY]
+    network: none
+    pids_limit: 128
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil {
+		t.Fatal("docker config = nil, want inherited agent default")
+	}
+	if got, want := agent.Docker.Image, "default-image:latest"; got != want {
+		t.Fatalf("docker image = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Network, "none"; got != want {
+		t.Fatalf("docker network = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.PIDsLimit, 128; got != want {
+		t.Fatalf("docker pids_limit = %d, want %d", got, want)
+	}
+	if got := agent.Docker.EnvPassthrough[0]; got != "OPENAI_API_KEY" {
+		t.Fatalf("docker env_passthrough = %q, want OPENAI_API_KEY", got)
+	}
+}
+
+func TestLoadMergesAgentPackDockerConfigPerKey(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	packDir := filepath.Join(root, "agent-packs", "repo-maintainer")
+	if err := os.MkdirAll(packDir, 0o755); err != nil {
+		t.Fatalf("mkdir pack dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "prompt.md"), []byte("Agent {{.Agent.Name}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "agent.yaml"), []byte(`
+name: repo-maintainer
+harness: codex
+workspace: git-clone
+prompt: prompt.md
+approval_policy: auto
+docker:
+  image: base-image:latest
+  workspace_mount_path: /pack-workspace
+  env_passthrough: [OPENAI_API_KEY]
+  network: none
+`), 0o644); err != nil {
+		t.Fatalf("write pack: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+agent_packs_dir: ./agent-packs
+defaults:
+  poll_interval: 5s
+  max_concurrent_global: 1
+user:
+  name: TJ
+  gitlab_username: tjohnson
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: repo-maintainer
+agent_types:
+  - name: repo-maintainer
+    agent_pack: repo-maintainer
+    docker:
+      image: override-image:latest
+      pids_limit: 64
+workspace:
+  root: ./workspaces
+logging:
+  dir: ./logs
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	agent := cfg.AgentTypes[0]
+	if agent.Docker == nil {
+		t.Fatal("docker config = nil, want merged config")
+	}
+	if got, want := agent.Docker.Image, "override-image:latest"; got != want {
+		t.Fatalf("docker image = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.WorkspaceMountPath, "/pack-workspace"; got != want {
+		t.Fatalf("docker workspace_mount_path = %q, want %q", got, want)
+	}
+	if got, want := agent.Docker.Network, "none"; got != want {
+		t.Fatalf("docker network = %q, want %q", got, want)
+	}
+	if got := agent.Docker.EnvPassthrough[0]; got != "OPENAI_API_KEY" {
+		t.Fatalf("docker env_passthrough = %q, want OPENAI_API_KEY", got)
+	}
+	if got, want := agent.Docker.PIDsLimit, 64; got != want {
+		t.Fatalf("docker pids_limit = %d, want %d", got, want)
 	}
 }
 

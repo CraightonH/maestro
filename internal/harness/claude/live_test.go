@@ -3,21 +3,18 @@ package claude
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/harness"
 	"github.com/tjohnson/maestro/internal/testutil"
 )
 
 func TestLiveClaudeHarness(t *testing.T) {
 	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CLAUDE")
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skipf("skipping live test; claude binary not found: %v", err)
-	}
 
 	adapter, err := NewAdapter()
 	if err != nil {
@@ -48,9 +45,6 @@ func TestLiveClaudeHarness(t *testing.T) {
 
 func TestLiveClaudeHarnessContinuation(t *testing.T) {
 	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CLAUDE")
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skipf("skipping live test; claude binary not found: %v", err)
-	}
 
 	adapter, err := NewAdapter()
 	if err != nil {
@@ -95,9 +89,6 @@ func TestLiveClaudeHarnessContinuation(t *testing.T) {
 
 func TestLiveClaudeManualApproval(t *testing.T) {
 	testutil.RequireFlag(t, "MAESTRO_TEST_LIVE_CLAUDE")
-	if _, err := exec.LookPath("claude"); err != nil {
-		t.Skipf("skipping live test; claude binary not found: %v", err)
-	}
 
 	adapter, err := NewAdapter()
 	if err != nil {
@@ -148,5 +139,63 @@ func TestLiveClaudeManualApproval(t *testing.T) {
 	}
 	if strings.TrimSpace(string(content)) != "MAESTRO_CLAUDE_APPROVAL_OK" {
 		t.Fatalf("approval file content = %q", string(content))
+	}
+}
+
+func TestLiveClaudeHarnessDocker(t *testing.T) {
+	live := testutil.RequireLiveDockerHarness(
+		t,
+		"MAESTRO_TEST_LIVE_CLAUDE_DOCKER",
+		"MAESTRO_TEST_DOCKER_CLAUDE_IMAGE",
+		[]string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"},
+		testutil.DefaultClaudeAuthSource(),
+		"MAESTRO_TEST_DOCKER_CLAUDE_AUTH_SOURCE",
+		"MAESTRO_TEST_DOCKER_CLAUDE_AUTH_TARGET",
+	)
+
+	runner, err := harness.NewProcessRunner(&live.Docker)
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+	adapter, err := NewAdapter(WithProcessRunner(runner))
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	workdir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	var stdout strings.Builder
+	var stderr strings.Builder
+	run, err := adapter.Start(ctx, harness.RunConfig{
+		RunID:   "live-claude-docker-run",
+		Prompt:  "Create a file named DOCKER_OK.txt containing exactly MAESTRO_CLAUDE_DOCKER_OK and then reply with exactly MAESTRO_CLAUDE_DOCKER_OK.",
+		Workdir: workdir,
+		Stdout:  &stdout,
+		Stderr:  &stderr,
+		Env:     map[string]string(live.RunEnv),
+		Model:   config.ResolveClaudeConfig(nil, nil).Model,
+	})
+	if err != nil {
+		t.Fatalf("start harness: %v", err)
+	}
+	if err := run.Wait(); err != nil {
+		combined := stdout.String() + "\n" + stderr.String()
+		if strings.Contains(combined, "Not logged in") {
+			t.Skip("skipping live claude docker test; Dockerized Claude requires ANTHROPIC_API_KEY or file-backed token auth (for example via setup-token), and the current host OAuth login is not portable into the Linux container")
+		}
+		t.Fatalf("wait harness: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "MAESTRO_CLAUDE_DOCKER_OK") {
+		t.Fatalf("unexpected live claude docker output: %q", stdout.String())
+	}
+	content, err := os.ReadFile(filepath.Join(workdir, "DOCKER_OK.txt"))
+	if err != nil {
+		t.Fatalf("read docker output file: %v", err)
+	}
+	if strings.TrimSpace(string(content)) != "MAESTRO_CLAUDE_DOCKER_OK" {
+		t.Fatalf("docker output file content = %q", string(content))
 	}
 }

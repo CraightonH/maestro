@@ -119,3 +119,38 @@ func TestLifecycleOperationsUseGraphQLIDs(t *testing.T) {
 
 	assertNoStringID("issueLabelsQuery", issueLabelsQuery, "$teamId: String!")
 }
+
+func TestGetNormalizesBlockingRelations(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{"issue":{"id":"issue-1","identifier":"TAN-83","title":"Linear issue","description":"Tracked in Linear","url":"https://linear.app/tan/issue/TAN-83","createdAt":"2026-03-15T22:39:16.516Z","updatedAt":"2026-03-15T22:39:16.516Z","labels":{"nodes":[{"name":"Agent:Ready"}]},"state":{"name":"Todo","type":"unstarted"},"assignee":{"name":"Operator","email":"operator@example.com"},"project":{"id":"project-1","name":"Maestro Testbed"},"team":{"id":"team-1","key":"TAN","name":"Example Team"},"inverseRelations":{"nodes":[{"type":"blocks","issue":{"id":"issue-9","identifier":"TAN-9","title":"Dependency","url":"https://linear.app/tan/issue/TAN-9","state":{"name":"In Progress","type":"started"},"team":{"id":"team-1","key":"TAN","name":"Example Team"}}}]}}}}`))
+	}))
+	defer server.Close()
+
+	adapter, err := NewAdapter(config.SourceConfig{
+		Name:      "live-linear",
+		Tracker:   "linear",
+		AgentType: "code-pr",
+		Connection: config.SourceConnection{
+			BaseURL: server.URL,
+			Token:   "secret",
+			Project: "project-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	issue, err := adapter.Get(context.Background(), "linear:issue-1")
+	if err != nil {
+		t.Fatalf("get issue: %v", err)
+	}
+	if len(issue.Blockers) != 1 {
+		t.Fatalf("blockers = %+v, want one blocker", issue.Blockers)
+	}
+	if got := issue.Blockers[0].Identifier; got != "TAN-9" {
+		t.Fatalf("blocker identifier = %q, want TAN-9", got)
+	}
+	if got := issue.Blockers[0].Meta["state_type"]; got != "started" {
+		t.Fatalf("blocker state_type = %q, want started", got)
+	}
+}

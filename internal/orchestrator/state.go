@@ -281,6 +281,15 @@ func (m *stateManager) takeAttempt(issue domain.Issue) int {
 	return retry.Attempt
 }
 
+func (m *stateManager) takeAttemptOverride(issueID string, attempt int) int {
+	s := m.service
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.retryQueue, issueID)
+	return attempt
+}
+
 func (m *stateManager) scheduleRetry(run *domain.AgentRun, err error) bool {
 	s := m.service
 	nextAttempt := run.Attempt + 1

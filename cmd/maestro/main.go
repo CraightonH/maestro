@@ -253,6 +253,10 @@ func doctorCommand(args []string) {
 
 	required := map[string]string{}
 	for _, agent := range cfg.AgentTypes {
+		if agent.Docker != nil && strings.TrimSpace(agent.Docker.Image) != "" {
+			required["docker"] = "docker"
+			continue
+		}
 		switch agent.Harness {
 		case "claude-code":
 			required["claude-code"] = "claude"

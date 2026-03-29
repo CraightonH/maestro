@@ -51,6 +51,50 @@ func TestPollNormalizesProjectIssues(t *testing.T) {
 	}
 }
 
+func TestGetNormalizesBlockingLinks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/projects/team/project":
+			_, _ = w.Write([]byte(`{"id":1,"path_with_namespace":"team/project","http_url_to_repo":"https://gitlab.example.com/team/project.git"}`))
+		case "/api/v4/projects/team/project/issues/42":
+			_, _ = w.Write([]byte(`{"id":101,"iid":42,"title":"Fix bug","description":"Details","state":"opened","web_url":"https://gitlab.example.com/team/project/-/issues/42","labels":["Agent:Ready"],"author":{"username":"tj"},"assignee":{"username":"tj"},"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z","references":{"full":"team/project#42"}}`))
+		case "/api/v4/projects/team/project/issues/42/links":
+			_, _ = w.Write([]byte(`[{"id":202,"iid":7,"project_id":2,"title":"Dependency","description":"Finish this first","state":"opened","web_url":"https://gitlab.example.com/team/deps/-/issues/7","labels":["backend"],"link_type":"is_blocked_by","created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z"}]`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewAdapter(config.SourceConfig{
+		Name:      "gitlab-project",
+		Tracker:   "gitlab",
+		AgentType: "code-pr",
+		Connection: config.SourceConnection{
+			BaseURL: server.URL,
+			Token:   "secret",
+			Project: "team/project",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	issue, err := adapter.Get(context.Background(), "gitlab:team/project#42")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(issue.Blockers) != 1 {
+		t.Fatalf("blockers = %+v, want one blocker", issue.Blockers)
+	}
+	if got := issue.Blockers[0].Identifier; got != "team/deps#7" {
+		t.Fatalf("blocker identifier = %q, want team/deps#7", got)
+	}
+	if got := issue.Blockers[0].Meta["repo_url"]; !strings.HasSuffix(got, "/team/deps.git") {
+		t.Fatalf("blocker repo_url = %q, want team/deps.git suffix", got)
+	}
+}
+
 func TestEnsureProjectIsSafeUnderConcurrentCalls(t *testing.T) {
 	var mu sync.Mutex
 	projectFetches := 0
@@ -433,6 +477,8 @@ func TestEpicLifecycleOperationsUseIssueEndpoints(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":29,"iid":7,"title":"Epic title","description":"Epic body","state":"opened","web_url":"https://gitlab.example.com/groups/team/platform/-/epics/7","labels":["agent:ready"],"author":{"username":"tj"},"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/team/platform/repo/issues/42":
 			_, _ = w.Write([]byte(`{"id":101,"iid":42,"project_id":1,"title":"Fix child issue","description":"Child details","state":"opened","web_url":"https://gitlab.example.com/team/platform/repo/-/issues/42","labels":["backend"],"author":{"username":"tj"},"assignee":{"username":"tj"},"created_at":"2026-03-15T22:39:16Z","updated_at":"2026-03-15T22:40:16Z","references":{"full":"team/platform/repo#42"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v4/projects/team/platform/repo/issues/42/links":
+			_, _ = w.Write([]byte(`[]`))
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}

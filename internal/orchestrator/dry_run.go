@@ -251,26 +251,33 @@ func (s *Service) dryRun(ctx context.Context) (DryRunSourcePreview, error) {
 			continue
 		}
 
-		refreshed, err := s.tracker.Get(ctx, issue.ID)
-		if err != nil {
+		refreshed, status, reason, err := s.guardRetryCandidate(ctx, issue)
+		switch status {
+		case dispatchGuardReady:
+		case dispatchGuardBlocked:
+			preview.Evaluations = append(preview.Evaluations, DryRunEvaluation{
+				Stage:      "poll",
+				Identifier: refreshed.Identifier,
+				Outcome:    "skipped",
+				Reason:     fmt.Sprintf("issue is blocked by %s", reason),
+			})
+			continue
+		case dispatchGuardSkipped:
+			preview.Evaluations = append(preview.Evaluations, DryRunEvaluation{
+				Stage:      "poll",
+				Identifier: refreshed.Identifier,
+				Outcome:    "skipped",
+				Reason:     "dispatch guard refresh showed the issue is no longer eligible",
+			})
+			continue
+		case dispatchGuardError:
 			preview.Evaluations = append(preview.Evaluations, DryRunEvaluation{
 				Stage:      "poll",
 				Identifier: issue.Identifier,
 				Outcome:    "blocked",
 				Reason:     fmt.Sprintf("dispatch guard refresh failed: %v", err),
 			})
-			preview.Reason = "first unsuppressed polled issue failed dispatch guard refresh; later issues would not be considered in this tick"
-			return preview, nil
-		}
-		if trackerbase.IsTerminal(refreshed) || !trackerbase.MatchesFilterWithPrefix(refreshed, s.source.EffectiveIssueFilter(), s.labelPrefix()) {
-			preview.Evaluations = append(preview.Evaluations, DryRunEvaluation{
-				Stage:      "poll",
-				Identifier: refreshed.Identifier,
-				Outcome:    "blocked",
-				Reason:     "dispatch guard refresh showed the issue is no longer eligible",
-			})
-			preview.Reason = "first unsuppressed polled issue no longer matches the dispatch guard; later issues would not be considered in this tick"
-			return preview, nil
+			continue
 		}
 
 		attempt := 0
@@ -286,6 +293,10 @@ func (s *Service) dryRun(ctx context.Context) (DryRunSourcePreview, error) {
 	}
 	if len(preview.Evaluations) == 0 {
 		preview.Reason = "no issue was eligible for dispatch"
+		return preview, nil
+	}
+	if dryRunEvaluationsIncludeGuardChecks(preview.Evaluations) {
+		preview.Reason = "all polled issues were suppressed locally or skipped by dispatch guard checks"
 		return preview, nil
 	}
 	preview.Reason = "all polled issues were suppressed by local recovery state"
@@ -336,13 +347,39 @@ func (s *Service) selectRetryCandidate(ctx context.Context, retryQueue map[strin
 			})
 			continue
 		}
-		evals = append(evals, DryRunEvaluation{
-			Stage:      "retry",
-			Identifier: issue.Identifier,
-			Outcome:    "selected",
-			Reason:     fmt.Sprintf("retry is due now at attempt %d", retry.Attempt),
-		})
-		return issue, retry.Attempt, evals, true, nil
+		refreshed, status, reason, err := s.guardDispatchCandidate(ctx, issue)
+		switch status {
+		case dispatchGuardReady:
+			evals = append(evals, DryRunEvaluation{
+				Stage:      "retry",
+				Identifier: refreshed.Identifier,
+				Outcome:    "selected",
+				Reason:     fmt.Sprintf("retry is due now at attempt %d", retry.Attempt),
+			})
+			return refreshed, retry.Attempt, evals, true, nil
+		case dispatchGuardBlocked:
+			evals = append(evals, DryRunEvaluation{
+				Stage:      "retry",
+				Identifier: refreshed.Identifier,
+				Outcome:    "skipped",
+				Reason:     fmt.Sprintf("issue is blocked by %s", reason),
+			})
+		case dispatchGuardSkipped:
+			delete(retryQueue, candidate.issueID)
+			evals = append(evals, DryRunEvaluation{
+				Stage:      "retry",
+				Identifier: refreshed.Identifier,
+				Outcome:    "skipped",
+				Reason:     "stored retry is stale because the issue is no longer eligible",
+			})
+		case dispatchGuardError:
+			evals = append(evals, DryRunEvaluation{
+				Stage:      "retry",
+				Identifier: issue.Identifier,
+				Outcome:    "blocked",
+				Reason:     fmt.Sprintf("dispatch guard refresh failed: %v", err),
+			})
+		}
 	}
 
 	return domain.Issue{}, 0, evals, false, nil
@@ -399,6 +436,15 @@ func (s *Service) populateDryRunPreview(preview DryRunSourcePreview, issue domai
 		State:        lifecycle.State,
 	}
 	return preview, nil
+}
+
+func dryRunEvaluationsIncludeGuardChecks(evals []DryRunEvaluation) bool {
+	for _, eval := range evals {
+		if strings.Contains(eval.Reason, "dispatch guard") || strings.Contains(eval.Reason, "blocked by") {
+			return true
+		}
+	}
+	return false
 }
 
 func previewWorkspace(manager *workspace.Manager, agent config.AgentTypeConfig, issue domain.Issue, agentName string) (workspace.Prepared, error) {

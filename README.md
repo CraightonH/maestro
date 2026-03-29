@@ -23,6 +23,8 @@ Each **source** defines a tracker + filter + agent type. Maestro polls for eligi
 
 **Workflow chaining**: multiple sources can form a pipeline. Source A's `on_complete` changes labels and/or tracker state so Source B's filter picks it up. Example: implement → review → merge.
 
+When `sources[].respect_blockers` is enabled, Maestro also treats tracker dependency links as a scheduler gate after the normal source filter and lifecycle checks. Blocked issues are skipped with recent-event messages such as `skipping OPS-123 because it is blocked by OPS-122`.
+
 ## Quick Start
 
 ### Prerequisites
@@ -184,6 +186,7 @@ sources:
     max_attempts: 3                # max retries before marking terminal
     retry_base: 30s                # initial retry delay
     max_retry_backoff: 10m         # max retry delay after exponential backoff
+    respect_blockers: true         # skip dispatch while tracker-reported blockers are non-terminal
 
     # Per-source lifecycle transitions (override defaults).
     on_dispatch:
@@ -228,6 +231,20 @@ agent_types:
       reasoning: high
       extra_args: []
 
+    # Optional: run only the harness process inside Docker while Maestro stays on the host.
+    docker:
+      image: ghcr.io/acme/maestro-claude:latest
+      workspace_mount_path: /workspace   # default: /workspace
+      network: bridge                    # bridge (default), none, or host
+      cpus: 2
+      memory: 4g
+      pids_limit: 256
+      env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]
+      mounts:
+        - source: ~/.config/claude
+          target: /home/agent/.config/claude
+          read_only: true
+
 # ---------------------------------------------------------------------------
 # Source defaults — shared settings applied per-tracker-type to reduce
 #                   repetition in multi-source configs.
@@ -253,6 +270,58 @@ agent_defaults:
   approval_policy: auto
   max_concurrent: 3
   stall_timeout: 30m
+
+# Docker execution notes:
+# - Maestro still polls trackers, prepares/reuses workspaces, renders prompts, routes approvals/messages,
+#   and persists state on the host.
+# - Only the harness process runs in the container.
+# - Docker is selected per `agent_type`, so one Maestro instance can mix host-run and Docker-run agents
+#   across different sources.
+# - The prepared host workspace is bind-mounted into the container so git changes remain visible on the host.
+# - Additional docker.mounts entries must be explicit read-only auth/config mounts in phase 1.
+# - Do not mount your full home directory by default; prefer explicit env_passthrough or minimal read-only auth mounts.
+# - Claude can use direct API keys (ANTHROPIC_API_KEY) or bearer-token proxy auth
+#   (ANTHROPIC_AUTH_TOKEN plus ANTHROPIC_BASE_URL).
+# - Codex can use mounted CLI auth or API-key auth. For OpenAI-compatible proxies, pass OPENAI_API_KEY
+#   and set `openai_base_url` via `codex.extra_args`.
+# - When no HOME is provided explicitly, Maestro gives the container a writable local HOME automatically.
+
+# Example: Dockerized Claude agent in the same Maestro process as host-run agents
+#
+# agent_types:
+#   - name: dev-claude-docker
+#     agent_pack: dev-claude
+#     harness: claude-code
+#     workspace: git-clone
+#     approval_policy: manual
+#     claude:
+#       model: claude-opus-4-6
+#       reasoning: high
+#     docker:
+#       image: ghcr.io/acme/maestro-claude:latest
+#       network: bridge
+#       env_passthrough: [ANTHROPIC_AUTH_TOKEN, ANTHROPIC_BASE_URL]
+#
+# Example: Dockerized Codex agent using an OpenAI-compatible proxy
+#
+# agent_types:
+#   - name: dev-codex-docker
+#     agent_pack: dev-codex
+#     harness: codex
+#     workspace: git-clone
+#     approval_policy: manual
+#     codex:
+#       model: openai/gpt-5-mini
+#       reasoning: high
+#       extra_args:
+#         - --config
+#         - forced_login_method="api"
+#         - --config
+#         - openai_base_url="https://llm-proxy.example.com"
+#     docker:
+#       image: ghcr.io/acme/maestro-codex:latest
+#       network: bridge
+#       env_passthrough: [OPENAI_API_KEY]
 
 # ---------------------------------------------------------------------------
 # Workspace — where cloned repos live.

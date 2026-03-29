@@ -27,6 +27,19 @@ query($projectId: ID!, $after: String) {
       assignee { name email }
       project { id name }
       team { id key name }
+      inverseRelations(first: 50, filter: { type: { eq: blocks } }) {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            title
+            url
+            state { name type }
+            team { id key name }
+          }
+        }
+      }
     }
     pageInfo {
       hasNextPage
@@ -70,6 +83,19 @@ query($id: String!) {
     assignee { name email }
     project { id name }
     team { id key name }
+    inverseRelations(first: 50, filter: { type: { eq: blocks } }) {
+      nodes {
+        type
+        issue {
+          id
+          identifier
+          title
+          url
+          state { name type }
+          team { id key name }
+        }
+      }
+    }
   }
 }`
 
@@ -194,10 +220,34 @@ type issueNode struct {
 		Key  string `json:"key"`
 		Name string `json:"name"`
 	} `json:"team"`
+	InverseRelations struct {
+		Nodes []issueRelationNode `json:"nodes"`
+	} `json:"inverseRelations"`
 }
 
 type issueResponse struct {
 	Issue *issueNode `json:"issue"`
+}
+
+type issueRelationNode struct {
+	Type  string           `json:"type"`
+	Issue relatedIssueNode `json:"issue"`
+}
+
+type relatedIssueNode struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	State      struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	} `json:"state"`
+	Team struct {
+		ID   string `json:"id"`
+		Key  string `json:"key"`
+		Name string `json:"name"`
+	} `json:"team"`
 }
 
 type issueLabelsResponse struct {
@@ -502,7 +552,40 @@ func (a *Adapter) normalizeIssue(item issueNode) domain.Issue {
 			"team_key":   item.Team.Key,
 			"state_type": strings.ToLower(strings.TrimSpace(item.State.Type)),
 		},
+		Blockers: a.normalizeBlockers(item.InverseRelations.Nodes),
 	}
+}
+
+func (a *Adapter) normalizeBlockers(relations []issueRelationNode) []domain.Issue {
+	if len(relations) == 0 {
+		return nil
+	}
+
+	blockers := make([]domain.Issue, 0, len(relations))
+	for _, relation := range relations {
+		if !strings.EqualFold(strings.TrimSpace(relation.Type), "blocks") {
+			continue
+		}
+		blockers = append(blockers, domain.Issue{
+			ID:          "linear:" + relation.Issue.ID,
+			ExternalID:  relation.Issue.ID,
+			Identifier:  relation.Issue.Identifier,
+			TrackerKind: "linear",
+			SourceName:  a.source.Name,
+			Title:       relation.Issue.Title,
+			State:       strings.ToLower(strings.TrimSpace(relation.Issue.State.Name)),
+			URL:         relation.Issue.URL,
+			Meta: map[string]string{
+				"team_id":    relation.Issue.Team.ID,
+				"team_key":   relation.Issue.Team.Key,
+				"state_type": strings.ToLower(strings.TrimSpace(relation.Issue.State.Type)),
+			},
+		})
+	}
+	if len(blockers) == 0 {
+		return nil
+	}
+	return blockers
 }
 
 func parseLinearIssueID(issueID string) (string, error) {

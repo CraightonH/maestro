@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -42,6 +43,7 @@ type issueResponse struct {
 	Assignees   []userResponse `json:"assignees"`
 	CreatedAt   string         `json:"created_at"`
 	UpdatedAt   string         `json:"updated_at"`
+	LinkType    string         `json:"link_type"`
 	References  struct {
 		Full string `json:"full"`
 	} `json:"references"`
@@ -338,7 +340,13 @@ func (a *Adapter) getProjectIssue(ctx context.Context, issueID string) (domain.I
 	if err != nil {
 		return domain.Issue{}, err
 	}
-	return a.normalizeProjectIssue(payload), nil
+	issue := a.normalizeProjectIssue(payload)
+	blockers, err := a.fetchBlockers(ctx, ref.Project, ref.IID)
+	if err != nil {
+		return domain.Issue{}, err
+	}
+	issue.Blockers = blockers
+	return issue, nil
 }
 
 func (a *Adapter) getEpicIssue(ctx context.Context, issueID string) (domain.Issue, error) {
@@ -359,6 +367,11 @@ func (a *Adapter) getEpicIssue(ctx context.Context, issueID string) (domain.Issu
 	if !ok {
 		return domain.Issue{}, fmt.Errorf("gitlab epic issue %q missing project reference", issueID)
 	}
+	blockers, err := a.fetchBlockers(ctx, ref.Project, ref.IssueIID)
+	if err != nil {
+		return domain.Issue{}, err
+	}
+	issue.Blockers = blockers
 	return issue, nil
 }
 
@@ -376,6 +389,21 @@ func (a *Adapter) fetchEpic(ctx context.Context, group string, iid int) (epicRes
 		return epicResponse{}, err
 	}
 	return payload, nil
+}
+
+func (a *Adapter) fetchBlockers(ctx context.Context, project string, iid int) ([]domain.Issue, error) {
+	var payload []issueResponse
+	_, err := a.client.getJSON(ctx, fmt.Sprintf("/api/v4/projects/%s/issues/%d/links", url.PathEscape(project), iid), nil, &payload)
+	if err != nil {
+		if requestErr, ok := err.(*RequestError); ok {
+			switch requestErr.StatusCode {
+			case http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed:
+				return nil, nil
+			}
+		}
+		return nil, err
+	}
+	return a.normalizeBlockingLinks(payload, project), nil
 }
 
 func (a *Adapter) postIssueComment(ctx context.Context, ref gitLabIssueRef, body string) error {
@@ -493,6 +521,65 @@ func (a *Adapter) normalizeEpicIssue(item issueResponse, epic epicResponse) (dom
 	}, true
 }
 
+func (a *Adapter) normalizeBlockingLinks(links []issueResponse, fallbackProject string) []domain.Issue {
+	if len(links) == 0 {
+		return nil
+	}
+
+	blockers := make([]domain.Issue, 0, len(links))
+	for _, item := range links {
+		if strings.ToLower(strings.TrimSpace(item.LinkType)) != "is_blocked_by" {
+			continue
+		}
+		blocker, ok := a.normalizeLinkedIssue(item, fallbackProject)
+		if !ok {
+			continue
+		}
+		blockers = append(blockers, blocker)
+	}
+	if len(blockers) == 0 {
+		return nil
+	}
+	return blockers
+}
+
+func (a *Adapter) normalizeLinkedIssue(item issueResponse, fallbackProject string) (domain.Issue, bool) {
+	project := issueProjectPath(item)
+	if project == "" {
+		project = projectPathFromIssueURL(item.WebURL)
+	}
+	if project == "" {
+		project = fallbackProject
+	}
+	if project == "" {
+		return domain.Issue{}, false
+	}
+
+	return domain.Issue{
+		ID:          formatGitLabIssueID(project, item.IID),
+		ExternalID:  strconv.Itoa(item.ID),
+		Identifier:  fmt.Sprintf("%s#%d", project, item.IID),
+		TrackerKind: "gitlab",
+		SourceName:  a.source.Name,
+		Title:       item.Title,
+		Description: item.Description,
+		State:       normalizeState(item.State),
+		Labels:      normalizeLabels(item.Labels),
+		Assignee:    issueAssignee(item),
+		Assignees:   issueAssignees(item),
+		URL:         item.WebURL,
+		CreatedAt:   trackerbase.ParseTime(item.CreatedAt),
+		UpdatedAt:   trackerbase.ParseTime(item.UpdatedAt),
+		Meta: map[string]string{
+			"project":         project,
+			"repo_url":        resolveSourceRepoURL(a.source.Connection.BaseURL, project),
+			"gitlab_base_url": a.source.Connection.BaseURL,
+			"gitlab_scope":    "project-issue",
+			"state_type":      strings.ToLower(strings.TrimSpace(item.State)),
+		},
+	}, true
+}
+
 func (a *Adapter) matchesEpicFilter(epic epicResponse) bool {
 	filter := a.source.EffectiveEpicFilter()
 	if config.IsZeroFilter(filter) {
@@ -565,6 +652,23 @@ func issueProjectPath(item issueResponse) string {
 		return ""
 	}
 	return full[:hash]
+}
+
+func projectPathFromIssueURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	const marker = "/-/issues/"
+	index := strings.Index(parsed.EscapedPath(), marker)
+	if index == -1 {
+		index = strings.Index(parsed.Path, marker)
+		if index == -1 {
+			return ""
+		}
+		return strings.TrimPrefix(parsed.Path[:index], "/")
+	}
+	return strings.TrimPrefix(parsed.EscapedPath()[:index], "/")
 }
 
 func normalizeLabels(labels []string) []string {

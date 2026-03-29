@@ -13,6 +13,26 @@
   - Linear API token for project issue polling
 - Optional communication channel:
   - Slack bot token plus Slack app-level token for DM or channel-thread approvals/status
+- Optional for containerized harness runs:
+  - local `docker` client and reachable daemon/context
+  - a container image that already contains `claude` or `codex`
+
+## Docker-backed Harnesses
+
+If you set `agent_types[].docker`, Maestro keeps orchestration on the host and runs only the
+harness process in Docker. The prepared workspace is bind-mounted into the container, so edits stay
+visible on the host immediately.
+
+Common auth patterns:
+
+- Claude direct API: `docker.env_passthrough: [ANTHROPIC_API_KEY]`
+- Claude proxy/gateway: `docker.env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]`
+- Codex direct API: `docker.env_passthrough: [OPENAI_API_KEY]`
+- Codex compatible gateway: `docker.env_passthrough: [OPENAI_API_KEY]` plus `codex.extra_args` for `forced_login_method="api"` and `openai_base_url="https://llm-proxy.example.com"`
+- CLI subscription/config auth: add minimal read-only `docker.mounts` entries for the harness config/auth path
+
+Maestro does not mount your full home directory by default. If you do not provide a `HOME`
+explicitly, Maestro supplies a writable container-local `HOME` automatically.
 
 ## Minimal GitLab Setup
 
@@ -102,6 +122,12 @@ Do not embed credentials directly in `repo` URLs. Use `connection.token_env` and
 ```bash
 go run ./cmd/maestro run --config /path/to/maestro.yaml
 ```
+
+If you want to containerize only the harness process, see the Docker examples in
+[docs/agents.md](agents.md#docker-execution). The working proxy-backed patterns are:
+
+- Claude: `ANTHROPIC_AUTH_TOKEN` plus `ANTHROPIC_BASE_URL`
+- Codex: `OPENAI_API_KEY` plus `codex.extra_args` for `forced_login_method="api"` and `openai_base_url="https://llm-proxy.example.com"`
 
 ## Multiple Sources In One Config
 

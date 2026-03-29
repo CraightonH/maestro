@@ -17,6 +17,7 @@ import (
 
 type Adapter struct {
 	binary string
+	runner harness.ProcessRunner
 
 	mu        sync.Mutex
 	procs     map[string]*claudeRun
@@ -30,6 +31,7 @@ type Adapter struct {
 type claudeRun struct {
 	runID          string
 	prompt         string
+	hostWorkdir    string
 	workdir        string
 	env            map[string]string
 	stdout         io.Writer
@@ -110,14 +112,39 @@ type claudeUsage struct {
 	OutputTokens *int64 `json:"output_tokens,omitempty"`
 }
 
-func NewAdapter() (*Adapter, error) {
-	binary, err := exec.LookPath("claude")
+type Option func(*adapterOptions)
+
+type adapterOptions struct {
+	runner harness.ProcessRunner
+}
+
+func WithProcessRunner(runner harness.ProcessRunner) Option {
+	return func(opts *adapterOptions) {
+		opts.runner = runner
+	}
+}
+
+func NewAdapter(options ...Option) (*Adapter, error) {
+	opts := adapterOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+	if opts.runner == nil {
+		runner, err := harness.NewProcessRunner(nil)
+		if err != nil {
+			return nil, err
+		}
+		opts.runner = runner
+	}
+
+	binary, err := opts.runner.ResolveBinary("claude")
 	if err != nil {
-		return nil, fmt.Errorf("find claude executable: %w", err)
+		return nil, err
 	}
 
 	return &Adapter{
 		binary:    binary,
+		runner:    opts.runner,
 		procs:     map[string]*claudeRun{},
 		approvals: make(chan harness.ApprovalRequest, 32),
 	}, nil
@@ -147,7 +174,8 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	run := &claudeRun{
 		runID:            cfg.RunID,
 		prompt:           cfg.Prompt,
-		workdir:          cfg.Workdir,
+		hostWorkdir:      cfg.Workdir,
+		workdir:          a.runner.VisibleWorkdir(cfg.Workdir),
 		env:              cfg.Env,
 		stdout:           harness.WriterOrDiscard(cfg.Stdout),
 		stderr:           harness.WriterOrDiscard(cfg.Stderr),
@@ -168,7 +196,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	a.procs[cfg.RunID] = run
 	a.mu.Unlock()
 
-	go run.execute(a.binary, a.approvals)
+	go run.execute(a.binary, a.runner, a.approvals)
 
 	return &activeRun{
 		runID: cfg.RunID,
@@ -225,11 +253,11 @@ func (r *activeRun) Wait() error {
 	return r.wait()
 }
 
-func (r *claudeRun) execute(binary string, approvals chan<- harness.ApprovalRequest) {
+func (r *claudeRun) execute(binary string, runner harness.ProcessRunner, approvals chan<- harness.ApprovalRequest) {
 	currentTurn := 1
 	prompt := r.prompt
 	for {
-		sessionID, err := r.runTurn(binary, prompt, r.sessionID, approvals)
+		sessionID, err := r.runTurn(binary, runner, prompt, r.sessionID, approvals)
 		if err != nil {
 			r.finish(err)
 			return
@@ -270,7 +298,14 @@ func (a *Adapter) supportsResume() (bool, error) {
 	}
 	a.supportMu.Unlock()
 
-	out, err := exec.Command(a.binary, "--help").CombinedOutput()
+	cmd, err := a.runner.CommandContext(context.Background(), harness.ProcessSpec{
+		Binary: a.binary,
+		Args:   []string{"--help"},
+	})
+	if err != nil {
+		return false, err
+	}
+	out, err := cmd.CombinedOutput()
 	supported := strings.Contains(string(out), "--resume")
 	if err != nil && !supported {
 		return false, err
@@ -283,18 +318,18 @@ func (a *Adapter) supportsResume() (bool, error) {
 	return supported, nil
 }
 
-func (r *claudeRun) runTurn(binary string, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
+func (r *claudeRun) runTurn(binary string, runner harness.ProcessRunner, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
 	switch r.approvalPolicy {
 	case "manual":
-		return r.runManualTurn(binary, prompt, resumeSessionID, approvals)
+		return r.runManualTurn(binary, runner, prompt, resumeSessionID, approvals)
 	default:
-		outcome, err := r.runCommand(binary, prompt, resumeSessionID, "bypassPermissions", false)
+		outcome, err := r.runCommand(binary, runner, prompt, resumeSessionID, "bypassPermissions", false)
 		return outcome.sessionID, err
 	}
 }
 
-func (r *claudeRun) runManualTurn(binary string, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
-	outcome, err := r.runCommand(binary, prompt, resumeSessionID, "default", true)
+func (r *claudeRun) runManualTurn(binary string, runner harness.ProcessRunner, prompt string, resumeSessionID string, approvals chan<- harness.ApprovalRequest) (string, error) {
+	outcome, err := r.runCommand(binary, runner, prompt, resumeSessionID, "default", true)
 	if err != nil {
 		return outcome.sessionID, err
 	}
@@ -318,11 +353,11 @@ func (r *claudeRun) runManualTurn(binary string, prompt string, resumeSessionID 
 		return outcome.sessionID, fmt.Errorf("approval rejected")
 	}
 
-	outcome, err = r.runCommand(binary, prompt, resumeSessionID, "bypassPermissions", false)
+	outcome, err = r.runCommand(binary, runner, prompt, resumeSessionID, "bypassPermissions", false)
 	return outcome.sessionID, err
 }
 
-func (r *claudeRun) runCommand(binary string, prompt string, resumeSessionID string, permissionMode string, detectApproval bool) (turnOutcome, error) {
+func (r *claudeRun) runCommand(binary string, runner harness.ProcessRunner, prompt string, resumeSessionID string, permissionMode string, detectApproval bool) (turnOutcome, error) {
 	outcome := turnOutcome{}
 	args := []string{
 		"--print",
@@ -341,10 +376,16 @@ func (r *claudeRun) runCommand(binary string, prompt string, resumeSessionID str
 		args = append(args, "--effort", r.reasoning)
 	}
 	args = append(args, r.extraArgs...)
-	cmd := exec.CommandContext(r.ctx, binary, args...)
-	cmd.Dir = r.workdir
+	cmd, err := runner.CommandContext(r.ctx, harness.ProcessSpec{
+		Binary:  binary,
+		Args:    args,
+		Workdir: r.hostWorkdir,
+		Env:     r.env,
+	})
+	if err != nil {
+		return outcome, err
+	}
 	cmd.Stdin = strings.NewReader(prompt)
-	cmd.Env = harness.MergeEnv(r.env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

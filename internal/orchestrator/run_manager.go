@@ -19,29 +19,23 @@ type runManager struct {
 }
 
 func (r *runManager) dispatch(ctx context.Context, issue domain.Issue) error {
+	return r.dispatchWithAttempt(ctx, issue, nil)
+}
+
+func (r *runManager) dispatchRetry(ctx context.Context, issue domain.Issue, attempt int) error {
+	return r.dispatchWithAttempt(ctx, issue, &attempt)
+}
+
+func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue, attemptOverride *int) error {
 	s := r.service
 	if s.limiter != nil && !s.limiter.TryAcquire() {
 		return nil
 	}
 
-	refreshed, err := s.tracker.Get(ctx, issue.ID)
-	if err != nil {
-		s.recordSourceEvent("warn", s.source.Name, "dispatch guard refresh failed for %s: %v", issue.Identifier, err)
-		if s.limiter != nil {
-			s.limiter.Release()
-		}
-		return nil
-	}
-	if trackerbase.IsTerminal(refreshed) || !trackerbase.MatchesFilterWithPrefix(refreshed, s.source.EffectiveIssueFilter(), s.labelPrefix()) {
-		s.recordSourceEvent("info", s.source.Name, "dispatch guard: %s no longer eligible", issue.Identifier)
-		if s.limiter != nil {
-			s.limiter.Release()
-		}
-		return nil
-	}
-	issue = refreshed
-
 	attempt := s.stateMgr.takeAttempt(issue)
+	if attemptOverride != nil {
+		attempt = s.stateMgr.takeAttemptOverride(issue.ID, *attemptOverride)
+	}
 	startedAt := time.Now()
 	run := &domain.AgentRun{
 		ID:             newRunID(startedAt),
@@ -251,6 +245,13 @@ func snapshotIssue(issue domain.Issue) domain.Issue {
 			meta[k] = v
 		}
 		issue.Meta = meta
+	}
+	if len(issue.Blockers) > 0 {
+		blockers := make([]domain.Issue, 0, len(issue.Blockers))
+		for _, blocker := range issue.Blockers {
+			blockers = append(blockers, snapshotIssue(blocker))
+		}
+		issue.Blockers = blockers
 	}
 	return issue
 }

@@ -62,6 +62,20 @@ codex:
   reasoning: high
   max_turns: 20
   # thread_sandbox: workspaceWrite  # optional: overrides approval_policy-derived sandbox
+
+docker:
+  image: ghcr.io/acme/maestro-agent:latest
+  workspace_mount_path: /workspace
+  network: bridge                   # bridge (default), none, or host
+  cpus: 2
+  memory: 4g
+  pids_limit: 256
+  env_passthrough:
+    - ANTHROPIC_API_KEY
+  mounts:
+    - source: ~/.config/claude
+      target: /home/agent/.config/claude
+      read_only: true
 ```
 
 Optional pack directories:
@@ -111,6 +125,12 @@ Harness config resolution order:
 2. Pack `codex:` or `claude:` block
 3. Top-level `codex_defaults` or `claude_defaults`
 4. Built-in defaults
+
+Docker config resolution order:
+
+1. Per-agent `docker:` block (highest priority)
+2. Pack `docker:` block
+3. Built-in Docker defaults for omitted fields (`workspace_mount_path: /workspace`, `network: bridge`)
 
 Resolution rules:
 
@@ -177,6 +197,9 @@ Pack and config values are combined for:
 in `maestro.yaml` win over pack values for the same harness block. Top-level `codex_defaults` and
 `claude_defaults` fill any remaining gaps.
 
+`docker:` blocks from packs provide execution defaults for containerized harness runs. Per-agent
+`docker:` values in `maestro.yaml` override pack values field-by-field.
+
 Claude multi-turn runs reuse the saved Claude session via `--resume` between turns. Set
 `claude.max_turns` above `1` when you want continuation behavior similar to Codex.
 
@@ -194,6 +217,119 @@ That means these fields must stay in `maestro.yaml` for repo packs:
 - `approval_policy`
 - `approval_timeout`
 - `max_concurrent`
+
+## Docker Execution
+
+Docker mode keeps Maestro orchestration on the host and containerizes only the harness process.
+
+- tracker polling, lifecycle/state updates, workspace preparation/reuse, prompt rendering, approval routing, message routing, and state persistence all stay on the host
+- the prepared host workspace is bind-mounted into the container and used as the harness working directory
+- git changes stay visible on the host immediately; there is no copy-back step
+- Maestro runs the container as the current host uid/gid where supported so workspace files keep usable ownership
+
+Phase-1 Docker config:
+
+- `docker.image`: required image that already contains `claude` or `codex`
+- `docker.workspace_mount_path`: optional container path for the workspace bind mount
+- `docker.network`: `bridge`, `none`, or `host`
+- `docker.cpus`, `docker.memory`, `docker.pids_limit`: basic resource limits
+- `docker.env_passthrough`: explicit host env vars to inject into the container
+- `docker.mounts`: explicit extra bind mounts for auth/config files or directories
+
+Authentication patterns:
+
+- subscription-backed CLI auth: mount the minimal CLI auth/config paths read-only with `docker.mounts`
+- API-key auth: pass keys explicitly with `docker.env_passthrough` or per-agent `env`
+- Claude proxy/gateway auth: pass `ANTHROPIC_AUTH_TOKEN`, and set `ANTHROPIC_BASE_URL` when the gateway is not `https://api.anthropic.com`
+- Maestro does not mount the operator's full home directory by default
+- if `HOME` is not provided explicitly, Maestro gives the container a writable local `HOME` automatically
+
+Example:
+
+```yaml
+agent_types:
+  - name: dev-claude-docker
+    agent_pack: dev-claude
+    harness: claude-code
+    workspace: git-clone
+    approval_policy: manual
+    docker:
+      image: ghcr.io/acme/maestro-claude:latest
+      workspace_mount_path: /workspace
+      network: none
+      cpus: 2
+      memory: 4g
+      pids_limit: 256
+      env_passthrough: [ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN]
+```
+
+Concrete examples:
+
+Claude in Docker using bearer-token proxy auth:
+
+```yaml
+agent_types:
+  - name: dev-claude-docker
+    agent_pack: dev-claude
+    harness: claude-code
+    workspace: git-clone
+    approval_policy: manual
+    claude:
+      model: claude-opus-4-6
+      reasoning: high
+    docker:
+      image: ghcr.io/acme/maestro-claude:latest
+      workspace_mount_path: /workspace
+      network: bridge
+      cpus: 2
+      memory: 4g
+      pids_limit: 256
+      env_passthrough:
+        - ANTHROPIC_AUTH_TOKEN
+        - ANTHROPIC_BASE_URL
+```
+
+Codex in Docker using an OpenAI-compatible proxy:
+
+```yaml
+agent_types:
+  - name: dev-codex-docker
+    agent_pack: dev-codex
+    harness: codex
+    workspace: git-clone
+    approval_policy: manual
+    codex:
+      model: openai/gpt-5-mini
+      reasoning: high
+      extra_args:
+        - --config
+        - forced_login_method="api"
+        - --config
+        - openai_base_url="https://llm-proxy.example.com"
+    docker:
+      image: ghcr.io/acme/maestro-codex:latest
+      workspace_mount_path: /workspace
+      network: bridge
+      cpus: 2
+      memory: 4g
+      pids_limit: 256
+      env_passthrough:
+        - OPENAI_API_KEY
+```
+
+For Codex proxy mode:
+
+- use a model name that your proxy actually exposes
+- pass `forced_login_method="api"` so the CLI does not prefer a stored ChatGPT login
+- pass `openai_base_url` via `codex.extra_args`; the bare `OPENAI_BASE_URL` env path is deprecated in Codex CLI
+- Maestro will synthesize container-local Codex API-key auth state when `OPENAI_API_KEY` is passed into a Dockerized Codex run
+
+Current phase-1 limits:
+
+- only the harness process is containerized; hooks still run on the host
+- additional `docker.mounts` entries must be `read_only: true`
+- Maestro does not yet enforce fine-grained allowlists for tools, secrets, or writable paths
+- Docker availability is checked when the harness is constructed; if `docker` is missing, startup fails with a direct error
 
 ## Prompt Template Data
 

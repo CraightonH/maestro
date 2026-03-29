@@ -52,6 +52,23 @@ type ClaudeConfig struct {
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
+type DockerMountConfig struct {
+	Source   string `yaml:"source"`
+	Target   string `yaml:"target"`
+	ReadOnly bool   `yaml:"read_only"`
+}
+
+type DockerConfig struct {
+	Image              string              `yaml:"image"`
+	WorkspaceMountPath string              `yaml:"workspace_mount_path"`
+	Mounts             []DockerMountConfig `yaml:"mounts"`
+	EnvPassthrough     []string            `yaml:"env_passthrough"`
+	Network            string              `yaml:"network"`
+	CPUs               float64             `yaml:"cpus"`
+	Memory             string              `yaml:"memory"`
+	PIDsLimit          int                 `yaml:"pids_limit"`
+}
+
 type Config struct {
 	ConfigPath string `yaml:"-"`
 	ConfigDir  string `yaml:"-"`
@@ -113,6 +130,7 @@ type SourceDefaultsEntry struct {
 	RetryBase       Duration         `yaml:"retry_base"`
 	MaxRetryBackoff Duration         `yaml:"max_retry_backoff"`
 	MaxAttempts     int              `yaml:"max_attempts"`
+	RespectBlockers *bool            `yaml:"respect_blockers"`
 }
 
 type AgentDefaultsConfig struct {
@@ -130,6 +148,7 @@ type AgentDefaultsConfig struct {
 	Tools           []string          `yaml:"tools"`
 	Skills          []string          `yaml:"skills"`
 	ContextFiles    []string          `yaml:"context_files"`
+	Docker          *DockerConfig     `yaml:"docker"`
 }
 
 type UserConfig struct {
@@ -154,6 +173,7 @@ type SourceConfig struct {
 	RetryBase       Duration             `yaml:"retry_base"`
 	MaxRetryBackoff Duration             `yaml:"max_retry_backoff"`
 	MaxAttempts     int                  `yaml:"max_attempts"`
+	RespectBlockers *bool                `yaml:"respect_blockers"`
 	OnDispatch      *DispatchTransition  `yaml:"on_dispatch"`
 	OnComplete      *LifecycleTransition `yaml:"on_complete"`
 	OnFailure       *LifecycleTransition `yaml:"on_failure"`
@@ -199,6 +219,7 @@ type AgentTypeConfig struct {
 
 	Codex  *CodexConfig  `yaml:"codex"`
 	Claude *ClaudeConfig `yaml:"claude"`
+	Docker *DockerConfig `yaml:"docker"`
 
 	PackPath      string `yaml:"-"`
 	RepoPackPath  string `yaml:"-"`
@@ -274,6 +295,13 @@ func (s SourceConfig) EffectiveMaxAttempts(state StateConfig) int {
 		return s.MaxAttempts
 	}
 	return state.MaxAttempts
+}
+
+func (s SourceConfig) EffectiveRespectBlockers() bool {
+	if s.RespectBlockers != nil {
+		return *s.RespectBlockers
+	}
+	return true
 }
 
 func expandPath(path string) (string, error) {
@@ -364,6 +392,20 @@ func cloneClaudeConfig(src *ClaudeConfig) *ClaudeConfig {
 	return &cloned
 }
 
+func cloneDockerConfig(src *DockerConfig) *DockerConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	if src.Mounts != nil {
+		cloned.Mounts = append([]DockerMountConfig{}, src.Mounts...)
+	}
+	if src.EnvPassthrough != nil {
+		cloned.EnvPassthrough = append([]string{}, src.EnvPassthrough...)
+	}
+	return &cloned
+}
+
 func mergeCodexConfig(base *CodexConfig, override *CodexConfig) *CodexConfig {
 	if base == nil && override == nil {
 		return nil
@@ -418,6 +460,44 @@ func mergeClaudeConfig(base *ClaudeConfig, override *ClaudeConfig) *ClaudeConfig
 	}
 	if override.ExtraArgs != nil {
 		merged.ExtraArgs = append([]string{}, override.ExtraArgs...)
+	}
+	return merged
+}
+
+func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerConfig(override)
+	}
+	merged := cloneDockerConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.Image != "" {
+		merged.Image = override.Image
+	}
+	if override.WorkspaceMountPath != "" {
+		merged.WorkspaceMountPath = override.WorkspaceMountPath
+	}
+	if override.Mounts != nil {
+		merged.Mounts = append([]DockerMountConfig{}, override.Mounts...)
+	}
+	if override.EnvPassthrough != nil {
+		merged.EnvPassthrough = append([]string{}, override.EnvPassthrough...)
+	}
+	if override.Network != "" {
+		merged.Network = override.Network
+	}
+	if override.CPUs != 0 {
+		merged.CPUs = override.CPUs
+	}
+	if override.Memory != "" {
+		merged.Memory = override.Memory
+	}
+	if override.PIDsLimit != 0 {
+		merged.PIDsLimit = override.PIDsLimit
 	}
 	return merged
 }
@@ -525,6 +605,14 @@ func ResolveClaudeConfig(defaults *ClaudeConfig, override *ClaudeConfig) ClaudeC
 		MaxTurns:  1,
 	}
 	return *mergeClaudeConfig(mergeClaudeConfig(base, defaults), override)
+}
+
+func ResolveDockerConfig(defaults *DockerConfig, override *DockerConfig) DockerConfig {
+	base := &DockerConfig{
+		WorkspaceMountPath: "/workspace",
+		Network:            "bridge",
+	}
+	return *mergeDockerConfig(mergeDockerConfig(base, defaults), override)
 }
 
 func safeConfigKey(raw string) string {

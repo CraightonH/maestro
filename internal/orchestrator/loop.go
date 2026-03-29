@@ -105,7 +105,17 @@ func (s *Service) tick(ctx context.Context) error {
 		if s.isClaimed(issue.ID) || s.stateMgr.shouldSkipIssue(issue) {
 			continue
 		}
-		return s.runMgr.dispatch(ctx, issue)
+		guarded, status, reason, err := s.guardDispatchCandidate(ctx, issue)
+		switch status {
+		case dispatchGuardReady:
+			return s.runMgr.dispatch(ctx, guarded)
+		case dispatchGuardBlocked:
+			s.recordSourceEvent("info", s.source.Name, "skipping %s because it is blocked by %s", guarded.Identifier, reason)
+		case dispatchGuardSkipped:
+			s.recordSourceEvent("info", s.source.Name, "dispatch guard: %s no longer eligible", guarded.Identifier)
+		case dispatchGuardError:
+			s.recordSourceEvent("warn", s.source.Name, "dispatch guard refresh failed for %s: %v", issue.Identifier, err)
+		}
 	}
 
 	return nil
@@ -115,6 +125,7 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 	type retryCandidate struct {
 		issueID string
 		dueAt   time.Time
+		attempt int
 	}
 
 	s.mu.RLock()
@@ -126,6 +137,7 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 		candidates = append(candidates, retryCandidate{
 			issueID: issueID,
 			dueAt:   retry.DueAt,
+			attempt: retry.Attempt,
 		})
 	}
 	s.mu.RUnlock()
@@ -154,7 +166,21 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 			s.recordSourceEvent("info", s.source.Name, "discarded retry for %s (no longer eligible)", issue.Identifier)
 			continue
 		}
-		return s.runMgr.dispatch(ctx, issue)
+		guarded, status, reason, err := s.guardRetryCandidate(ctx, issue)
+		switch status {
+		case dispatchGuardReady:
+			return s.runMgr.dispatchRetry(ctx, guarded, candidate.attempt)
+		case dispatchGuardBlocked:
+			s.recordSourceEvent("info", s.source.Name, "skipping retry for %s because it is blocked by %s", guarded.Identifier, reason)
+		case dispatchGuardSkipped:
+			s.mu.Lock()
+			delete(s.retryQueue, candidate.issueID)
+			s.mu.Unlock()
+			_ = s.stateMgr.saveStateBestEffort()
+			s.recordSourceEvent("info", s.source.Name, "discarded retry for %s (no longer eligible)", guarded.Identifier)
+		case dispatchGuardError:
+			s.recordSourceEvent("warn", s.source.Name, "dispatch guard refresh failed for %s: %v", issue.Identifier, err)
+		}
 	}
 
 	return nil

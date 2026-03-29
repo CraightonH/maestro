@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tjohnson/maestro/internal/config"
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/harness"
 )
@@ -69,6 +70,123 @@ exit 1
 	}
 	if got := stdout.String(); !strings.Contains(got, "CODEX_OK") {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestAdapterStartAndWaitWithDockerRunner(t *testing.T) {
+	tmp := t.TempDir()
+	argsPath := filepath.Join(tmp, "docker-args.txt")
+	stdinPath := filepath.Join(tmp, "docker-stdin.txt")
+	authDir := filepath.Join(tmp, "auth")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	script := `#!/bin/sh
+printf '%s\n' "$@" > "` + argsPath + `"
+while IFS= read -r line; do
+  printf '%s\n' "$line" >> "` + stdinPath + `"
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{"userAgent":"stub"}}'
+      ;;
+    *'"method":"initialized"'*)
+      ;;
+    *'"method":"thread/start"'*)
+      printf '%s\n' '{"id":2,"result":{"thread":{"id":"thread-1"}}}'
+      ;;
+    *'"method":"turn/start"'*)
+      printf '%s\n' '{"id":3,"result":{"turn":{"id":"turn-1","status":"inProgress"}}}'
+      printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"DOCKER_OK"}}'
+      printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}'
+      exit 0
+      ;;
+  esac
+done
+exit 0
+`
+	if err := os.WriteFile(filepath.Join(tmp, "docker"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub docker: %v", err)
+	}
+
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("OPENAI_API_KEY", "host-token")
+
+	runner, err := harness.NewProcessRunner(&config.DockerConfig{
+		Image:              "codex-image:latest",
+		WorkspaceMountPath: "/workspace",
+		Mounts: []config.DockerMountConfig{{
+			Source:   authDir,
+			Target:   "/root/.codex",
+			ReadOnly: true,
+		}},
+		EnvPassthrough: []string{"OPENAI_API_KEY"},
+		Network:        "none",
+		CPUs:           2,
+		Memory:         "3g",
+		PIDsLimit:      96,
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	adapter, err := NewAdapter(WithProcessRunner(runner))
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	var stdout strings.Builder
+	run, err := adapter.Start(context.Background(), harness.RunConfig{
+		RunID:          "run-docker",
+		Prompt:         "hello docker",
+		Workdir:        tmp,
+		Stdout:         &stdout,
+		ApprovalPolicy: "manual",
+		Env: map[string]string{
+			"EXPLICIT": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("start harness: %v", err)
+	}
+
+	if err := run.Wait(); err != nil {
+		t.Fatalf("wait harness: %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "DOCKER_OK") {
+		t.Fatalf("stdout = %q", got)
+	}
+
+	rawArgs, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	args := string(rawArgs)
+	if !strings.Contains(args, "--mount\ntype=bind,src="+tmp+",dst=/workspace") {
+		t.Fatalf("args = %q, want workspace mount", args)
+	}
+	if !strings.Contains(args, "--mount\ntype=bind,src="+authDir+",dst=/root/.codex,readonly") {
+		t.Fatalf("args = %q, want readonly auth mount", args)
+	}
+	if !strings.Contains(args, "--env\nOPENAI_API_KEY=host-token") || !strings.Contains(args, "--env\nEXPLICIT=1") {
+		t.Fatalf("args = %q, want docker envs", args)
+	}
+	if !strings.Contains(args, "codex-image:latest\ncodex\napp-server") {
+		t.Fatalf("args = %q, want image and codex invocation", args)
+	}
+
+	rawStdin, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("read stdin log: %v", err)
+	}
+	stdinLog := string(rawStdin)
+	if strings.Contains(stdinLog, `"`+"cwd"+`":"`+tmp+`"`) {
+		t.Fatalf("stdin log = %q, want container-visible cwd", stdinLog)
+	}
+	if !strings.Contains(stdinLog, `"`+"cwd"+`":"/workspace"`) {
+		t.Fatalf("stdin log = %q, want /workspace cwd", stdinLog)
+	}
+	if !strings.Contains(stdinLog, `"`+"writableRoots"+`":["/workspace"]`) {
+		t.Fatalf("stdin log = %q, want sandbox writableRoots /workspace", stdinLog)
 	}
 }
 

@@ -174,6 +174,20 @@ func IsCandidateWithPrefix(issue domain.Issue, filter config.FilterConfig, prefi
 	return MatchesFilterWithPrefix(issue, filter, prefix) && !HasBlockingLifecycleLabelWithPrefix(issue.Labels, prefix)
 }
 
+func NonTerminalBlockers(issue domain.Issue) []domain.Issue {
+	if len(issue.Blockers) == 0 {
+		return nil
+	}
+
+	out := make([]domain.Issue, 0, len(issue.Blockers))
+	for _, blocker := range issue.Blockers {
+		if !IsTerminal(blocker) {
+			out = append(out, blocker)
+		}
+	}
+	return out
+}
+
 func IsTerminal(issue domain.Issue) bool {
 	if stateType := strings.ToLower(strings.TrimSpace(issue.Meta["bucket_state_type"])); stateType != "" {
 		switch stateType {

@@ -75,6 +75,21 @@ checks whether the workspace already contains a `.git` directory:
 This means retries resume from the prior workspace state, which is important for the 6-phase agent
 prompts that check `git log` and `git status` to determine whether prior work exists.
 
+## Docker-backed Harnesses
+
+If an agent type has a `docker:` block, Maestro still runs the scheduler, tracker sync, lifecycle
+updates, prompt rendering, and approval routing on the host. Only the harness process is
+containerized.
+
+Operational notes:
+
+- the prepared workspace is bind-mounted into the container, so git changes remain visible on the host
+- `docker.env_passthrough` is the normal way to inject explicit credentials into the container
+- for Claude, bearer-token proxy auth uses `ANTHROPIC_AUTH_TOKEN`, plus `ANTHROPIC_BASE_URL` when the proxy is not `https://api.anthropic.com`
+- for Codex proxy/API-key mode, pass `OPENAI_API_KEY`, set the proxy URL through `codex.extra_args` as `openai_base_url="..."`, and force API auth with `forced_login_method="api"`
+- for mounted CLI auth, prefer minimal read-only `docker.mounts` entries rather than mounting your whole home directory
+- if `HOME` is not set explicitly for the container, Maestro provides a writable container-local `HOME`
+
 ## Run Log Persistence
 
 After each run completes (success or failure), agent stdout and stderr are saved to:
