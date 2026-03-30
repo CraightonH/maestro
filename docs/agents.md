@@ -250,6 +250,10 @@ Docker config:
 - `docker.auth`: presets for common auth flows
 - `docker.security`: named presets plus raw hardening overrides
 - `docker.cache`: optional writable cache mounts and common cache presets
+- `docker.reuse`: explicit container reuse policy
+  - `mode: none`: default; fresh container per run
+  - `mode: stateless`: reuse a trusted shared container for matching Docker profiles; Maestro resets `/tmp/maestro-runs` between runs and stops the container after each run so stray processes are cleared
+  - `mode: lineage`: reuse only within the same issue/workspace lineage so retries and continuations can keep mutable workspace/home/cache state without crossing tickets
 
 Authentication patterns:
 
@@ -268,6 +272,7 @@ Authentication patterns:
 - allowlist mode rejects conflicting proxy env configuration (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, including lowercase variants) because Maestro owns those env vars in that mode
 - allowlist mode requires bridge networking; `maestro doctor` verifies support for the required Docker host-gateway resolution where possible
 - `maestro doctor` also shows the effective Docker env injections and read-only secret/tool mounts each agent will receive
+- `maestro doctor` warns when `docker.reuse.mode: stateless` is combined with risky settings such as mutable repo workspaces, broad env passthrough, broad network access, or permissive security profiles
 - cache presets are available for common language/tool caches:
   - `claude-cache`
   - `codex-cache`
@@ -313,6 +318,8 @@ agent_types:
         tmpfs: [/tmp]
       cache:
         profiles: [claude-cache]
+      reuse:
+        mode: none
 ```
 
 Concrete examples:
@@ -338,6 +345,60 @@ agent_types:
       pids_limit: 256
       auth:
         mode: claude-api-key
+
+Fast investigative Codex agent using stateless reuse:
+
+```yaml
+agent_types:
+  - name: ops-codex-stateless
+    harness: codex
+    workspace: none
+    approval_policy: auto
+    docker:
+      image: ghcr.io/acme/maestro-codex@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      network_policy:
+        mode: allowlist
+        allow: [api.openai.com, api.linear.app, gitlab.example.com]
+      security:
+        preset: default
+      auth:
+        mode: codex-api-key
+      tools:
+        mounts:
+          - preset: git-config
+            source: ~/.gitconfig
+      reuse:
+        mode: stateless
+```
+
+Coding agent using lineage reuse:
+
+```yaml
+agent_types:
+  - name: repo-coder-lineage
+    harness: claude-code
+    workspace: git-clone
+    approval_policy: manual
+    docker:
+      image: ghcr.io/acme/maestro-claude@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      workspace_mount_path: /workspace
+      network: none
+      security:
+        preset: default
+      cache:
+        profiles: [claude-cache, go-cache]
+      auth:
+        mode: claude-config-mount
+        source: ~/.claude
+      reuse:
+        mode: lineage
+```
+
+Reuse guidance:
+
+- `stateless` is for trusted, low-mutation investigative or reporting workflows; it is not the recommended default for code-modifying agents
+- `lineage` keeps reuse scoped to the same issue/workspace lineage and is the safer choice when retries or continuations benefit from preserved workspace/home/cache state
+- when no compatible reusable container is available, Maestro falls back to the normal cold `docker run` path instead of waiting indefinitely
         source: ANTHROPIC_API_KEY
       secrets:
         env:

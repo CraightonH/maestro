@@ -33,6 +33,7 @@ type claudeRun struct {
 	prompt         string
 	hostWorkdir    string
 	workdir        string
+	lineageKey     string
 	env            map[string]string
 	stdout         io.Writer
 	stderr         io.Writer
@@ -44,6 +45,7 @@ type claudeRun struct {
 	maxTurns         int
 	extraArgs        []string
 	continuationFunc func(ctx context.Context, turnNumber int) (prompt string, cont bool, err error)
+	executionMetaFn  func(harness.ExecutionMetadata)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -176,6 +178,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		prompt:           cfg.Prompt,
 		hostWorkdir:      cfg.Workdir,
 		workdir:          a.runner.VisibleWorkdir(cfg.Workdir),
+		lineageKey:       cfg.LineageKey,
 		env:              cfg.Env,
 		stdout:           harness.WriterOrDiscard(cfg.Stdout),
 		stderr:           harness.WriterOrDiscard(cfg.Stderr),
@@ -185,6 +188,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		maxTurns:         maxTurns,
 		extraArgs:        cfg.ExtraArgs,
 		continuationFunc: cfg.ContinuationFunc,
+		executionMetaFn:  cfg.ExecutionMetadataCallback,
 		ctx:              runCtx,
 		cancel:           cancel,
 		metricsCallback:  cfg.MetricsCallback,
@@ -376,14 +380,21 @@ func (r *claudeRun) runCommand(binary string, runner harness.ProcessRunner, prom
 		args = append(args, "--effort", r.reasoning)
 	}
 	args = append(args, r.extraArgs...)
+	lifecycle := &harness.ProcessLifecycle{}
 	cmd, err := runner.CommandContext(r.ctx, harness.ProcessSpec{
-		Binary:  binary,
-		Args:    args,
-		Workdir: r.hostWorkdir,
-		Env:     r.env,
+		RunID:      r.runID,
+		LineageKey: r.lineageKey,
+		Binary:     binary,
+		Args:       args,
+		Workdir:    r.hostWorkdir,
+		Env:        r.env,
+		Lifecycle:  lifecycle,
 	})
 	if err != nil {
 		return outcome, err
+	}
+	if r.executionMetaFn != nil {
+		r.executionMetaFn(lifecycle.Metadata)
 	}
 	cmd.Stdin = strings.NewReader(prompt)
 
@@ -396,10 +407,18 @@ func (r *claudeRun) runCommand(binary string, runner harness.ProcessRunner, prom
 		return outcome, err
 	}
 	if err := cmd.Start(); err != nil {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return outcome, err
 	}
 	r.setCmd(cmd)
 	defer r.clearCmd(cmd)
+	defer func() {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), nil)
+		}
+	}()
 
 	go func() {
 		_, _ = io.Copy(r.stderr, stderr)

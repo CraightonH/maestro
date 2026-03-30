@@ -86,6 +86,10 @@ Operational notes:
 - the prepared workspace is bind-mounted into the container, so git changes remain visible on the host
 - prefer `docker.secrets` and `docker.tools` to explicitly allow extra env vars and read-only mounts into the container
 - `docker.env_passthrough` and `docker.mounts` remain available for compatibility, but they are the broader legacy path
+- Docker reuse is opt-in via `docker.reuse.mode`:
+  - `none` keeps the current fresh-container behavior
+  - `stateless` reuses a trusted shared container for matching profiles and is best for investigative/reporting agents
+  - `lineage` reuses only within the same issue/workspace lineage and is the safer choice for coding retries and continuations
 - for Claude, bearer-token proxy auth uses `ANTHROPIC_AUTH_TOKEN`, plus `ANTHROPIC_BASE_URL` when the proxy is not `https://api.anthropic.com`
 - for Codex proxy/API-key mode, pass `OPENAI_API_KEY`, set the proxy URL through `codex.extra_args` as `openai_base_url="..."`, and force API auth with `forced_login_method="api"`
 - for mounted CLI auth, prefer the built-in `docker.auth` presets or narrow `docker.secrets.mounts` entries rather than mounting your whole home directory

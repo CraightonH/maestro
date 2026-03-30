@@ -11,6 +11,11 @@ import (
 var pollRequestTimeout = 30 * time.Second
 
 func (s *Service) Run(ctx context.Context) error {
+	defer func() {
+		if s.cleanup != nil {
+			_ = s.cleanup()
+		}
+	}()
 	s.approvalMgr.startWatcher(ctx)
 	s.messageMgr.startWatcher(ctx)
 	if err := s.runTick(ctx, false); err != nil {

@@ -20,18 +20,21 @@ func (s *Service) runHook(ctx context.Context, script string, workdir string, ru
 	hookCtx, cancel := context.WithTimeout(ctx, s.cfg.Hooks.Timeout.Duration)
 	defer cancel()
 
-	cmd, err := s.hookCommand(hookCtx, script, workdir, run, stage)
+	cmd, lifecycle, err := s.hookCommand(hookCtx, script, workdir, run, stage)
 	if err != nil {
 		return err
 	}
 	output, err := cmd.CombinedOutput()
+	if lifecycle != nil && lifecycle.Release != nil {
+		_ = lifecycle.Release(context.Background(), err)
+	}
 	if err != nil {
 		return fmt.Errorf("hook %s failed: %w output=%s", stage, err, sanitizeOutput(strings.TrimSpace(string(output))))
 	}
 	return nil
 }
 
-func (s *Service) hookCommand(ctx context.Context, script string, workdir string, run *domain.AgentRun, stage string) (*exec.Cmd, error) {
+func (s *Service) hookCommand(ctx context.Context, script string, workdir string, run *domain.AgentRun, stage string) (*exec.Cmd, *harness.ProcessLifecycle, error) {
 	shell, args := shellCommand(script)
 	mode := strings.ToLower(strings.TrimSpace(s.cfg.Hooks.Execution))
 	if mode == "" {
@@ -43,19 +46,27 @@ func (s *Service) hookCommand(ctx context.Context, script string, workdir string
 		cmd := exec.CommandContext(ctx, shell, args...)
 		cmd.Dir = workdir
 		cmd.Env = append(os.Environ(), hookEnv(run, stage)...)
-		return cmd, nil
+		return cmd, nil, nil
 	case "container":
 		if s.processRunner == nil || s.processRunner.Kind() != "docker" {
-			return nil, fmt.Errorf("hook %s requires docker execution but no docker runner is configured", stage)
+			return nil, nil, fmt.Errorf("hook %s requires docker execution but no docker runner is configured", stage)
 		}
-		return s.processRunner.CommandContext(ctx, harness.ProcessSpec{
-			Binary:  shell,
-			Args:    args,
-			Workdir: workdir,
-			Env:     hookEnvMap(run, stage),
+		lifecycle := &harness.ProcessLifecycle{}
+		cmd, err := s.processRunner.CommandContext(ctx, harness.ProcessSpec{
+			RunID:      run.ID,
+			LineageKey: runLineageKey(s.source.Name, run.Issue, run.WorkspacePath),
+			Binary:     shell,
+			Args:       args,
+			Workdir:    workdir,
+			Env:        hookEnvMap(run, stage),
+			Lifecycle:  lifecycle,
 		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return cmd, lifecycle, nil
 	default:
-		return nil, fmt.Errorf("unknown hook execution mode %q", s.cfg.Hooks.Execution)
+		return nil, nil, fmt.Errorf("unknown hook execution mode %q", s.cfg.Hooks.Execution)
 	}
 }
 

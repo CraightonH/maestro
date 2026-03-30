@@ -317,6 +317,9 @@ agent_defaults:
 # - `maestro doctor` shows the effective Docker env injections and read-only mounts per agent.
 # - Cache presets are available for common language/tool caches via `docker.cache.profiles`.
 # - When no HOME is provided explicitly, Maestro gives the container a writable local HOME automatically.
+# - Docker reuse is opt-in via `docker.reuse.mode`:
+#   `none` keeps fresh containers, `stateless` reuses a trusted shared container for matching profiles,
+#   and `lineage` reuses only within the same issue/workspace lineage.
 
 # Example: Dockerized Claude agent in the same Maestro process as host-run agents
 #

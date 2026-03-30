@@ -177,6 +177,12 @@ type Snapshot struct {
 
 type ExecutionSummary struct {
 	Mode              string
+	ReuseMode         string
+	Reused            bool
+	ContainerID       string
+	ContainerName     string
+	ProfileKey        string
+	LineageKey        string
 	Image             string
 	Network           string
 	NetworkPolicyMode string
@@ -240,29 +246,18 @@ type Service struct {
 	lastPollAttemptAt time.Time
 	draining          bool
 	controlCh         chan struct{}
+	cleanup           func() error
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
-	tr, err := newTracker(cfg.Sources[0])
+	shared := newRuntimeSharedDeps(cfg)
+	service, err := buildScopedService(cfg, cfg.Sources[0], logger, shared)
 	if err != nil {
+		_ = shared.Close()
 		return nil, err
 	}
-	runner, err := harness.NewProcessRunner(cfg.AgentTypes[0].Docker)
-	if err != nil {
-		return nil, err
-	}
-	hr, err := newHarness(cfg.AgentTypes[0], runner)
-	if err != nil {
-		return nil, err
-	}
-
-	return NewServiceWithDeps(cfg, logger, Dependencies{
-		Tracker:       tr,
-		Harness:       hr,
-		ProcessRunner: runner,
-		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(cfg.Sources[0].Connection.BaseURL, cfg.Sources[0].Connection.Token),
-		StateStore:    state.NewStore(cfg.State.Dir),
-	})
+	service.cleanup = shared.Close
+	return service, nil
 }
 
 func newTracker(source config.SourceConfig) (tracker.Tracker, error) {
@@ -474,6 +469,9 @@ func summarizeExecution(agent config.AgentTypeConfig) *ExecutionSummary {
 	}
 	docker := config.ResolveDockerConfig(nil, agent.Docker)
 	summary.Mode = "docker"
+	if docker.Reuse != nil {
+		summary.ReuseMode = config.NormalizeDockerReuseMode(docker.Reuse.Mode)
+	}
 	summary.Image = docker.Image
 	summary.Network = config.EffectiveDockerNetwork(&docker)
 	if docker.NetworkPolicy != nil {

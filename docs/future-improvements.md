@@ -57,18 +57,24 @@ Current state:
 - Workspaces are bind-mounted into the container, so git state remains visible on the host.
 - Basic CPU, memory, PID, network mode, auth presets, explicit read-only auth mounts, cache mounts, pull policy, Docker doctor checks, optional containerized hooks, and execution metadata are supported.
 
-### 🐳 Phase 2 Priorities
+### 🐳 Shipped Through Phase 2
 
-Recommended order:
+The broad phase-2 usability and safety work is now shipped. Current Docker support now includes:
 
-1. richer network-policy presets
-2. stronger secret delivery than env vars
-3. tighter runtime isolation tiers
-4. image provenance / policy for shared deployments
-5. warm pools / reuse
+1. auth presets for Claude and Codex
+2. hardened default container profile
+3. `maestro doctor` Docker preflight
+4. optional containerized outer hooks
+5. execution metadata in API/TUI/web
+6. pull policy support
+7. cache presets and explicit cache mounts
+8. structured network policy
+9. structured Docker access controls
+10. image pinning checks and enforcement mode
+11. named security presets
 
-The broad phase-2 usability and safety work is now shipped. The next Docker work should focus on
-tighter isolation, stronger secret handling, and better shared-deployment policy.
+The next Docker work should focus on tighter isolation, stronger secret handling, and better
+shared-deployment policy.
 
 ### 🐳 Shipped in Current Docker Support
 
@@ -113,12 +119,9 @@ tighter isolation, stronger secret handling, and better shared-deployment policy
 
 ### 🐳 Resource Governance per Agent
 
-Per-agent-type CPU, memory, disk I/O, and PID limits enforced by container cgroups.
-
-**Why**: Prevents one agent from starving others. OOM kills stay isolated to the
-offending container.
-
-**Recommended baseline**: 4 GiB memory, 2 CPUs, 4096 PID limit, medium I/O weight.
+Current Docker mode already supports per-agent CPU, memory, and PID limits through the Docker
+runner. The remaining work here is mostly better policy defaults and richer operator guidance, not
+basic cgroup integration.
 
 ---
 
@@ -190,32 +193,34 @@ interface. Tier 0 → 1 is the big lift; 1 → 2/3 is a config change.
 
 ### 🐳 Warm Container Pool
 
-Pre-created containers in "created" state, ready for instant dispatch. On dispatch:
-attach workspace volume, inject prompt, start. On completion: stop, detach, reset.
+Current Docker mode already supports reusable containers via:
 
-**Why**: Eliminates 5-30s cold start. Only relevant at scale.
+- `docker.reuse.mode: stateless` for trusted shared-profile reuse
+- `docker.reuse.mode: lineage` for retry/continuation reuse within the same issue/workspace lineage
 
-**When**: After Docker Harness Wrapper ships and dispatch latency becomes a bottleneck.
+The remaining work here is broader pooling and stronger reuse ergonomics, for example:
+
+- profile-wide pre-created containers held ready for dispatch
+- stronger reset semantics between shared stateless runs
+- explicit pool sizing and eviction policy
+- better status/debug visibility for reused containers
+
+**Why**: Broader pooling could reduce cold-start latency further than the current reuse modes, especially
+for high-frequency investigative workloads.
+
+**When**: After the current Docker path is stable in broader use and dispatch latency becomes a
+bottleneck.
 
 ---
 
 ### 🐳 Cache Mounts
 
-Optional persistent cache mounts for package managers and tool caches:
+Current Docker mode already supports cache presets and explicit cache mounts. The remaining work is
+mostly around stronger policy and lifecycle management, for example:
 
-- npm / pnpm / yarn
-- pip / uv
-- Go build cache
-- cargo / rustup
-- harness caches
-
-**Why**: Faster repeated runs, especially for repo bootstrap or test-heavy workflows.
-
-**Why not first**: This is useful, but less important than auth presets, hardening, and doctor
-support.
-
-**To ship**: Add named cache mount presets or explicit cache mount config with clear writable-scope
-rules.
+- clearer cache retention and cleanup controls
+- per-hook or per-step cache scoping
+- better debugging/status visibility for active cache mounts
 
 ---
 

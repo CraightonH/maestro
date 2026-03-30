@@ -33,6 +33,7 @@ type codexRun struct {
 	cmd            *exec.Cmd
 	stdin          io.WriteCloser
 	stdout         io.ReadCloser
+	lifecycle      *harness.ProcessLifecycle
 
 	// Harness config
 	model             string
@@ -227,26 +228,42 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	args = append(args, "app-server", "--listen", "stdio://")
 
 	processWorkdir := a.runner.VisibleWorkdir(cfg.Workdir)
+	lifecycle := &harness.ProcessLifecycle{}
 	cmd, err := a.runner.CommandContext(ctx, harness.ProcessSpec{
-		Binary:  a.binary,
-		Args:    args,
-		Workdir: cfg.Workdir,
-		Env:     cfg.Env,
+		RunID:      cfg.RunID,
+		LineageKey: cfg.LineageKey,
+		Binary:     a.binary,
+		Args:       args,
+		Workdir:    cfg.Workdir,
+		Env:        cfg.Env,
+		Lifecycle:  lifecycle,
 	})
 	if err != nil {
 		return nil, err
 	}
+	if cfg.ExecutionMetadataCallback != nil {
+		cfg.ExecutionMetadataCallback(lifecycle.Metadata)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 
@@ -256,6 +273,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		cmd:               cmd,
 		stdin:             stdin,
 		stdout:            stdout,
+		lifecycle:         lifecycle,
 		model:             cfg.Model,
 		reasoning:         cfg.Reasoning,
 		maxTurns:          cfg.MaxTurns,
@@ -275,6 +293,9 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	run.turnNumber.Store(1)
 
 	if err := cmd.Start(); err != nil {
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 
@@ -292,18 +313,30 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 	}()
 
 	if err := run.initialize(); err != nil {
+		run.stop()
 		a.cleanup(cfg.RunID)
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 	threadID, err := run.startThread(processWorkdir)
 	if err != nil {
+		run.stop()
 		a.cleanup(cfg.RunID)
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 	run.threadID = threadID
 	run.cwd = processWorkdir
 	if _, err := run.startTurn(threadID, processWorkdir, cfg.Prompt); err != nil {
+		run.stop()
 		a.cleanup(cfg.RunID)
+		if lifecycle.Release != nil {
+			_ = lifecycle.Release(context.Background(), err)
+		}
 		return nil, err
 	}
 
@@ -314,6 +347,9 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 			run.stop()
 			procErr := <-run.processCh
 			a.cleanup(cfg.RunID)
+			if run.lifecycle != nil && run.lifecycle.Release != nil {
+				_ = run.lifecycle.Release(context.Background(), procErr)
+			}
 			if err != nil {
 				return err
 			}

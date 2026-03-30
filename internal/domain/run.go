@@ -21,6 +21,20 @@ const (
 	ApprovalStateRejected ApprovalState = "rejected"
 )
 
+type ContainerReuseMetadata struct {
+	Mode          string
+	Reused        bool
+	ContainerID   string
+	ContainerName string
+	ProfileKey    string
+	LineageKey    string
+}
+
+type RunExecutionMetadata struct {
+	Mode           string
+	ContainerReuse *ContainerReuseMetadata
+}
+
 // AgentRun tracks the lifecycle of a single agent execution.
 type AgentRun struct {
 	ID             string
@@ -37,6 +51,7 @@ type AgentRun struct {
 	StartedAt      time.Time
 	LastActivityAt time.Time
 	CompletedAt    time.Time
+	Execution      *RunExecutionMetadata
 	Metrics        RunMetrics
 	Error          string
 }

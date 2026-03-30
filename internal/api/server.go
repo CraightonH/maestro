@@ -218,6 +218,12 @@ type trackerRateLimitJSON struct {
 
 type executionJSON struct {
 	Mode              string   `json:"mode"`
+	ReuseMode         string   `json:"reuse_mode,omitempty"`
+	Reused            bool     `json:"reused,omitempty"`
+	ContainerID       string   `json:"container_id,omitempty"`
+	ContainerName     string   `json:"container_name,omitempty"`
+	ProfileKey        string   `json:"profile_key,omitempty"`
+	LineageKey        string   `json:"lineage_key,omitempty"`
 	Image             string   `json:"image,omitempty"`
 	Network           string   `json:"network,omitempty"`
 	NetworkPolicyMode string   `json:"network_policy_mode,omitempty"`

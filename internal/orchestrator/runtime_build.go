@@ -13,12 +13,16 @@ import (
 type runtimeSharedDeps struct {
 	globalLimiter *semaphoreLimiter
 	agentLimiters map[string]*semaphoreLimiter
+	dockerReuse   *harness.DockerReuseManager
 }
 
 func newRuntimeSharedDeps(cfg *config.Config) *runtimeSharedDeps {
 	deps := &runtimeSharedDeps{
 		globalLimiter: newSemaphoreLimiter(cfg.Defaults.MaxConcurrentGlobal),
 		agentLimiters: map[string]*semaphoreLimiter{},
+	}
+	if manager, err := harness.NewDockerReuseManager(); err == nil {
+		deps.dockerReuse = manager
 	}
 	deps.applyConfig(cfg)
 	return deps
@@ -73,7 +77,11 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 	if err != nil {
 		return nil, err
 	}
-	runner, err := harness.NewProcessRunner(agent.Docker)
+	var runnerOpts []harness.ProcessRunnerOption
+	if shared != nil && shared.dockerReuse != nil {
+		runnerOpts = append(runnerOpts, harness.WithDockerReuseManager(shared.dockerReuse))
+	}
+	runner, err := harness.NewProcessRunner(agent.Docker, runnerOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -89,4 +97,11 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 		StateStore:    state.NewStore(config.ScopedStateDir(cfg, source)),
 		Limiter:       shared.limiterFor(agent),
 	})
+}
+
+func (d *runtimeSharedDeps) Close() error {
+	if d == nil || d.dockerReuse == nil {
+		return nil
+	}
+	return d.dockerReuse.Close()
 }

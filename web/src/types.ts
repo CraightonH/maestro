@@ -32,6 +32,12 @@ export interface RunMetrics {
 
 export interface ExecutionSummary {
   mode: string;
+  reuse_mode?: string;
+  reused?: boolean;
+  container_id?: string;
+  container_name?: string;
+  profile_key?: string;
+  lineage_key?: string;
   image?: string;
   network?: string;
   network_policy_mode?: string;

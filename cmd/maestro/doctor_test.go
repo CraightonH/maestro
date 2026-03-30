@@ -163,6 +163,57 @@ func TestRunDoctorExplainsDockerAccess(t *testing.T) {
 	}
 }
 
+func TestRunDoctorSurfacesRiskyStatelessReuseWarnings(t *testing.T) {
+	origLookPath := doctorLookPath
+	origRun := doctorRunCommand
+	t.Cleanup(func() {
+		doctorLookPath = origLookPath
+		doctorRunCommand = origRun
+	})
+
+	doctorLookPath = func(name string) (string, error) {
+		if name == "docker" {
+			return "/usr/bin/docker", nil
+		}
+		return "", errors.New("unexpected binary lookup")
+	}
+	doctorRunCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		switch strings.Join(args, " ") {
+		case "info --format {{.ServerVersion}}":
+			return []byte("25.0.0\n"), nil
+		case "image inspect ghcr.io/acme/maestro-codex:latest":
+			return []byte("[]"), nil
+		case "run --rm --entrypoint codex ghcr.io/acme/maestro-codex:latest --version":
+			return []byte("codex 0.116.0\n"), nil
+		default:
+			return nil, errors.New("unexpected docker args: " + strings.Join(args, " "))
+		}
+	}
+	t.Setenv("OPENAI_API_KEY", "test-token")
+
+	cfg := &config.Config{
+		ConfigPath: "/tmp/maestro.yaml",
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:      "ops-codex",
+			Harness:   "codex",
+			Workspace: "git-clone",
+			Docker: &config.DockerConfig{
+				Image:          "ghcr.io/acme/maestro-codex:latest",
+				EnvPassthrough: []string{"OPENAI_API_KEY"},
+				Reuse:          &config.DockerReuseConfig{Mode: config.DockerReuseModeStateless},
+			},
+		}},
+	}
+
+	var out bytes.Buffer
+	if err := runDoctor(&out, cfg); err != nil {
+		t.Fatalf("runDoctor: %v\noutput:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), `docker.reuse.mode=stateless with workspace="git-clone"`) {
+		t.Fatalf("doctor output missing stateless reuse warning\noutput:\n%s", out.String())
+	}
+}
+
 func TestRunDoctorFallsBackToPullableImage(t *testing.T) {
 	origLookPath := doctorLookPath
 	origRun := doctorRunCommand

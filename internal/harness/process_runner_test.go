@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -437,6 +438,269 @@ func TestDockerProcessRunnerCodexConfigMountUsesHomeDefaultTarget(t *testing.T) 
 	}
 }
 
+func TestDockerProcessRunnerProfileKeyChangesWithWorkspaceMount(t *testing.T) {
+	tmp := t.TempDir()
+	dockerBinary := filepath.Join(tmp, "docker")
+	if err := os.WriteFile(dockerBinary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workdirA := filepath.Join(tmp, "workspace-a")
+	workdirB := filepath.Join(tmp, "workspace-b")
+	if err := os.MkdirAll(workdirA, 0o755); err != nil {
+		t.Fatalf("mkdir workspace a: %v", err)
+	}
+	if err := os.MkdirAll(workdirB, 0o755); err != nil {
+		t.Fatalf("mkdir workspace b: %v", err)
+	}
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Reuse: &config.DockerReuseConfig{Mode: config.DockerReuseModeStateless},
+	})
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+	dockerRunner := runner.(*dockerProcessRunner)
+
+	keyA1, err := dockerRunner.profileKey(ProcessSpec{Binary: "codex", Workdir: workdirA}, defaultDockerHome)
+	if err != nil {
+		t.Fatalf("profile key a1: %v", err)
+	}
+	keyA2, err := dockerRunner.profileKey(ProcessSpec{Binary: "codex", Workdir: workdirA}, defaultDockerHome)
+	if err != nil {
+		t.Fatalf("profile key a2: %v", err)
+	}
+	keyB, err := dockerRunner.profileKey(ProcessSpec{Binary: "codex", Workdir: workdirB}, defaultDockerHome)
+	if err != nil {
+		t.Fatalf("profile key b: %v", err)
+	}
+
+	if keyA1 != keyA2 {
+		t.Fatalf("profile keys for identical workspace differed: %q vs %q", keyA1, keyA2)
+	}
+	if keyA1 == keyB {
+		t.Fatalf("profile keys should differ when workspace source changes: %q", keyA1)
+	}
+}
+
+func TestDockerProcessRunnerStatelessReuseAcrossCompatibleRuns(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "docker.log")
+	writeDockerStub(t, filepath.Join(tmp, "docker"), logPath, "")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager, err := NewDockerReuseManager()
+	if err != nil {
+		t.Fatalf("new docker reuse manager: %v", err)
+	}
+	defer func() { _ = manager.Close() }()
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Reuse: &config.DockerReuseConfig{Mode: config.DockerReuseModeStateless},
+	}, WithDockerReuseManager(manager))
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	lifecycle1 := &ProcessLifecycle{}
+	cmd1, err := runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:     "run-1",
+		Binary:    "codex",
+		Args:      []string{"app-server"},
+		Lifecycle: lifecycle1,
+	})
+	if err != nil {
+		t.Fatalf("command context run 1: %v", err)
+	}
+	if !containsArgPair(cmd1.Args, "exec", "-i") {
+		t.Fatalf("args = %q, want docker exec for reusable container", strings.Join(cmd1.Args, "\n"))
+	}
+	if lifecycle1.Metadata.ContainerReuse == nil || !lifecycle1.Metadata.ContainerReuse.Reused {
+		t.Fatalf("metadata = %+v, want reused container metadata", lifecycle1.Metadata)
+	}
+	if err := lifecycle1.Release(context.Background(), nil); err != nil {
+		t.Fatalf("release run 1: %v", err)
+	}
+
+	lifecycle2 := &ProcessLifecycle{}
+	_, err = runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:     "run-2",
+		Binary:    "codex",
+		Args:      []string{"app-server"},
+		Lifecycle: lifecycle2,
+	})
+	if err != nil {
+		t.Fatalf("command context run 2: %v", err)
+	}
+	if lifecycle2.Metadata.ContainerReuse == nil || lifecycle2.Metadata.ContainerReuse.ContainerName != lifecycle1.Metadata.ContainerReuse.ContainerName {
+		t.Fatalf("container reuse metadata mismatch: run1=%+v run2=%+v", lifecycle1.Metadata, lifecycle2.Metadata)
+	}
+	if err := lifecycle2.Release(context.Background(), nil); err != nil {
+		t.Fatalf("release run 2: %v", err)
+	}
+
+	logBody, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logBody)), "\n")
+	if countLogLines(lines, "create ") != 1 {
+		t.Fatalf("docker log = %q, want one create", string(logBody))
+	}
+	if countLogLines(lines, "start ") != 2 {
+		t.Fatalf("docker log = %q, want two starts", string(logBody))
+	}
+}
+
+func TestDockerProcessRunnerLineageReuseStaysScoped(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "docker.log")
+	writeDockerStub(t, filepath.Join(tmp, "docker"), logPath, "")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager, err := NewDockerReuseManager()
+	if err != nil {
+		t.Fatalf("new docker reuse manager: %v", err)
+	}
+	defer func() { _ = manager.Close() }()
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Reuse: &config.DockerReuseConfig{Mode: config.DockerReuseModeLineage},
+	}, WithDockerReuseManager(manager))
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	lifecycle1 := &ProcessLifecycle{}
+	if _, err := runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:      "run-1",
+		LineageKey: "source=a|issue=1|workspace=/tmp/a",
+		Binary:     "codex",
+		Args:       []string{"app-server"},
+		Lifecycle:  lifecycle1,
+	}); err != nil {
+		t.Fatalf("command context lineage 1: %v", err)
+	}
+	_ = lifecycle1.Release(context.Background(), nil)
+
+	lifecycle2 := &ProcessLifecycle{}
+	if _, err := runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:      "run-2",
+		LineageKey: "source=a|issue=2|workspace=/tmp/b",
+		Binary:     "codex",
+		Args:       []string{"app-server"},
+		Lifecycle:  lifecycle2,
+	}); err != nil {
+		t.Fatalf("command context lineage 2: %v", err)
+	}
+	_ = lifecycle2.Release(context.Background(), nil)
+
+	if lifecycle1.Metadata.ContainerReuse == nil || lifecycle2.Metadata.ContainerReuse == nil {
+		t.Fatalf("missing container reuse metadata: run1=%+v run2=%+v", lifecycle1.Metadata, lifecycle2.Metadata)
+	}
+	if lifecycle1.Metadata.ContainerReuse.ContainerName == lifecycle2.Metadata.ContainerReuse.ContainerName {
+		t.Fatalf("lineage reuse should not cross lineages: %q", lifecycle1.Metadata.ContainerReuse.ContainerName)
+	}
+}
+
+func TestDockerProcessRunnerFallsBackToColdRunWhenReusableBusy(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "docker.log")
+	writeDockerStub(t, filepath.Join(tmp, "docker"), logPath, "")
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager, err := NewDockerReuseManager()
+	if err != nil {
+		t.Fatalf("new docker reuse manager: %v", err)
+	}
+	defer func() { _ = manager.Close() }()
+
+	runner, err := NewProcessRunner(&config.DockerConfig{
+		Image: "maestro-agent:latest",
+		Reuse: &config.DockerReuseConfig{Mode: config.DockerReuseModeStateless},
+	}, WithDockerReuseManager(manager))
+	if err != nil {
+		t.Fatalf("new process runner: %v", err)
+	}
+
+	lifecycle1 := &ProcessLifecycle{}
+	_, err = runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:     "run-1",
+		Binary:    "codex",
+		Args:      []string{"app-server"},
+		Lifecycle: lifecycle1,
+	})
+	if err != nil {
+		t.Fatalf("command context run 1: %v", err)
+	}
+
+	lifecycle2 := &ProcessLifecycle{}
+	cmd2, err := runner.CommandContext(context.Background(), ProcessSpec{
+		RunID:     "run-2",
+		Binary:    "codex",
+		Args:      []string{"app-server"},
+		Lifecycle: lifecycle2,
+	})
+	if err != nil {
+		t.Fatalf("command context run 2: %v", err)
+	}
+	if slices.Contains(cmd2.Args, "exec") {
+		t.Fatalf("args = %q, want cold docker run fallback while reusable container is busy", strings.Join(cmd2.Args, "\n"))
+	}
+	if lifecycle2.Metadata.ContainerReuse == nil || lifecycle2.Metadata.ContainerReuse.Reused {
+		t.Fatalf("metadata = %+v, want non-reused cold fallback metadata", lifecycle2.Metadata)
+	}
+	dockerRunner := runner.(*dockerProcessRunner)
+	sharedHome, err := dockerRunner.prepareHomeSource(
+		defaultDockerHome,
+		config.DockerReuseModeStateless,
+		lifecycle1.Metadata.ContainerReuse.ProfileKey,
+		lifecycle1.Metadata.ContainerReuse.LineageKey,
+	)
+	if err != nil {
+		t.Fatalf("prepare shared home: %v", err)
+	}
+	coldHome, ok := mountSourceForTarget(cmd2.Args, defaultDockerHome)
+	if !ok {
+		t.Fatalf("args = %q, want cold fallback HOME mount", strings.Join(cmd2.Args, "\n"))
+	}
+	if coldHome == sharedHome {
+		t.Fatalf("cold fallback HOME mount = %q, want fresh temp HOME distinct from shared reuse home %q", coldHome, sharedHome)
+	}
+
+	_ = lifecycle1.Release(context.Background(), nil)
+}
+
+func TestDockerReuseManagerPrunesOrphanedContainers(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "docker.log")
+	stalePID := "999999"
+	writeDockerStub(t, filepath.Join(tmp, "docker"), logPath, stalePID)
+	t.Setenv("PATH", tmp+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	manager, err := NewDockerReuseManager()
+	if err != nil {
+		t.Fatalf("new docker reuse manager: %v", err)
+	}
+	defer func() { _ = manager.Close() }()
+
+	if err := manager.pruneOrphans(context.Background()); err != nil {
+		t.Fatalf("prune orphans: %v", err)
+	}
+
+	logBody, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read docker log: %v", err)
+	}
+	if !strings.Contains(string(logBody), "rm -f stale-container") {
+		t.Fatalf("docker log = %q, want orphan cleanup", string(logBody))
+	}
+}
+
 func TestWriteCodexAuthHome(t *testing.T) {
 	home, err := writeCodexAuthHome("sk-test")
 	if err != nil {
@@ -482,4 +746,37 @@ func mountSourceForTarget(args []string, target string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func writeDockerStub(t *testing.T, path string, logPath string, stalePID string) {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"" + logPath + "\"\n" +
+		"case \"$1\" in\n" +
+		"  create)\n" +
+		"    echo container-123\n" +
+		"    ;;\n" +
+		"  ps)\n"
+	if stalePID != "" {
+		script += "    echo \"stale-container\t" + stalePID + "\"\n"
+	}
+	script += "    ;;\n" +
+		"  start|stop|rm|exec)\n" +
+		"    ;;\n" +
+		"  *)\n" +
+		"    ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write docker stub: %v", err)
+	}
+}
+
+func countLogLines(lines []string, prefix string) int {
+	count := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			count++
+		}
+	}
+	return count
 }

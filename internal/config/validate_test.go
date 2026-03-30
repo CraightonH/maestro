@@ -268,6 +268,102 @@ func TestValidateMVPRejectsInvalidHooksExecution(t *testing.T) {
 	}
 }
 
+func TestValidateMVPAcceptsDockerReuseModes(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	for _, mode := range []string{config.DockerReuseModeNone, config.DockerReuseModeStateless, config.DockerReuseModeLineage} {
+		cfg := &config.Config{
+			Defaults: testDefaults(1),
+			Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+			State: config.StateConfig{
+				Dir:             filepath.Join(root, "state"),
+				RetryBase:       config.Duration{Duration: time.Second},
+				MaxRetryBackoff: config.Duration{Duration: time.Minute},
+				MaxAttempts:     3,
+			},
+			Sources: []config.SourceConfig{{
+				Name:      "ops-linear",
+				Tracker:   "linear",
+				AgentType: "triage",
+				Connection: config.SourceConnection{
+					Project: "project-1",
+					Token:   "token",
+				},
+				Filter: config.FilterConfig{States: []string{"Todo"}},
+			}},
+			AgentTypes: []config.AgentTypeConfig{{
+				Name:            "triage",
+				Harness:         "codex",
+				Workspace:       "none",
+				Prompt:          promptPath,
+				ApprovalPolicy:  "auto",
+				ApprovalTimeout: config.Duration{Duration: time.Hour},
+				MaxConcurrent:   1,
+				StallTimeout:    config.Duration{Duration: time.Minute},
+				Docker: &config.DockerConfig{
+					Image: "maestro-agent:latest",
+					Reuse: &config.DockerReuseConfig{Mode: mode},
+				},
+			}},
+		}
+		if err := config.ValidateMVP(cfg); err != nil {
+			t.Fatalf("expected docker reuse mode %q to validate: %v", mode, err)
+		}
+	}
+}
+
+func TestValidateMVPRejectsUnknownDockerReuseMode(t *testing.T) {
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Hooks:    config.HooksConfig{Timeout: config.Duration{Duration: 30 * time.Second}},
+		State: config.StateConfig{
+			Dir:             filepath.Join(root, "state"),
+			RetryBase:       config.Duration{Duration: time.Second},
+			MaxRetryBackoff: config.Duration{Duration: time.Minute},
+			MaxAttempts:     3,
+		},
+		Sources: []config.SourceConfig{{
+			Name:      "ops-linear",
+			Tracker:   "linear",
+			AgentType: "triage",
+			Connection: config.SourceConnection{
+				Project: "project-1",
+				Token:   "token",
+			},
+			Filter: config.FilterConfig{States: []string{"Todo"}},
+		}},
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:            "triage",
+			Harness:         "codex",
+			Workspace:       "none",
+			Prompt:          promptPath,
+			ApprovalPolicy:  "auto",
+			ApprovalTimeout: config.Duration{Duration: time.Hour},
+			MaxConcurrent:   1,
+			StallTimeout:    config.Duration{Duration: time.Minute},
+			Docker: &config.DockerConfig{
+				Image: "maestro-agent:latest",
+				Reuse: &config.DockerReuseConfig{Mode: "shared-ish"},
+			},
+		}},
+	}
+
+	err := config.ValidateMVP(cfg)
+	if err == nil || !strings.Contains(err.Error(), "docker.reuse.mode") {
+		t.Fatalf("validate error = %v, want docker.reuse.mode failure", err)
+	}
+}
+
 func TestValidateMVPRejectsInvalidColonRepoURL(t *testing.T) {
 	root := t.TempDir()
 	promptPath := filepath.Join(root, "prompt.md")

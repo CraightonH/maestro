@@ -37,6 +37,12 @@ Prefer `docker.secrets` and `docker.tools` for any extra env vars or read-only m
 container to see. `docker.env_passthrough` and `docker.mounts` still work, but they are the
 broader compatibility path.
 
+Docker reuse is opt-in. `docker.reuse.mode: none` keeps the current fresh-container behavior,
+`stateless` reuses a trusted shared container for matching Docker profiles, and `lineage` reuses
+only within the same issue/workspace lineage for retries and continuations. Use `stateless`
+primarily for investigative or reporting agents; use `lineage` for coding flows that benefit from
+preserved workspace/home/cache state.
+
 ## Minimal GitLab Setup
 
 1. Create or choose a GitLab project with at least one open issue.

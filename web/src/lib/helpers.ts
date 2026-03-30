@@ -139,6 +139,9 @@ export function formatExecutionSummary(execution?: ExecutionSummary) {
   if (!execution.mode || execution.mode === "host") return "host";
   const parts: string[] = [execution.mode];
   if (execution.image) parts.push(`image=${execution.image}`);
+  if (execution.reuse_mode) parts.push(`reuse=${execution.reuse_mode}`);
+  if (execution.reused) parts.push("reused");
+  if (execution.container_name) parts.push(`container=${execution.container_name}`);
   if (execution.network) parts.push(`network=${execution.network}`);
   if (execution.network_policy_mode) parts.push(`policy=${execution.network_policy_mode}`);
   if (execution.network_allow && execution.network_allow.length > 0) {

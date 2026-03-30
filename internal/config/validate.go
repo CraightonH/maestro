@@ -334,6 +334,9 @@ func validateDockerConfig(agent AgentTypeConfig) error {
 	if err := validateDockerCacheConfig(agentName, docker.Cache); err != nil {
 		return err
 	}
+	if err := validateDockerReuseConfig(agentName, docker.Reuse); err != nil {
+		return err
+	}
 	for _, envName := range docker.EnvPassthrough {
 		trimmed := strings.TrimPrefix(strings.TrimSpace(envName), "$")
 		if trimmed == "" || strings.Contains(trimmed, "=") {
@@ -610,6 +613,20 @@ func validateDockerCacheConfig(agentName string, cache *DockerCacheConfig) error
 		if !filepath.IsAbs(strings.TrimSpace(mount.Target)) {
 			return fmt.Errorf("agent %q docker.cache.mounts[].target must be absolute", agentName)
 		}
+	}
+	return nil
+}
+
+func validateDockerReuseConfig(agentName string, reuse *DockerReuseConfig) error {
+	if reuse == nil {
+		return nil
+	}
+	mode := NormalizeDockerReuseMode(reuse.Mode)
+	if mode == "" {
+		return nil
+	}
+	if !KnownDockerReuseMode(mode) {
+		return fmt.Errorf("agent %q docker.reuse.mode must be one of none, stateless, lineage", agentName)
 	}
 	return nil
 }

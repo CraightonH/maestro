@@ -2,6 +2,8 @@ package harness
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -18,10 +20,13 @@ import (
 const defaultDockerHome = config.DockerHomeDefault
 
 type ProcessSpec struct {
-	Binary  string
-	Args    []string
-	Workdir string
-	Env     map[string]string
+	RunID      string
+	LineageKey string
+	Binary     string
+	Args       []string
+	Workdir    string
+	Env        map[string]string
+	Lifecycle  *ProcessLifecycle
 }
 
 type ProcessRunner interface {
@@ -31,12 +36,28 @@ type ProcessRunner interface {
 	CommandContext(ctx context.Context, spec ProcessSpec) (*exec.Cmd, error)
 }
 
-func NewProcessRunner(docker *config.DockerConfig) (ProcessRunner, error) {
+type ProcessRunnerOption func(*processRunnerOptions)
+
+type processRunnerOptions struct {
+	dockerReuse *DockerReuseManager
+}
+
+func WithDockerReuseManager(manager *DockerReuseManager) ProcessRunnerOption {
+	return func(opts *processRunnerOptions) {
+		opts.dockerReuse = manager
+	}
+}
+
+func NewProcessRunner(docker *config.DockerConfig, options ...ProcessRunnerOption) (ProcessRunner, error) {
+	opts := processRunnerOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
 	resolved := config.ResolveDockerConfig(nil, docker)
 	if strings.TrimSpace(resolved.Image) == "" {
 		return localProcessRunner{}, nil
 	}
-	return newDockerProcessRunner(resolved)
+	return newDockerProcessRunner(resolved, opts)
 }
 
 type localProcessRunner struct{}
@@ -58,6 +79,9 @@ func (localProcessRunner) VisibleWorkdir(hostPath string) string {
 }
 
 func (localProcessRunner) CommandContext(ctx context.Context, spec ProcessSpec) (*exec.Cmd, error) {
+	if spec.Lifecycle != nil {
+		spec.Lifecycle.Metadata = ExecutionMetadata{Mode: "host"}
+	}
 	cmd := exec.CommandContext(ctx, spec.Binary, spec.Args...)
 	cmd.Dir = spec.Workdir
 	cmd.Env = MergeEnv(spec.Env)
@@ -67,9 +91,22 @@ func (localProcessRunner) CommandContext(ctx context.Context, spec ProcessSpec) 
 type dockerProcessRunner struct {
 	dockerBinary string
 	cfg          config.DockerConfig
+	reuse        *DockerReuseManager
 }
 
-func newDockerProcessRunner(cfg config.DockerConfig) (ProcessRunner, error) {
+type dockerPreparedSpec struct {
+	containerEnv map[string]string
+	networkArgs  []string
+	homeTarget   string
+	homeSource   string
+	mounts       []config.DockerMountConfig
+	execWorkdir  string
+	profileKey   string
+	reuseMode    string
+	lineageKey   string
+}
+
+func newDockerProcessRunner(cfg config.DockerConfig, opts processRunnerOptions) (ProcessRunner, error) {
 	dockerBinary, err := exec.LookPath("docker")
 	if err != nil {
 		return nil, fmt.Errorf("find docker executable: %w", err)
@@ -77,6 +114,7 @@ func newDockerProcessRunner(cfg config.DockerConfig) (ProcessRunner, error) {
 	return &dockerProcessRunner{
 		dockerBinary: dockerBinary,
 		cfg:          cfg,
+		reuse:        opts.dockerReuse,
 	}, nil
 }
 
@@ -99,25 +137,249 @@ func (r *dockerProcessRunner) VisibleWorkdir(hostPath string) string {
 }
 
 func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSpec) (*exec.Cmd, error) {
-	args := []string{"run", "--rm", "-i"}
+	prepared, err := r.prepareSpec(spec)
+	if err != nil {
+		return nil, err
+	}
 
+	if prepared.reuseMode != config.DockerReuseModeNone {
+		reusablePrepared, err := r.finalizePreparedSpec(spec, prepared, true)
+		if err != nil {
+			return nil, err
+		}
+		if lease, err := r.acquireReusableContainer(ctx, spec, reusablePrepared); err == nil && lease != nil {
+			args, err := r.reusableExecArgs(ctx, lease, spec, reusablePrepared)
+			if err == nil {
+				if spec.Lifecycle != nil {
+					spec.Lifecycle.Metadata = ExecutionMetadata{
+						Mode: "docker",
+						ContainerReuse: &ContainerReuseMetadata{
+							Mode:          reusablePrepared.reuseMode,
+							Reused:        true,
+							ContainerID:   lease.containerID,
+							ContainerName: lease.containerName,
+							ProfileKey:    reusablePrepared.profileKey,
+							LineageKey:    reusablePrepared.lineageKey,
+						},
+					}
+					spec.Lifecycle.Release = func(ctx context.Context, _ error) error {
+						return r.reuse.Release(ctx, lease)
+					}
+				}
+				cmd := exec.CommandContext(ctx, r.dockerBinary, args...)
+				cmd.Dir = spec.Workdir
+				cmd.Env = DockerClientEnv(nil)
+				return cmd, nil
+			}
+			_ = r.reuse.Release(context.Background(), lease)
+		}
+	}
+
+	coldPrepared, err := r.finalizePreparedSpec(spec, prepared, false)
+	if err != nil {
+		return nil, err
+	}
+
+	args := []string{"run", "--rm", "-i"}
+	args = append(args, r.baseContainerArgs(coldPrepared, true)...)
+	if coldPrepared.execWorkdir != "" {
+		args = append(args, "--workdir", coldPrepared.execWorkdir)
+	}
+	appendSortedEnvArgs(&args, coldPrepared.containerEnv)
+	args = append(args, r.cfg.Image, spec.Binary)
+	args = append(args, spec.Args...)
+
+	if spec.Lifecycle != nil {
+		spec.Lifecycle.Metadata = ExecutionMetadata{
+			Mode: "docker",
+			ContainerReuse: &ContainerReuseMetadata{
+				Mode:       prepared.reuseMode,
+				Reused:     false,
+				ProfileKey: prepared.profileKey,
+				LineageKey: prepared.lineageKey,
+			},
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, r.dockerBinary, args...)
+	cmd.Dir = spec.Workdir
+	cmd.Env = DockerClientEnv(nil)
+	return cmd, nil
+}
+
+func (r *dockerProcessRunner) finalizePreparedSpec(spec ProcessSpec, prepared *dockerPreparedSpec, useReuseHome bool) (*dockerPreparedSpec, error) {
+	finalized := *prepared
+	finalized.containerEnv = cloneStringMap(prepared.containerEnv)
+
+	var err error
+	if useReuseHome {
+		finalized.homeSource, err = r.prepareHomeSource(finalized.homeTarget, finalized.reuseMode, finalized.profileKey, finalized.lineageKey)
+	} else {
+		finalized.homeSource, err = r.prepareWritableHome(finalized.homeTarget)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	mounts, execWorkdir, err := r.runtimeMounts(spec, finalized.homeTarget, finalized.homeSource)
+	if err != nil {
+		return nil, err
+	}
+	authMounts, err := r.applyAuthConfig(finalized.containerEnv, finalized.homeSource, finalized.homeTarget, spec.Binary)
+	if err != nil {
+		return nil, err
+	}
+	mounts = append(mounts, authMounts...)
+	cacheMounts, err := r.cacheMounts(finalized.homeTarget)
+	if err != nil {
+		return nil, err
+	}
+	mounts = append(mounts, cacheMounts...)
+
+	finalized.mounts = mounts
+	finalized.execWorkdir = execWorkdir
+	return &finalized, nil
+}
+
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(src))
+	for key, value := range src {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (r *dockerProcessRunner) prepareSpec(spec ProcessSpec) (*dockerPreparedSpec, error) {
+	prepared := &dockerPreparedSpec{
+		reuseMode: config.DockerReuseModeNone,
+	}
+	if r.cfg.Reuse != nil {
+		prepared.reuseMode = config.NormalizeDockerReuseMode(r.cfg.Reuse.Mode)
+		if prepared.reuseMode == "" {
+			prepared.reuseMode = config.DockerReuseModeNone
+		}
+	}
+
+	containerEnv, err := r.containerEnv(spec.Env)
+	if err != nil {
+		return nil, err
+	}
+	networkArgs, err := r.networkArgs(containerEnv)
+	if err != nil {
+		return nil, err
+	}
+	homeTarget := strings.TrimSpace(containerEnv["HOME"])
+	if homeTarget == "" {
+		homeTarget = defaultDockerHome
+		containerEnv["HOME"] = homeTarget
+	}
+
+	profileKey, err := r.profileKey(spec, homeTarget)
+	if err != nil {
+		return nil, err
+	}
+	prepared.profileKey = profileKey
+	if prepared.reuseMode == config.DockerReuseModeLineage {
+		prepared.lineageKey = strings.TrimSpace(spec.LineageKey)
+	}
+
+	prepared.containerEnv = containerEnv
+	prepared.networkArgs = networkArgs
+	prepared.homeTarget = homeTarget
+	return prepared, nil
+}
+
+func (r *dockerProcessRunner) runtimeMounts(spec ProcessSpec, homeTarget string, homeSource string) ([]config.DockerMountConfig, string, error) {
+	mounts := []config.DockerMountConfig{{
+		Source: homeSource,
+		Target: homeTarget,
+	}}
+	execWorkdir := ""
+	if strings.TrimSpace(spec.Workdir) != "" {
+		if err := requireExistingPath(spec.Workdir); err != nil {
+			return nil, "", fmt.Errorf("docker workspace mount %q: %w", spec.Workdir, err)
+		}
+		mounts = append(mounts, config.DockerMountConfig{
+			Source: spec.Workdir,
+			Target: r.cfg.WorkspaceMountPath,
+		})
+		execWorkdir = r.cfg.WorkspaceMountPath
+	}
+	for _, mount := range r.cfg.Mounts {
+		if err := requireExistingPath(mount.Source); err != nil {
+			return nil, "", fmt.Errorf("docker mount %q: %w", mount.Source, err)
+		}
+		mounts = append(mounts, mount)
+	}
+	accessMounts, err := r.accessMounts(homeTarget)
+	if err != nil {
+		return nil, "", err
+	}
+	mounts = append(mounts, accessMounts...)
+	return mounts, execWorkdir, nil
+}
+
+func (r *dockerProcessRunner) acquireReusableContainer(ctx context.Context, spec ProcessSpec, prepared *dockerPreparedSpec) (*dockerReusableLease, error) {
+	if r.reuse == nil || prepared == nil || prepared.reuseMode == config.DockerReuseModeNone {
+		return nil, fmt.Errorf("reuse disabled")
+	}
+	if prepared.reuseMode == config.DockerReuseModeLineage && strings.TrimSpace(prepared.lineageKey) == "" {
+		return nil, fmt.Errorf("missing lineage key")
+	}
+	createArgs := []string{"create", "--name", reusableContainerName(prepared.reuseMode, prepared.profileKey, prepared.lineageKey, r.reuse.ownerPID)}
+	createArgs = append(createArgs, "--label", dockerReuseManagedLabel, "--label", dockerReuseOwnerLabel+"="+strconv.Itoa(r.reuse.ownerPID))
+	createArgs = append(createArgs, r.baseContainerArgs(prepared, false)...)
+	createArgs = append(createArgs, "--entrypoint", "sh", r.cfg.Image, "-lc", "trap 'exit 0' TERM INT; while :; do sleep 3600; done")
+	return r.reuse.Acquire(ctx, prepared.reuseMode, prepared.profileKey, prepared.lineageKey, createArgs)
+}
+
+func (r *dockerProcessRunner) reusableExecArgs(ctx context.Context, lease *dockerReusableLease, spec ProcessSpec, prepared *dockerPreparedSpec) ([]string, error) {
+	execWorkdir := prepared.execWorkdir
+	if prepared.reuseMode == config.DockerReuseModeStateless {
+		if err := r.runReusableReset(ctx, lease.containerName, spec.RunID); err != nil {
+			return nil, err
+		}
+		if execWorkdir == "" {
+			execWorkdir = filepath.ToSlash(filepath.Join("/tmp/maestro-runs", safeDockerPathSegment(spec.RunID)))
+		}
+	}
+
+	args := []string{"exec", "-i"}
+	if execWorkdir != "" {
+		args = append(args, "--workdir", execWorkdir)
+	}
+	appendSortedEnvArgs(&args, prepared.containerEnv)
+	args = append(args, lease.containerName, spec.Binary)
+	args = append(args, spec.Args...)
+	return args, nil
+}
+
+func (r *dockerProcessRunner) runReusableReset(ctx context.Context, containerName string, runID string) error {
+	runDir := filepath.ToSlash(filepath.Join("/tmp/maestro-runs", safeDockerPathSegment(runID)))
+	cmd := exec.CommandContext(ctx, r.dockerBinary,
+		"exec", containerName, "sh", "-lc",
+		fmt.Sprintf("rm -rf /tmp/maestro-runs && mkdir -p %s", runDir),
+	)
+	cmd.Env = DockerClientEnv(nil)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("reset reusable container %s: %w output=%s", containerName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (r *dockerProcessRunner) baseContainerArgs(prepared *dockerPreparedSpec, includePull bool) []string {
+	args := []string{}
 	if runtime.GOOS != "windows" {
 		args = append(args, "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()))
 	}
-	if policy := strings.TrimSpace(r.cfg.PullPolicy); policy != "" {
-		args = append(args, "--pull", policy)
-	}
-
-	if strings.TrimSpace(spec.Workdir) != "" {
-		if err := requireExistingPath(spec.Workdir); err != nil {
-			return nil, fmt.Errorf("docker workspace mount %q: %w", spec.Workdir, err)
+	if includePull {
+		if policy := strings.TrimSpace(r.cfg.PullPolicy); policy != "" {
+			args = append(args, "--pull", policy)
 		}
-		args = append(args,
-			"--mount", bindMountArg(spec.Workdir, r.cfg.WorkspaceMountPath, false),
-			"--workdir", r.cfg.WorkspaceMountPath,
-		)
 	}
-
 	if r.cfg.CPUs > 0 {
 		args = append(args, "--cpus", strconv.FormatFloat(r.cfg.CPUs, 'f', -1, 64))
 	}
@@ -128,74 +390,135 @@ func (r *dockerProcessRunner) CommandContext(ctx context.Context, spec ProcessSp
 		args = append(args, "--pids-limit", strconv.Itoa(r.cfg.PIDsLimit))
 	}
 	args = append(args, r.securityArgs()...)
-
-	containerEnv, err := r.containerEnv(spec.Env)
-	if err != nil {
-		return nil, err
-	}
-	networkArgs, err := r.networkArgs(containerEnv)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, networkArgs...)
-	homeTarget := strings.TrimSpace(containerEnv["HOME"])
-	if homeTarget == "" {
-		homeTarget = defaultDockerHome
-		containerEnv["HOME"] = homeTarget
-	}
-	homeSource, err := r.prepareWritableHome(homeTarget)
-	if err != nil {
-		return nil, err
-	}
-	args = append(args, "--mount", bindMountArg(homeSource, homeTarget, false))
-
-	for _, mount := range r.cfg.Mounts {
-		if err := requireExistingPath(mount.Source); err != nil {
-			return nil, fmt.Errorf("docker mount %q: %w", mount.Source, err)
-		}
+	args = append(args, prepared.networkArgs...)
+	for _, mount := range prepared.mounts {
 		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
 	}
+	return args
+}
 
-	accessMounts, err := r.accessMounts(homeTarget)
-	if err != nil {
-		return nil, err
-	}
-	for _, mount := range accessMounts {
-		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
-	}
-
-	authMounts, err := r.applyAuthConfig(containerEnv, homeSource, homeTarget, spec.Binary)
-	if err != nil {
-		return nil, err
-	}
-	for _, mount := range authMounts {
-		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, mount.ReadOnly))
-	}
-
-	cacheMounts, err := r.cacheMounts(homeTarget)
-	if err != nil {
-		return nil, err
-	}
-	for _, mount := range cacheMounts {
-		args = append(args, "--mount", bindMountArg(mount.Source, mount.Target, false))
-	}
-
-	keys := make([]string, 0, len(containerEnv))
-	for key := range containerEnv {
+func appendSortedEnvArgs(args *[]string, env map[string]string) {
+	keys := make([]string, 0, len(env))
+	for key := range env {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		args = append(args, "--env", key+"="+containerEnv[key])
+		*args = append(*args, "--env", key+"="+env[key])
+	}
+}
+
+func (r *dockerProcessRunner) prepareHomeSource(homeTarget string, reuseMode string, profileKey string, lineageKey string) (string, error) {
+	if reuseMode == config.DockerReuseModeNone {
+		return r.prepareWritableHome(homeTarget)
+	}
+	root, err := os.UserCacheDir()
+	if err != nil || strings.TrimSpace(root) == "" {
+		root = os.TempDir()
+	}
+	key := profileKey
+	if reuseMode == config.DockerReuseModeLineage && strings.TrimSpace(lineageKey) != "" {
+		key += "-" + lineageKey
+	}
+	path := filepath.Join(root, "maestro", "docker-reuse", safeDockerPathSegment(key), "home")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return "", fmt.Errorf("create docker reusable home dir: %w", err)
+	}
+	return path, nil
+}
+
+func (r *dockerProcessRunner) profileKey(spec ProcessSpec, homeTarget string) (string, error) {
+	type profile struct {
+		Image           string                            `json:"image"`
+		Binary          string                            `json:"binary"`
+		User            string                            `json:"user,omitempty"`
+		PullPolicy      string                            `json:"pull_policy,omitempty"`
+		WorkspaceSource string                            `json:"workspace_source,omitempty"`
+		WorkspaceTarget string                            `json:"workspace_target,omitempty"`
+		Network         string                            `json:"network,omitempty"`
+		NetworkPolicy   *config.DockerNetworkPolicyConfig `json:"network_policy,omitempty"`
+		CPUs            float64                           `json:"cpus,omitempty"`
+		Memory          string                            `json:"memory,omitempty"`
+		PIDsLimit       int                               `json:"pids_limit,omitempty"`
+		ImagePinMode    string                            `json:"image_pin_mode,omitempty"`
+		Env             []config.DockerSecretEnvConfig    `json:"env,omitempty"`
+		Mounts          []config.DockerMountConfig        `json:"mounts,omitempty"`
+		Secrets         *config.DockerSecretsConfig       `json:"secrets,omitempty"`
+		Tools           *config.DockerToolsConfig         `json:"tools,omitempty"`
+		Auth            *config.DockerAuthConfig          `json:"auth,omitempty"`
+		Security        *config.DockerSecurityConfig      `json:"security,omitempty"`
+		Cache           *config.DockerCacheConfig         `json:"cache,omitempty"`
+		HomeTarget      string                            `json:"home_target,omitempty"`
 	}
 
-	args = append(args, r.cfg.Image, spec.Binary)
-	args = append(args, spec.Args...)
+	mounts := append([]config.DockerMountConfig{}, r.cfg.Mounts...)
+	if strings.TrimSpace(spec.Workdir) != "" {
+		mounts = append(mounts, config.DockerMountConfig{
+			Source: spec.Workdir,
+			Target: r.cfg.WorkspaceMountPath,
+		})
+	}
+	sort.SliceStable(mounts, func(i, j int) bool {
+		left := mounts[i].Source + "|" + mounts[i].Target
+		right := mounts[j].Source + "|" + mounts[j].Target
+		return left < right
+	})
 
-	cmd := exec.CommandContext(ctx, r.dockerBinary, args...)
-	cmd.Dir = spec.Workdir
-	cmd.Env = DockerClientEnv(nil)
-	return cmd, nil
+	value := profile{
+		Image:           r.cfg.Image,
+		Binary:          spec.Binary,
+		PullPolicy:      strings.TrimSpace(r.cfg.PullPolicy),
+		WorkspaceSource: spec.Workdir,
+		WorkspaceTarget: r.cfg.WorkspaceMountPath,
+		Network:         config.EffectiveDockerNetwork(&r.cfg),
+		NetworkPolicy:   r.cfg.NetworkPolicy,
+		CPUs:            r.cfg.CPUs,
+		Memory:          strings.TrimSpace(r.cfg.Memory),
+		PIDsLimit:       r.cfg.PIDsLimit,
+		ImagePinMode:    strings.TrimSpace(r.cfg.ImagePinMode),
+		Mounts:          mounts,
+		Secrets:         r.cfg.Secrets,
+		Tools:           r.cfg.Tools,
+		Auth:            r.cfg.Auth,
+		Security:        r.cfg.Security,
+		Cache:           r.cfg.Cache,
+		HomeTarget:      homeTarget,
+	}
+	if runtime.GOOS != "windows" {
+		value.User = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	}
+	body, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal docker profile: %w", err)
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func safeDockerPathSegment(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '.' || r == '_' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
 }
 
 func (r *dockerProcessRunner) networkArgs(containerEnv map[string]string) ([]string, error) {

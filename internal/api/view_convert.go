@@ -1,6 +1,8 @@
 package api
 
 import (
+	"strings"
+
 	"github.com/tjohnson/maestro/internal/domain"
 	"github.com/tjohnson/maestro/internal/orchestrator"
 )
@@ -70,6 +72,7 @@ func apiRunsAndOutputs(runs []domain.AgentRun, outputs []orchestrator.RunOutputV
 }
 
 func apiRun(run domain.AgentRun, output *runOutputJSON, execution *executionJSON) runJSON {
+	runExecution := mergeRunExecution(execution, run.Execution)
 	return runJSON{
 		ID:             run.ID,
 		AgentName:      run.AgentName,
@@ -77,7 +80,7 @@ func apiRun(run domain.AgentRun, output *runOutputJSON, execution *executionJSON
 		Issue:          apiIssue(run.Issue),
 		SourceName:     run.SourceName,
 		HarnessKind:    run.HarnessKind,
-		Execution:      execution,
+		Execution:      runExecution,
 		WorkspacePath:  run.WorkspacePath,
 		Status:         string(run.Status),
 		Attempt:        run.Attempt,
@@ -98,6 +101,12 @@ func apiExecution(item *orchestrator.ExecutionSummary) *executionJSON {
 	}
 	return &executionJSON{
 		Mode:              item.Mode,
+		ReuseMode:         item.ReuseMode,
+		Reused:            item.Reused,
+		ContainerID:       item.ContainerID,
+		ContainerName:     item.ContainerName,
+		ProfileKey:        item.ProfileKey,
+		LineageKey:        item.LineageKey,
 		Image:             item.Image,
 		Network:           item.Network,
 		NetworkPolicyMode: item.NetworkPolicyMode,
@@ -111,6 +120,29 @@ func apiExecution(item *orchestrator.ExecutionSummary) *executionJSON {
 		SecretMountCount:  item.SecretMountCount,
 		ToolMountCount:    item.ToolMountCount,
 	}
+}
+
+func mergeRunExecution(base *executionJSON, metadata *domain.RunExecutionMetadata) *executionJSON {
+	if metadata == nil {
+		return base
+	}
+	var merged executionJSON
+	if base != nil {
+		merged = *base
+		merged.NetworkAllow = append([]string(nil), base.NetworkAllow...)
+	}
+	if strings.TrimSpace(metadata.Mode) != "" {
+		merged.Mode = metadata.Mode
+	}
+	if metadata.ContainerReuse != nil {
+		merged.ReuseMode = metadata.ContainerReuse.Mode
+		merged.Reused = metadata.ContainerReuse.Reused
+		merged.ContainerID = metadata.ContainerReuse.ContainerID
+		merged.ContainerName = metadata.ContainerReuse.ContainerName
+		merged.ProfileKey = metadata.ContainerReuse.ProfileKey
+		merged.LineageKey = metadata.ContainerReuse.LineageKey
+	}
+	return &merged
 }
 
 func executionBySource(items []orchestrator.SourceSummary) map[string]*executionJSON {

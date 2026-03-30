@@ -25,14 +25,16 @@ func WriterOrDiscard(w io.Writer) io.Writer {
 }
 
 type RunConfig struct {
-	RunID           string
-	Prompt          string
-	Workdir         string
-	ApprovalPolicy  string
-	Env             map[string]string
-	Stdout          io.Writer
-	Stderr          io.Writer
-	MetricsCallback func(domain.RunMetrics)
+	RunID                     string
+	Prompt                    string
+	Workdir                   string
+	LineageKey                string
+	ApprovalPolicy            string
+	Env                       map[string]string
+	Stdout                    io.Writer
+	Stderr                    io.Writer
+	MetricsCallback           func(domain.RunMetrics)
+	ExecutionMetadataCallback func(ExecutionMetadata)
 
 	// Harness configuration
 	Model     string
@@ -46,6 +48,25 @@ type RunConfig struct {
 
 	// Multi-turn continuation
 	ContinuationFunc func(ctx context.Context, turnNumber int) (prompt string, cont bool, err error)
+}
+
+type ContainerReuseMetadata struct {
+	Mode          string
+	Reused        bool
+	ContainerID   string
+	ContainerName string
+	ProfileKey    string
+	LineageKey    string
+}
+
+type ExecutionMetadata struct {
+	Mode           string
+	ContainerReuse *ContainerReuseMetadata
+}
+
+type ProcessLifecycle struct {
+	Metadata ExecutionMetadata
+	Release  func(context.Context, error) error
 }
 
 type ActiveRun interface {

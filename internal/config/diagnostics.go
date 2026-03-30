@@ -46,6 +46,7 @@ type filterRelation struct {
 // filters likely overlap.
 func DiagnoseConfig(cfg *Config) []string {
 	var warnings []string
+	warnings = append(warnings, diagnoseDockerReuseWarnings(cfg)...)
 	for _, source := range cfg.Sources {
 		prefix := source.LabelPrefix
 		if prefix == "" {
@@ -96,6 +97,79 @@ func DiagnoseConfig(cfg *Config) []string {
 
 	sort.Strings(warnings)
 	return dedupeStrings(warnings)
+}
+
+func diagnoseDockerReuseWarnings(cfg *Config) []string {
+	var warnings []string
+	for _, agent := range cfg.AgentTypes {
+		if agent.Docker == nil {
+			continue
+		}
+		reuseMode := DockerReuseModeNone
+		if resolved := ResolveDockerConfig(nil, agent.Docker); resolved.Reuse != nil {
+			reuseMode = NormalizeDockerReuseMode(resolved.Reuse.Mode)
+		}
+		if reuseMode != DockerReuseModeStateless {
+			continue
+		}
+
+		if agent.Workspace == "git-clone" {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with workspace=%q; this shares a trusted mutable execution environment and is not the recommended default for code-modifying agents",
+				agent.Name,
+				agent.Workspace,
+			))
+		}
+
+		network := EffectiveDockerNetwork(agent.Docker)
+		if network == "host" {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with docker.network=host; shared reusable containers should avoid broad host networking unless the workload is fully trusted",
+				agent.Name,
+			))
+		} else if network == "bridge" && (agent.Docker.NetworkPolicy == nil || NormalizeDockerNetworkPolicyMode(agent.Docker.NetworkPolicy.Mode) != DockerNetworkPolicyAllowlist) {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with broad bridge networking; prefer docker.network_policy.mode=allowlist or docker.network=none for shared investigative containers",
+				agent.Name,
+			))
+		}
+
+		if len(agent.Docker.EnvPassthrough) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with docker.env_passthrough; prefer narrow docker.secrets/docker.tools allowlists before sharing a trusted container profile",
+				agent.Name,
+			))
+		}
+
+		homeTarget := dockerConfigHomeTarget(agent)
+		access := ResolveDockerAccess(agent.Docker, homeTarget)
+		if len(access.Env) > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with %d injected env values; shared reusable containers should keep secret env injection narrow",
+				agent.Name,
+				len(access.Env),
+			))
+		}
+		if len(access.SecretMounts) > 1 {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with %d secret/config mounts; shared reusable containers should keep mounted credentials narrow",
+				agent.Name,
+				len(access.SecretMounts),
+			))
+		}
+
+		security := ResolveDockerConfig(nil, agent.Docker).Security
+		if security == nil {
+			continue
+		}
+		if NormalizeDockerSecurityPreset(security.Preset) == DockerSecurityPresetCompat || (security.ReadOnlyRootFS != nil && !*security.ReadOnlyRootFS) || len(security.DropCapabilities) == 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q uses docker.reuse.mode=stateless with a permissive docker.security profile; prefer the default or locked-down preset for shared reusable containers",
+				agent.Name,
+			))
+		}
+	}
+	return warnings
 }
 
 // transitionMayLoop returns true if a lifecycle transition would leave the

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -175,6 +176,7 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 
 	s.initRunOutput(run.ID)
 	defer s.clearRunOutput(run.ID)
+	lineageKey := runLineageKey(s.source.Name, issue, prepared.Path)
 
 	var stdout, stderr bytes.Buffer
 	defer func() {
@@ -194,6 +196,7 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 		RunID:          run.ID,
 		Prompt:         renderedPrompt,
 		Workdir:        prepared.Path,
+		LineageKey:     lineageKey,
 		ApprovalPolicy: run.ApprovalPolicy,
 		Env:            runtimeAgent.Env,
 		Stdout:         stdoutWriter,
@@ -202,6 +205,11 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 			r.updateRun(run.ID, func(activeRun *domain.AgentRun) {
 				activeRun.Metrics = domain.MergeRunMetrics(activeRun.Metrics, metrics)
 				activeRun.Metrics = domain.DeriveRunMetrics(activeRun.Metrics, activeRun.StartedAt, activeRun.CompletedAt, time.Now())
+			})
+		},
+		ExecutionMetadataCallback: func(metadata harness.ExecutionMetadata) {
+			r.updateRun(run.ID, func(activeRun *domain.AgentRun) {
+				activeRun.Execution = executionMetadataFromHarness(metadata)
 			})
 		},
 		Model:             model,
@@ -235,6 +243,40 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 	s.runHookBestEffort(context.Background(), s.cfg.Hooks.AfterRun, prepared.Path, run, "after_run")
 	r.completeRun(run.ID)
 	return nil
+}
+
+func runLineageKey(sourceName string, issue domain.Issue, workspacePath string) string {
+	parts := []string{
+		"source=" + strings.TrimSpace(sourceName),
+		"issue=" + strings.TrimSpace(issue.ID),
+	}
+	if strings.TrimSpace(issue.Identifier) != "" {
+		parts = append(parts, "identifier="+strings.TrimSpace(issue.Identifier))
+	}
+	if strings.TrimSpace(workspacePath) != "" {
+		parts = append(parts, "workspace="+filepath.Clean(workspacePath))
+	}
+	return strings.Join(parts, "|")
+}
+
+func executionMetadataFromHarness(metadata harness.ExecutionMetadata) *domain.RunExecutionMetadata {
+	if strings.TrimSpace(metadata.Mode) == "" && metadata.ContainerReuse == nil {
+		return nil
+	}
+	out := &domain.RunExecutionMetadata{
+		Mode: strings.TrimSpace(metadata.Mode),
+	}
+	if metadata.ContainerReuse != nil {
+		out.ContainerReuse = &domain.ContainerReuseMetadata{
+			Mode:          strings.TrimSpace(metadata.ContainerReuse.Mode),
+			Reused:        metadata.ContainerReuse.Reused,
+			ContainerID:   strings.TrimSpace(metadata.ContainerReuse.ContainerID),
+			ContainerName: strings.TrimSpace(metadata.ContainerReuse.ContainerName),
+			ProfileKey:    strings.TrimSpace(metadata.ContainerReuse.ProfileKey),
+			LineageKey:    strings.TrimSpace(metadata.ContainerReuse.LineageKey),
+		}
+	}
+	return out
 }
 
 func snapshotIssue(issue domain.Issue) domain.Issue {

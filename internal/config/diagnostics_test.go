@@ -217,6 +217,41 @@ func TestDiagnoseConfigSkipsCleanlySeparatedPipelineStages(t *testing.T) {
 	}
 }
 
+func TestDiagnoseConfigWarnsOnRiskyStatelessDockerReuse(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		AgentTypes: []config.AgentTypeConfig{{
+			Name:      "ops-shell",
+			Harness:   "codex",
+			Workspace: "git-clone",
+			Docker: &config.DockerConfig{
+				Image:          "maestro-agent:latest",
+				EnvPassthrough: []string{"OPENAI_API_KEY"},
+				Network:        "bridge",
+				Security: &config.DockerSecurityConfig{
+					Preset:         config.DockerSecurityPresetCompat,
+					ReadOnlyRootFS: boolPtr(false),
+				},
+				Reuse: &config.DockerReuseConfig{Mode: config.DockerReuseModeStateless},
+			},
+		}},
+	}
+
+	warnings := config.DiagnoseConfig(cfg)
+	if !hasWarningContaining(warnings, `docker.reuse.mode=stateless with workspace="git-clone"`) {
+		t.Fatalf("warnings = %v, want workspace warning", warnings)
+	}
+	if !hasWarningContaining(warnings, `docker.env_passthrough`) {
+		t.Fatalf("warnings = %v, want env passthrough warning", warnings)
+	}
+	if !hasWarningContaining(warnings, `broad bridge networking`) {
+		t.Fatalf("warnings = %v, want network warning", warnings)
+	}
+	if !hasWarningContaining(warnings, `permissive docker.security profile`) {
+		t.Fatalf("warnings = %v, want security warning", warnings)
+	}
+}
+
 func hasWarningContaining(warnings []string, needle string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, needle) {
@@ -224,4 +259,9 @@ func hasWarningContaining(warnings []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func boolPtr(value bool) *bool {
+	v := value
+	return &v
 }

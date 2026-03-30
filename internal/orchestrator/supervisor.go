@@ -23,6 +23,7 @@ type Runtime interface {
 
 type Supervisor struct {
 	services []*Service
+	shared   *runtimeSharedDeps
 }
 
 func NewRuntime(cfg *config.Config, logger *slog.Logger) (Runtime, error) {
@@ -42,7 +43,7 @@ func NewSupervisor(cfg *config.Config, logger *slog.Logger) (*Supervisor, error)
 		}
 		services = append(services, svc)
 	}
-	return &Supervisor{services: services}, nil
+	return &Supervisor{services: services, shared: shared}, nil
 }
 
 func scopedConfig(cfg *config.Config, source config.SourceConfig, agent config.AgentTypeConfig) *config.Config {
@@ -55,6 +56,9 @@ func scopedConfig(cfg *config.Config, source config.SourceConfig, agent config.A
 }
 
 func (s *Supervisor) Run(ctx context.Context) error {
+	defer func() {
+		_ = s.sharedClose()
+	}()
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -78,6 +82,13 @@ func (s *Supervisor) Run(ctx context.Context) error {
 	}
 	wg.Wait()
 	return firstErr
+}
+
+func (s *Supervisor) sharedClose() error {
+	if s == nil || s.shared == nil {
+		return nil
+	}
+	return s.shared.Close()
 }
 
 func (s *Supervisor) Snapshot() Snapshot {

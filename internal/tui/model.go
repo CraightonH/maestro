@@ -1996,6 +1996,15 @@ func formatExecutionSummary(summary *orchestrator.ExecutionSummary) string {
 	if strings.TrimSpace(summary.Image) != "" {
 		parts = append(parts, "image="+summary.Image)
 	}
+	if strings.TrimSpace(summary.ReuseMode) != "" {
+		parts = append(parts, "reuse="+summary.ReuseMode)
+	}
+	if summary.Reused {
+		parts = append(parts, "reused")
+	}
+	if strings.TrimSpace(summary.ContainerName) != "" {
+		parts = append(parts, "container="+summary.ContainerName)
+	}
 	if strings.TrimSpace(summary.Network) != "" {
 		parts = append(parts, "network="+summary.Network)
 	}

@@ -108,6 +108,10 @@ type DockerNetworkPolicyConfig struct {
 	Allow []string `yaml:"allow"`
 }
 
+type DockerReuseConfig struct {
+	Mode string `yaml:"mode"`
+}
+
 type DockerConfig struct {
 	Image              string                     `yaml:"image"`
 	ImagePinMode       string                     `yaml:"image_pin_mode"`
@@ -125,6 +129,7 @@ type DockerConfig struct {
 	Auth               *DockerAuthConfig          `yaml:"auth"`
 	Security           *DockerSecurityConfig      `yaml:"security"`
 	Cache              *DockerCacheConfig         `yaml:"cache"`
+	Reuse              *DockerReuseConfig         `yaml:"reuse"`
 }
 
 const (
@@ -147,6 +152,9 @@ const (
 	DockerSecurityPresetDefault    = "default"
 	DockerSecurityPresetLockedDown = "locked-down"
 	DockerSecurityPresetCompat     = "compat"
+	DockerReuseModeNone            = "none"
+	DockerReuseModeStateless       = "stateless"
+	DockerReuseModeLineage         = "lineage"
 )
 
 type Config struct {
@@ -490,6 +498,7 @@ func cloneDockerConfig(src *DockerConfig) *DockerConfig {
 	cloned.Auth = cloneDockerAuthConfig(src.Auth)
 	cloned.Security = cloneDockerSecurityConfig(src.Security)
 	cloned.Cache = cloneDockerCacheConfig(src.Cache)
+	cloned.Reuse = cloneDockerReuseConfig(src.Reuse)
 	return &cloned
 }
 
@@ -505,6 +514,14 @@ func cloneDockerNetworkPolicyConfig(src *DockerNetworkPolicyConfig) *DockerNetwo
 }
 
 func cloneDockerAuthConfig(src *DockerAuthConfig) *DockerAuthConfig {
+	if src == nil {
+		return nil
+	}
+	cloned := *src
+	return &cloned
+}
+
+func cloneDockerReuseConfig(src *DockerReuseConfig) *DockerReuseConfig {
 	if src == nil {
 		return nil
 	}
@@ -652,6 +669,7 @@ func mergeDockerConfig(base *DockerConfig, override *DockerConfig) *DockerConfig
 	merged.Auth = mergeDockerAuthConfig(merged.Auth, override.Auth)
 	merged.Security = mergeDockerSecurityConfig(merged.Security, override.Security)
 	merged.Cache = mergeDockerCacheConfig(merged.Cache, override.Cache)
+	merged.Reuse = mergeDockerReuseConfig(merged.Reuse, override.Reuse)
 	return merged
 }
 
@@ -694,6 +712,23 @@ func mergeDockerAuthConfig(base *DockerAuthConfig, override *DockerAuthConfig) *
 	}
 	if override.Target != "" {
 		merged.Target = override.Target
+	}
+	return merged
+}
+
+func mergeDockerReuseConfig(base *DockerReuseConfig, override *DockerReuseConfig) *DockerReuseConfig {
+	if base == nil && override == nil {
+		return nil
+	}
+	if base == nil {
+		return cloneDockerReuseConfig(override)
+	}
+	merged := cloneDockerReuseConfig(base)
+	if override == nil {
+		return merged
+	}
+	if override.Mode != "" {
+		merged.Mode = override.Mode
 	}
 	return merged
 }
@@ -851,6 +886,7 @@ func ResolveDockerConfig(defaults *DockerConfig, override *DockerConfig) DockerC
 		Network:            "bridge",
 		PullPolicy:         "missing",
 		Security:           DockerSecurityPresetConfig(DockerSecurityPresetDefault),
+		Reuse:              &DockerReuseConfig{Mode: DockerReuseModeNone},
 	}
 	return *mergeDockerConfig(mergeDockerConfig(base, defaults), override)
 }
@@ -1036,6 +1072,19 @@ func NormalizeDockerAuthMode(mode string) string {
 
 func NormalizeDockerNetworkPolicyMode(mode string) string {
 	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func NormalizeDockerReuseMode(mode string) string {
+	return strings.TrimSpace(strings.ToLower(mode))
+}
+
+func KnownDockerReuseMode(mode string) bool {
+	switch NormalizeDockerReuseMode(mode) {
+	case "", DockerReuseModeNone, DockerReuseModeStateless, DockerReuseModeLineage:
+		return true
+	default:
+		return false
+	}
 }
 
 func NormalizeDockerNetworkAllowEntry(raw string) string {

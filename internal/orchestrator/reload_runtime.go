@@ -82,6 +82,11 @@ func NewReloadableRuntime(cfg *config.Config, logger *slog.Logger) (*ReloadableR
 }
 
 func (r *ReloadableRuntime) Run(ctx context.Context) error {
+	defer func() {
+		if r.shared != nil {
+			_ = r.shared.Close()
+		}
+	}()
 	r.mu.Lock()
 	if r.running {
 		r.mu.Unlock()
