@@ -45,6 +45,8 @@ type AgentRun struct {
 	HarnessKind    string
 	WorkspacePath  string
 	Status         RunStatus
+	CurrentTurn    int
+	MaxTurns       int
 	Attempt        int
 	ApprovalPolicy string
 	ApprovalState  ApprovalState

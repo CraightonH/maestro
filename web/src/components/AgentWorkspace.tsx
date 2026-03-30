@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Approval, ConfigAgentSummary, ConfigSourceSummary, EventItem, Run, RunOutput } from "../types";
-import { formatDate, formatRunMetrics, sourceGroupHref, sourceProjectHref, sourceRepoHref, sourceScopeHref } from "../lib/helpers";
+import { formatDate, formatRunMetrics, formatRunTurns, sourceGroupHref, sourceProjectHref, sourceRepoHref, sourceScopeHref } from "../lib/helpers";
 import { EmptyState, Metric, PanelHeader, Pill } from "./ui";
 
 export function AgentWorkspace({
@@ -72,6 +72,7 @@ export function AgentWorkspace({
                       <Metric label="Issue" value={currentRun.issue.identifier || "n/a"} />
                       <Metric label="Tracker state" value={currentRun.issue.state || "n/a"} />
                       <Metric label="Started" value={formatDate(currentRun.started_at)} />
+                      <Metric label="Turn" value={formatRunTurns(currentRun) || "1/1"} />
                       <Metric label="Attempt" value={String(currentRun.attempt)} />
                       <Metric label="Last activity" value={formatDate(currentRun.last_activity_at)} />
                     </div>

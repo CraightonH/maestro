@@ -83,6 +83,8 @@ func apiRun(run domain.AgentRun, output *runOutputJSON, execution *executionJSON
 		Execution:      runExecution,
 		WorkspacePath:  run.WorkspacePath,
 		Status:         string(run.Status),
+		CurrentTurn:    run.CurrentTurn,
+		MaxTurns:       run.MaxTurns,
 		Attempt:        run.Attempt,
 		ApprovalPolicy: run.ApprovalPolicy,
 		ApprovalState:  string(run.ApprovalState),

@@ -664,8 +664,11 @@ logging:
 	if got, want := agent.Tools, []string{"git", "make"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("tools = %v, want %v", got, want)
 	}
-	if got := agent.Context; got != "Run the narrowest verification." {
-		t.Fatalf("context = %q", got)
+	if !strings.Contains(agent.Context, "Run the narrowest verification.") {
+		t.Fatalf("context missing pack guidance: %q", agent.Context)
+	}
+	if !strings.Contains(agent.Context, "Do not use extra turns only to confirm that nothing has changed.") {
+		t.Fatalf("context missing global guidance: %q", agent.Context)
 	}
 }
 
@@ -1484,6 +1487,8 @@ func TestLoadAppliesTrackerAndAgentDefaults(t *testing.T) {
 	configPath := filepath.Join(root, "maestro.yaml")
 	raw := `
 defaults:
+  agent_context: |
+    - Prefer the narrowest verification that proves the change worked.
   poll_interval: 5s
   max_concurrent_global: 3
   stall_timeout: 12m
@@ -1591,9 +1596,87 @@ logging:
 		if len(agent.ContextFiles) != 1 || agent.ContextFiles[0] != contextPath {
 			t.Fatalf("agent %s context files = %v", agent.Name, agent.ContextFiles)
 		}
-		if agent.Context != "Shared operator context." {
-			t.Fatalf("agent %s context = %q", agent.Name, agent.Context)
+		if !strings.Contains(agent.Context, "Shared operator context.") {
+			t.Fatalf("agent %s context missing shared context: %q", agent.Name, agent.Context)
 		}
+		if !strings.Contains(agent.Context, "Do not use extra turns only to confirm that nothing has changed.") {
+			t.Fatalf("agent %s context missing global guidance: %q", agent.Name, agent.Context)
+		}
+		if !strings.Contains(agent.Context, "Never print, paste, log, summarize, quote, or intentionally expose secrets.") {
+			t.Fatalf("agent %s context missing global secret guidance: %q", agent.Name, agent.Context)
+		}
+		if !strings.Contains(agent.Context, "Prefer the narrowest verification that proves the change worked.") {
+			t.Fatalf("agent %s context missing configured global context: %q", agent.Name, agent.Context)
+		}
+	}
+}
+
+func TestLoadPrependsGlobalAgentContext(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptDir := filepath.Join(root, "agents", "code-pr")
+	if err := os.MkdirAll(promptDir, 0o755); err != nil {
+		t.Fatalf("mkdir prompt dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(promptDir, "prompt.md"), []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	contextPath := filepath.Join(root, "context.md")
+	if err := os.WriteFile(contextPath, []byte("Local pack context."), 0o644); err != nil {
+		t.Fatalf("write context: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  agent_context: |
+    - Prefer the narrowest verification that proves the change worked.
+sources:
+  - name: project-a
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project-a
+    filter:
+      labels: [ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: agents/code-pr/prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+    context_files: [context.md]
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(cfg.AgentTypes) != 1 {
+		t.Fatalf("agent types = %d", len(cfg.AgentTypes))
+	}
+	context := cfg.AgentTypes[0].Context
+	if !strings.Contains(context, "If the requested outcome is already achieved") {
+		t.Fatalf("context missing global stop guidance: %q", context)
+	}
+	if !strings.Contains(context, "Do not use extra turns only to confirm that nothing has changed.") {
+		t.Fatalf("context missing global no-recheck guidance: %q", context)
+	}
+	if !strings.Contains(context, "Never print, paste, log, summarize, quote, or intentionally expose secrets.") {
+		t.Fatalf("context missing global secret guidance: %q", context)
+	}
+	if !strings.Contains(context, "Prefer the narrowest verification that proves the change worked.") {
+		t.Fatalf("context missing configured global context: %q", context)
+	}
+	if !strings.Contains(context, "Local pack context.") {
+		t.Fatalf("context missing local context: %q", context)
 	}
 }
 

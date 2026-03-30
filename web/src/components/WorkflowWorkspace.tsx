@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Approval, ConfigSourceSummary, EventItem, Message, MessageHistoryEntry, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
-import { formatExecutionSummary, formatRunMetrics, formatTrackerRateLimit, sourceScopeHref, type SourceDraft } from "../lib/helpers";
+import { formatExecutionSummary, formatRunMetrics, formatRunTurns, formatTrackerRateLimit, sourceScopeHref, type SourceDraft } from "../lib/helpers";
 import { Control, EmptyState, PanelHeader, Pill } from "./ui";
 
 export function WorkflowWorkspace({
@@ -54,6 +54,7 @@ export function WorkflowWorkspace({
   const [messageReplies, setMessageReplies] = useState<Record<string, string>>({});
   const agentName = workflow?.agent_type || "";
   const metricsSummary = formatRunMetrics(currentRun?.metrics);
+  const turnSummary = formatRunTurns(currentRun);
   const executionSummary = formatExecutionSummary(currentRun?.execution || runtime?.execution);
   const logText = useMemo(() => {
     const merged = [currentOutput?.stdout_tail, currentOutput?.stderr_tail].filter(Boolean).join("\n");
@@ -90,6 +91,7 @@ export function WorkflowWorkspace({
                 <strong>{currentRun?.issue.identifier || "Idle"}</strong>
               )}
               <p>{currentRun?.issue.title || "This workflow is currently idle. When it picks up work, the active issue will appear here."}</p>
+              {turnSummary ? <p className="message">Turn {turnSummary}</p> : null}
               {metricsSummary.length ? <p className="message">{metricsSummary.join(" · ")}</p> : null}
               {executionSummary ? <p className="message">Execution: {executionSummary}</p> : null}
               <div className="pills">

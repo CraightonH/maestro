@@ -129,9 +129,26 @@ export function formatRunMetrics(metrics?: RunMetrics) {
   if (typeof metrics.tokens_out === "number") parts.push(`${formatInteger(metrics.tokens_out)} out`);
   if (typeof metrics.total_tokens === "number") parts.push(`${formatInteger(metrics.total_tokens)} total`);
   if (typeof metrics.cost_usd === "number") parts.push(formatCurrency(metrics.cost_usd));
-  if (typeof metrics.duration_ms === "number") parts.push(formatDuration(metrics.duration_ms));
+  if (
+    typeof metrics.duration_ms === "number" &&
+    (
+      typeof metrics.tokens_in === "number" ||
+      typeof metrics.tokens_out === "number" ||
+      typeof metrics.total_tokens === "number" ||
+      typeof metrics.cost_usd === "number" ||
+      typeof metrics.throughput_tokens_per_second === "number"
+    )
+  ) {
+    parts.push(formatDuration(metrics.duration_ms));
+  }
   if (typeof metrics.throughput_tokens_per_second === "number") parts.push(`${metrics.throughput_tokens_per_second.toFixed(1)} tok/s`);
   return parts;
+}
+
+export function formatRunTurns(run?: Pick<Run, "current_turn" | "max_turns">) {
+  if (!run || !run.max_turns || run.max_turns <= 1) return "";
+  const currentTurn = run.current_turn && run.current_turn > 0 ? run.current_turn : 1;
+  return `${currentTurn}/${run.max_turns}`;
 }
 
 export function formatExecutionSummary(execution?: ExecutionSummary) {

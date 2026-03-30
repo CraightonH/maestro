@@ -154,3 +154,12 @@ func TestGetNormalizesBlockingRelations(t *testing.T) {
 		t.Fatalf("blocker state_type = %q, want started", got)
 	}
 }
+
+func TestLinearQueriesDoNotUseUnsupportedInverseRelationsFilter(t *testing.T) {
+	if strings.Contains(issuesQuery, "inverseRelations(first: 50, filter:") {
+		t.Fatalf("issuesQuery uses unsupported inverseRelations filter argument")
+	}
+	if strings.Contains(issueQuery, "inverseRelations(first: 50, filter:") {
+		t.Fatalf("issueQuery uses unsupported inverseRelations filter argument")
+	}
+}

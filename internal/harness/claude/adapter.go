@@ -56,6 +56,7 @@ type claudeRun struct {
 	sessionID       string
 	metrics         domain.RunMetrics
 	metricsCallback func(domain.RunMetrics)
+	turnCallback    func(int, int)
 	decisionCh      chan harness.ApprovalDecision
 	doneCh          chan error
 }
@@ -192,6 +193,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		ctx:              runCtx,
 		cancel:           cancel,
 		metricsCallback:  cfg.MetricsCallback,
+		turnCallback:     cfg.TurnCallback,
 		decisionCh:       make(chan harness.ApprovalDecision, 1),
 		doneCh:           make(chan error, 1),
 	}
@@ -259,6 +261,7 @@ func (r *activeRun) Wait() error {
 
 func (r *claudeRun) execute(binary string, runner harness.ProcessRunner, approvals chan<- harness.ApprovalRequest) {
 	currentTurn := 1
+	r.publishTurn(currentTurn)
 	prompt := r.prompt
 	for {
 		sessionID, err := r.runTurn(binary, runner, prompt, r.sessionID, approvals)
@@ -290,7 +293,15 @@ func (r *claudeRun) execute(binary string, runner harness.ProcessRunner, approva
 
 		prompt = nextPrompt
 		currentTurn++
+		r.publishTurn(currentTurn)
 	}
+}
+
+func (r *claudeRun) publishTurn(currentTurn int) {
+	if r.turnCallback == nil {
+		return
+	}
+	r.turnCallback(currentTurn, r.maxTurns)
 }
 
 func (a *Adapter) supportsResume() (bool, error) {

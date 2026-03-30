@@ -46,6 +46,7 @@ func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue
 		SourceName:     s.source.Name,
 		HarnessKind:    s.harness.Kind(),
 		Status:         domain.RunStatusPending,
+		CurrentTurn:    1,
 		Attempt:        attempt,
 		ApprovalPolicy: s.agent.ApprovalPolicy,
 		ApprovalState:  s.stateMgr.approvalState(),
@@ -145,6 +146,10 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 		maxTurns = resolved.MaxTurns
 		extraArgs = resolved.ExtraArgs
 	}
+	if maxTurns < 1 {
+		maxTurns = 1
+	}
+	run.MaxTurns = maxTurns
 
 	var continuationFunc func(ctx context.Context, turnNumber int) (string, bool, error)
 	if maxTurns > 1 && (runtimeAgent.Harness == "codex" || runtimeAgent.Harness == "claude-code") {
@@ -205,6 +210,16 @@ func (r *runManager) prepareAndStart(ctx context.Context, run *domain.AgentRun) 
 			r.updateRun(run.ID, func(activeRun *domain.AgentRun) {
 				activeRun.Metrics = domain.MergeRunMetrics(activeRun.Metrics, metrics)
 				activeRun.Metrics = domain.DeriveRunMetrics(activeRun.Metrics, activeRun.StartedAt, activeRun.CompletedAt, time.Now())
+			})
+		},
+		TurnCallback: func(currentTurn int, maxTurns int) {
+			r.updateRun(run.ID, func(activeRun *domain.AgentRun) {
+				if currentTurn > 0 {
+					activeRun.CurrentTurn = currentTurn
+				}
+				if maxTurns > 0 {
+					activeRun.MaxTurns = maxTurns
+				}
 			})
 		},
 		ExecutionMetadataCallback: func(metadata harness.ExecutionMetadata) {

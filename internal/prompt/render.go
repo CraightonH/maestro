@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"text/template"
 )
@@ -71,7 +72,12 @@ func ParseFile(path string) (*template.Template, error) {
 }
 
 func RenderFile(path string, data Data) (string, error) {
-	tpl, err := ParseFile(path)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	tpl, err := template.New(path).Funcs(defaultFuncMap).Option("missingkey=error").Parse(string(raw))
 	if err != nil {
 		return "", err
 	}
@@ -82,6 +88,14 @@ func RenderFile(path string, data Data) (string, error) {
 	}
 
 	rendered := strings.TrimSpace(buf.String())
+	if contextBody := strings.TrimSpace(agentContextString(data.Agent)); contextBody != "" && !templateReferencesAgentContext(string(raw)) {
+		contextSection := strings.TrimSpace(fmt.Sprintf("## Operating Context\n%s", contextBody))
+		if rendered == "" {
+			rendered = contextSection
+		} else {
+			rendered = rendered + "\n\n" + contextSection
+		}
+	}
 	if strings.TrimSpace(data.OperatorInstruction) != "" {
 		operatorSection := strings.TrimSpace(fmt.Sprintf("## Operator Guidance\n%s", data.OperatorInstruction))
 		if rendered == "" {
@@ -94,4 +108,29 @@ func RenderFile(path string, data Data) (string, error) {
 		return strings.TrimSpace(systemPreamble), nil
 	}
 	return strings.TrimSpace(systemPreamble) + "\n\n" + rendered, nil
+}
+
+func templateReferencesAgentContext(raw string) bool {
+	return strings.Contains(raw, ".Agent.Context")
+}
+
+func agentContextString(agent any) string {
+	if agent == nil {
+		return ""
+	}
+	value := reflect.ValueOf(agent)
+	for value.IsValid() && value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return ""
+		}
+		value = value.Elem()
+	}
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return ""
+	}
+	field := value.FieldByName("Context")
+	if !field.IsValid() || field.Kind() != reflect.String {
+		return ""
+	}
+	return field.String()
 }

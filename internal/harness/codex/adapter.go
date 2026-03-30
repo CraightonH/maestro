@@ -44,6 +44,7 @@ type codexRun struct {
 	turnSandboxPolicy map[string]any
 	continuationFunc  func(ctx context.Context, turnNumber int) (string, bool, error)
 	metricsCallback   func(domain.RunMetrics)
+	turnCallback      func(int, int)
 
 	// Multi-turn state
 	threadID    string
@@ -282,6 +283,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		turnSandboxPolicy: cfg.TurnSandboxPolicy,
 		continuationFunc:  cfg.ContinuationFunc,
 		metricsCallback:   cfg.MetricsCallback,
+		turnCallback:      cfg.TurnCallback,
 		ctx:               ctx,
 		hostWorkdir:       cfg.Workdir,
 		pending:           map[int64]chan rpcResponse{},
@@ -291,6 +293,7 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.RunConfig) (harness.Act
 		processCh:         make(chan error, 1),
 	}
 	run.turnNumber.Store(1)
+	run.publishTurn(1)
 
 	if err := cmd.Start(); err != nil {
 		if lifecycle.Release != nil {
@@ -568,7 +571,8 @@ func (r *codexRun) handleNotification(method string, params json.RawMessage, std
 					r.finish(nil)
 					return
 				}
-				r.advanceTurnNumber()
+				nextTurn := r.advanceTurnNumber()
+				r.publishTurn(nextTurn)
 				if _, err := r.startTurn(r.threadID, r.cwd, prompt); err != nil {
 					r.finish(fmt.Errorf("start continuation turn: %w", err))
 				}
@@ -590,6 +594,13 @@ func (r *codexRun) publishMetrics(metrics domain.RunMetrics) {
 		return
 	}
 	r.metricsCallback(metrics)
+}
+
+func (r *codexRun) publishTurn(currentTurn int) {
+	if r.turnCallback == nil {
+		return
+	}
+	r.turnCallback(currentTurn, r.maxTurns)
 }
 
 func (r *codexRun) handleServerRequest(id int64, method string, params json.RawMessage, approvalCh chan<- harness.ApprovalRequest, messageCh chan<- harness.MessageRequest) {

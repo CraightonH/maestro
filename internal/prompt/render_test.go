@@ -66,3 +66,49 @@ func TestCodePRPromptIncludesIssueDescription(t *testing.T) {
 		t.Fatalf("rendered prompt missing issue description content: %q", rendered)
 	}
 }
+
+func TestRenderFileAppendsAgentContextWhenTemplateOmitsIt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(path, []byte("Hello {{.AgentName}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	rendered, err := prompt.RenderFile(path, prompt.Data{
+		AgentName: "coder",
+		Agent: config.AgentTypeConfig{
+			Context: "Stop once the requested outcome is achieved and there is no new feedback.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("render prompt: %v", err)
+	}
+
+	if !strings.Contains(rendered, "## Operating Context") {
+		t.Fatalf("rendered prompt missing operating context section: %q", rendered)
+	}
+	if !strings.Contains(rendered, "Stop once the requested outcome is achieved") {
+		t.Fatalf("rendered prompt missing agent context body: %q", rendered)
+	}
+}
+
+func TestRenderFileDoesNotDuplicateAgentContextWhenTemplateIncludesIt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(path, []byte("{{if .Agent.Context}}## Operating Context\n{{.Agent.Context}}{{end}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	rendered, err := prompt.RenderFile(path, prompt.Data{
+		Agent: config.AgentTypeConfig{
+			Context: "Stop once the requested outcome is achieved.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("render prompt: %v", err)
+	}
+
+	if strings.Count(rendered, "## Operating Context") != 1 {
+		t.Fatalf("rendered prompt duplicated operating context section: %q", rendered)
+	}
+}

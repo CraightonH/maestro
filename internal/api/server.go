@@ -187,6 +187,8 @@ type runJSON struct {
 	Execution      *executionJSON  `json:"execution,omitempty"`
 	WorkspacePath  string          `json:"workspace_path,omitempty"`
 	Status         string          `json:"status"`
+	CurrentTurn    int             `json:"current_turn,omitempty"`
+	MaxTurns       int             `json:"max_turns,omitempty"`
 	Attempt        int             `json:"attempt"`
 	ApprovalPolicy string          `json:"approval_policy,omitempty"`
 	ApprovalState  string          `json:"approval_state,omitempty"`

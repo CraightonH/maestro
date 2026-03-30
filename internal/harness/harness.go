@@ -34,6 +34,7 @@ type RunConfig struct {
 	Stdout                    io.Writer
 	Stderr                    io.Writer
 	MetricsCallback           func(domain.RunMetrics)
+	TurnCallback              func(currentTurn int, maxTurns int)
 	ExecutionMetadataCallback func(ExecutionMetadata)
 
 	// Harness configuration

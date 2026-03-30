@@ -138,6 +138,7 @@ type Model struct {
 	searchQuery      string
 	replyMode        bool
 	replyInput       string
+	quitConfirm      bool
 	groupFilter      string
 	focus            focusPane
 	runSort          runSortMode
@@ -200,6 +201,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.shuttingDown {
 			return m, nil
+		}
+		if m.quitConfirm {
+			switch msg.String() {
+			case "q", "enter":
+				if m.shutdown != nil {
+					m.shuttingDown = true
+					m.quitConfirm = false
+					m.notice = ""
+					return m, shutdownCmd(m.shutdown)
+				}
+				return m, tea.Quit
+			case "esc":
+				m.quitConfirm = false
+				m.notice = "quit cancelled"
+				return m, nil
+			default:
+				return m, nil
+			}
 		}
 		if m.replyMode {
 			switch msg.String() {
@@ -267,13 +286,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			if m.shutdown != nil {
 				m.shuttingDown = true
 				m.notice = ""
 				return m, shutdownCmd(m.shutdown)
 			}
 			return m, tea.Quit
+		case "q":
+			m.quitConfirm = true
+			m.notice = "press q or enter again to quit, esc to cancel"
+			return m, nil
 		case "tab":
 			m.focus = m.nextFocus()
 			m.clampSelection()
@@ -862,14 +885,29 @@ func (m Model) renderRunDetail(w int, runs []domain.AgentRun) string {
 	if selected.AgentType != "" && selected.AgentType != selected.AgentName {
 		agentLabel += styleDim.Render(" (") + selected.AgentType + styleDim.Render(")")
 	}
-	lines = append(lines, styleDim.Render("Agent: ")+agentLabel+styleDim.Render("  Harness: ")+selected.HarnessKind+styleDim.Render("  Source: ")+selected.SourceName)
-	if execution := m.selectedRunExecution(runs); execution != nil {
-		lines = append(lines, styleDim.Render("Execution: ")+styleCyan.Render(formatExecutionSummary(execution)))
+	agentParts := []string{
+		styleDim.Render("Agent: ") + agentLabel,
+		styleDim.Render("Harness: ") + selected.HarnessKind,
+		styleDim.Render("Source: ") + selected.SourceName,
 	}
+	if execution := m.selectedRunExecution(runs); execution != nil {
+		agentParts = append(agentParts, styleDim.Render("Execution: ")+styleCyan.Render(formatExecutionSummary(execution)))
+	}
+	lines = append(lines, strings.Join(agentParts, "  "))
 
 	// Status + attempt on one line.
 	badge := runStatusBadge(selected)
-	lines = append(lines, styleDim.Render("Status: ")+statusStyle(badge).Render(string(selected.Status))+styleDim.Render("  Attempt: ")+fmt.Sprintf("%d", selected.Attempt)+styleDim.Render("  Approval: ")+selected.ApprovalPolicy+"/"+string(selected.ApprovalState))
+	statusParts := []string{
+		styleDim.Render("Status: ") + statusStyle(badge).Render(string(selected.Status)),
+	}
+	if turnSummary := formatRunTurns(selected); turnSummary != "" {
+		statusParts = append(statusParts, styleDim.Render("Turn: ")+turnSummary)
+	}
+	statusParts = append(statusParts,
+		styleDim.Render("Attempt: ")+fmt.Sprintf("%d", selected.Attempt),
+		styleDim.Render("Approval: ")+selected.ApprovalPolicy+"/"+string(selected.ApprovalState),
+	)
+	lines = append(lines, strings.Join(statusParts, "  "))
 
 	// Started + last activity on one line.
 	timeParts := make([]string, 0, 3)
@@ -1223,7 +1261,7 @@ func (m Model) renderFooter() string {
 		"O", "sort retries",
 		"f", "group",
 		"c", "clear",
-		"q", "quit",
+		"q", "quit confirm",
 	}
 
 	// Add context-specific keys
@@ -1957,7 +1995,7 @@ func renderRunMetrics(metrics domain.RunMetrics) string {
 	if metrics.CostUSD != nil {
 		parts = append(parts, fmt.Sprintf("$%.4f", *metrics.CostUSD))
 	}
-	if metrics.DurationMS != nil {
+	if metrics.DurationMS != nil && (metrics.TokensIn != nil || metrics.TokensOut != nil || metrics.TotalTokens != nil || metrics.CostUSD != nil || metrics.ThroughputTokensPerSecond != nil) {
 		parts = append(parts, formatDurationMS(*metrics.DurationMS))
 	}
 	if metrics.ThroughputTokensPerSecond != nil {
@@ -2046,7 +2084,7 @@ func formatExecutionSummary(summary *orchestrator.ExecutionSummary) string {
 }
 
 func formatCount(value int64) string {
-	return fmt.Sprintf("%d", value)
+	return fmt.Sprintf("%s", humanCount(value))
 }
 
 func formatDurationMS(durationMS int64) string {
@@ -2054,6 +2092,39 @@ func formatDurationMS(durationMS int64) string {
 		return fmt.Sprintf("%dms", durationMS)
 	}
 	return (time.Duration(durationMS) * time.Millisecond).Round(time.Second).String()
+}
+
+func formatRunTurns(run domain.AgentRun) string {
+	if run.MaxTurns <= 1 {
+		return ""
+	}
+	currentTurn := run.CurrentTurn
+	if currentTurn < 1 {
+		currentTurn = 1
+	}
+	return fmt.Sprintf("%d/%d", currentTurn, run.MaxTurns)
+}
+
+func humanCount(value int64) string {
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	s := fmt.Sprintf("%d", value)
+	n := len(s)
+	if n <= 3 {
+		return sign + s
+	}
+	var b strings.Builder
+	b.Grow(n + n/3)
+	for i, r := range s {
+		if i > 0 && (n-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(r)
+	}
+	return sign + b.String()
 }
 
 func countRunsForSource(runs []domain.AgentRun, sourceName string) int {

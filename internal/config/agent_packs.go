@@ -66,7 +66,7 @@ func resolveAgentPack(cfg *Config, agent *AgentTypeConfig) error {
 
 func resolveAgentContexts(cfg *Config) error {
 	for i := range cfg.AgentTypes {
-		context, err := loadAgentContext(cfg.AgentTypes[i].ContextFiles)
+		context, err := loadAgentContext(cfg.Defaults.AgentContext, cfg.AgentTypes[i].ContextFiles)
 		if err != nil {
 			return fmt.Errorf("load context for agent %q: %w", cfg.AgentTypes[i].Name, err)
 		}
@@ -74,6 +74,11 @@ func resolveAgentContexts(cfg *Config) error {
 	}
 	return nil
 }
+
+const globalAgentContext = `- If the requested outcome is already achieved and there is no new issue, PR, or review feedback requiring action, stop instead of spending extra turns re-checking unchanged status.
+- Do not use extra turns only to confirm that nothing has changed.
+- Never print, paste, log, summarize, quote, or intentionally expose secrets.
+- If a command, file, diff, or tool output contains a secret, redact it before echoing or summarizing it.`
 
 func loadAgentPack(cfg *Config, ref string) (*AgentPackConfig, error) {
 	path, err := resolveAgentPackPath(cfg, ref)
@@ -111,7 +116,7 @@ func ResolveRepoPack(workspacePath string, repoPackPath string) (*AgentPackConfi
 	if err != nil {
 		return nil, err
 	}
-	context, err := loadAgentContext(contextFiles)
+	context, err := loadAgentContext("", contextFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -418,8 +423,12 @@ func appendUnique(base []string, override []string) []string {
 	return combined
 }
 
-func loadAgentContext(paths []string) (string, error) {
-	parts := make([]string, 0, len(paths))
+func loadAgentContext(configured string, paths []string) (string, error) {
+	parts := make([]string, 0, len(paths)+2)
+	parts = append(parts, globalAgentContext)
+	if trimmed := strings.TrimSpace(configured); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
 	for _, path := range paths {
 		if strings.TrimSpace(path) == "" {
 			continue

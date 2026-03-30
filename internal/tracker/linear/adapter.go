@@ -27,7 +27,7 @@ query($projectId: ID!, $after: String) {
       assignee { name email }
       project { id name }
       team { id key name }
-      inverseRelations(first: 50, filter: { type: { eq: blocks } }) {
+      inverseRelations(first: 50) {
         nodes {
           type
           issue {
@@ -83,7 +83,7 @@ query($id: String!) {
     assignee { name email }
     project { id name }
     team { id key name }
-    inverseRelations(first: 50, filter: { type: { eq: blocks } }) {
+    inverseRelations(first: 50) {
       nodes {
         type
         issue {

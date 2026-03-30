@@ -51,133 +51,55 @@ other hooks.
 
 ## Docker / Container Sandboxing
 
-Current state:
+Docker execution is already shipped. The remaining Docker work should focus on stronger isolation,
+better secret handling, and shared-deployment policy.
 
-- Maestro can now run Claude and Codex harnesses in Docker while keeping orchestration on the host.
-- Workspaces are bind-mounted into the container, so git state remains visible on the host.
-- Basic CPU, memory, PID, network mode, auth presets, explicit read-only auth mounts, cache mounts, pull policy, Docker doctor checks, optional containerized hooks, and execution metadata are supported.
+### 🐳 Higher-Level Network Presets
 
-### 🐳 Shipped Through Phase 2
+Build on the existing allowlist mode with clearer presets like:
 
-The broad phase-2 usability and safety work is now shipped. Current Docker support now includes:
-
-1. auth presets for Claude and Codex
-2. hardened default container profile
-3. `maestro doctor` Docker preflight
-4. optional containerized outer hooks
-5. execution metadata in API/TUI/web
-6. pull policy support
-7. cache presets and explicit cache mounts
-8. structured network policy
-9. structured Docker access controls
-10. image pinning checks and enforcement mode
-11. named security presets
-
-The next Docker work should focus on tighter isolation, stronger secret handling, and better
-shared-deployment policy.
-
-### 🐳 Shipped in Current Docker Support
-
-- auth presets:
-  - `claude-api-key`
-  - `claude-proxy`
-  - `claude-config-mount`
-  - `codex-api-key`
-  - `codex-config-mount`
-- hardened default container profile:
-  - current uid/gid
-  - writable workspace mount
-  - writable container-local `HOME`
-  - `no-new-privileges`
-  - read-only root filesystem
-  - `cap-drop ALL`
-  - `tmpfs /tmp`
-- `maestro doctor` Docker preflight:
-  - docker binary
-  - daemon/context reachability
-  - image presence or pullability
-  - harness binary presence in image
-  - visible `DOCKER_*` client config
-- optional containerized outer hooks via `hooks.execution: container`
-- execution metadata in API/TUI/web
-- pull policy support
-- cache presets and explicit cache mounts
-- first structured network policy layer:
-  - `none`
-  - `bridge`
-  - `allowlist` via Maestro-managed HTTP/HTTPS proxy
-- structured Docker access controls:
-  - `docker.secrets`
-  - `docker.tools`
-- image pinning support:
-  - doctor warnings for mutable tags
-  - optional `docker.image_pin_mode: require`
-- named security presets:
-  - `default`
-  - `locked-down`
-  - `compat`
-
-### 🐳 Resource Governance per Agent
-
-Current Docker mode already supports per-agent CPU, memory, and PID limits through the Docker
-runner. The remaining work here is mostly better policy defaults and richer operator guidance, not
-basic cgroup integration.
-
----
-
-### 🐳 Network Policy
-
-Current Docker mode now supports coarse network modes (`bridge`, `none`, `host`) plus a first
-`docker.network_policy` layer with `none`, `bridge`, and HTTP/HTTPS proxy-enforced allowlists for
-domains/hosts.
-
-Next direction:
-
-- add higher-level presets like:
-  - `model-only`
-  - `tracker-and-model`
-  - `custom-allowlist`
+- `model-only`
+- `tracker-and-model`
+- `custom-allowlist`
 
 **Why**: Network access is still the biggest remaining safety gap for containerized agents.
 
-**Next to ship**: higher-level presets and tighter operator ergonomics around common allowlists.
+**To ship**: preset definitions, simpler operator-facing config, and `maestro doctor` guidance for
+common egress shapes.
 
 ---
 
-### 🐳 Structured Secret Delivery
+### 🐳 Tmpfs / File-Backed Secret Delivery
 
-Current Docker mode now has structured access controls via `docker.secrets` and `docker.tools`, but
-secret env values are still normal environment variables once injected into the container.
-
-Next direction:
+Move beyond env-var injection for sensitive material by supporting:
 
 - tmpfs-backed secret files under `/run/secrets/...`
 - optional `_FILE` helper env wiring for common tools
-- clearer separation between env-style configuration and secret material
+- a clearer split between plain env config and true secret material
 
 **Why**: Env vars are still inspectable inside the container and are a weaker boundary than file- or
 tmpfs-backed secret delivery.
 
-**Next to ship**: a tmpfs/file-backed secret path layered on top of the existing `docker.secrets`
-config.
+**To ship**: tmpfs-backed secret mounts layered on top of the existing `docker.secrets` config.
 
 ---
 
-### 🐳 Image Pinning and Pull Policy Guidance
+### 🐳 Stronger Image Policy
 
-Support:
+Go beyond tag-vs-digest checks toward stronger shared-deployment policy, such as:
 
-- `pull_policy: missing | always | never` is already implemented
-- digest-pinned images in docs/examples
+- required digests by environment
+- trusted registry allowlists
+- clearer provenance guidance for published images
 
-**Why**: Reproducibility and safer shared deployments.
+**Why**: Reproducibility and supply-chain safety matter more as Docker-backed agents become normal.
 
-**Next step**: move from tag-vs-digest checks into stronger policy for shared deployments, such as
-required digests by environment and clearer provenance guidance for published images.
+**To ship**: stronger doctor/policy enforcement around image provenance, not just mutable-tag
+warnings.
 
 ### 🐳 Tiered Isolation Modes
 
-Configurable isolation strength per agent type:
+Configurable isolation strength beyond the current Docker hardening baseline:
 
 | Tier | Technology | Security | Use case |
 |------|-----------|----------|----------|
@@ -191,32 +113,27 @@ interface. Tier 0 → 1 is the big lift; 1 → 2/3 is a config change.
 
 ---
 
-### 🐳 Warm Container Pool
+### 🐳 Broader Warm Pools and Reuse Policy
 
-Current Docker mode already supports reusable containers via:
-
-- `docker.reuse.mode: stateless` for trusted shared-profile reuse
-- `docker.reuse.mode: lineage` for retry/continuation reuse within the same issue/workspace lineage
-
-The remaining work here is broader pooling and stronger reuse ergonomics, for example:
+Current reuse modes cover trusted stateless reuse and lineage reuse. Remaining work includes:
 
 - profile-wide pre-created containers held ready for dispatch
 - stronger reset semantics between shared stateless runs
 - explicit pool sizing and eviction policy
 - better status/debug visibility for reused containers
 
-**Why**: Broader pooling could reduce cold-start latency further than the current reuse modes, especially
-for high-frequency investigative workloads.
+**Why**: Broader pooling could reduce cold-start latency further than the current reuse modes,
+especially for high-frequency investigative workloads.
 
 **When**: After the current Docker path is stable in broader use and dispatch latency becomes a
 bottleneck.
 
 ---
 
-### 🐳 Cache Mounts
+### 🐳 Cache Policy and Lifecycle Controls
 
-Current Docker mode already supports cache presets and explicit cache mounts. The remaining work is
-mostly around stronger policy and lifecycle management, for example:
+Current cache mounts are shipped. Remaining work is mostly around stronger policy and lifecycle
+management, for example:
 
 - clearer cache retention and cleanup controls
 - per-hook or per-step cache scoping
@@ -253,6 +170,136 @@ prompt rendering (`.Agent`, `.Issue`, `.User`).
 ---
 
 ## Orchestration & Scheduling
+
+### 🔀 Multiple Active Runs Per Source
+
+Allow one source to dispatch and manage multiple active runs concurrently instead of
+the current one-source/one-run model.
+
+**Why**: The current scoped `Service` still owns a single `activeRun`. That means one
+configured source can only work one issue at a time, even if:
+
+- the agent type allows higher concurrency
+- the global limiter has free capacity
+- the source poll returns several eligible issues
+
+This is the wrong model for queue-like sources where one workflow should be able to
+process several issues in parallel.
+
+**Current limitation**:
+
+- `Service` owns exactly one `activeRun`
+- the poll loop treats any active run as “source busy”
+- approvals, messages, tracker reconciliation, stall detection, stop handling, state
+  persistence, API, TUI, and web all assume one active run per source
+- `agent_types[].max_concurrent` only limits total shared agent concurrency across
+  services; it does not let a single source dispatch multiple issues
+
+**Proposed config shape**:
+
+```yaml
+sources:
+  - name: coding
+    tracker: gitlab
+    agent_type: dev-codex
+    max_active_runs: 3
+```
+
+Default:
+
+- `max_active_runs: 1` for backward compatibility
+
+Effective concurrency should become the minimum of:
+
+- `sources[].max_active_runs`
+- `agent_types[].max_concurrent`
+- `defaults.max_concurrent_global`
+
+**Phase 1: Internal model refactor**
+
+- replace `Service.activeRun` with a keyed run set:
+  - `activeRuns map[string]*domain.AgentRun`
+  - stable ordering for UI/API selection where needed
+- update dispatch loop to:
+  - reconcile all active runs
+  - dispatch due retries while source capacity remains
+  - dispatch new issues while source capacity remains
+- make all run mutations keyed by `runID`, not “the active run”
+- keep `claimed` per issue as the duplicate-dispatch guard
+
+**Phase 2: Control-flow conversion**
+
+- approvals resolve against `activeRuns[request.RunID]`
+- messages resolve against `activeRuns[request.RunID]`
+- stall detection iterates all active runs
+- tracker reconciliation becomes per-run/per-issue
+- stop/finalize paths release only the targeted run slot
+
+Files primarily affected:
+
+- `internal/orchestrator/service.go`
+- `internal/orchestrator/loop.go`
+- `internal/orchestrator/run_manager.go`
+- `internal/orchestrator/run_finalize.go`
+- `internal/orchestrator/approvals.go`
+- `internal/orchestrator/messages.go`
+- `internal/orchestrator/tracker_sync.go`
+- `internal/orchestrator/stall.go`
+- `internal/orchestrator/stop.go`
+- `internal/orchestrator/activity.go`
+
+**Phase 3: Persistence and recovery**
+
+- change persisted state from one `ActiveRun` to `ActiveRuns []PersistedRun`
+- recover interrupted runs as a set, not a singleton
+- update dry-run recovery modeling to match
+
+Files primarily affected:
+
+- `internal/state/store.go`
+- `internal/orchestrator/state.go`
+- `internal/orchestrator/state_convert.go`
+- `internal/orchestrator/dry_run.go`
+
+**Phase 4: API / TUI / web**
+
+- stop privileging one source-level `ActiveRun` as the only truth
+- show multiple active runs per source cleanly
+- allow source detail views to drill into one selected run at a time
+- surface source occupancy such as `2/3 active`
+
+Files primarily affected:
+
+- `internal/api/server.go`
+- `internal/api/view_convert.go`
+- `internal/tui/model.go`
+- `web/src/components/WorkflowWorkspace.tsx`
+
+**Phase 5: Scheduling policy cleanup**
+
+- decide fairness and priority when capacity opens:
+  - retries first or mixed?
+  - oldest eligible issue first?
+  - starvation prevention for new work
+- optionally add source-level scheduling policy later if needed
+
+**Suggested rollout**
+
+1. Add `sources[].max_active_runs` and internal `activeRuns` map
+2. Convert finalize/stop/reconcile paths to keyed multi-run behavior
+3. Convert persistence and recovery
+4. Update API/TUI/web
+5. Add fairness/policy refinements once the multi-run baseline is stable
+
+**Verification needed**
+
+- hermetic tests for:
+  - one source dispatching 2-3 issues concurrently
+  - source capacity respected even when agent/global capacity is higher
+  - approvals and messages routed to the correct run
+  - one run finishing while others keep running
+  - restart recovery with multiple persisted active runs
+- live validation with at least one real tracker + harness path after Phase 1/2 lands
 
 ### 🔀 Subtask Orchestration
 

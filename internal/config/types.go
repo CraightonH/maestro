@@ -184,6 +184,7 @@ type DefaultsConfig struct {
 	MaxConcurrentGlobal int                  `yaml:"max_concurrent_global"`
 	StallTimeout        Duration             `yaml:"stall_timeout"`
 	LabelPrefix         string               `yaml:"label_prefix"`
+	AgentContext        string               `yaml:"agent_context"`
 	OnDispatch          *DispatchTransition  `yaml:"on_dispatch"`
 	OnComplete          *LifecycleTransition `yaml:"on_complete"`
 	OnFailure           *LifecycleTransition `yaml:"on_failure"`

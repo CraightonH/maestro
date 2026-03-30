@@ -70,6 +70,8 @@ export interface Run {
   execution?: ExecutionSummary;
   workspace_path?: string;
   status: string;
+  current_turn?: number;
+  max_turns?: number;
   attempt: number;
   approval_policy?: string;
   approval_state?: string;

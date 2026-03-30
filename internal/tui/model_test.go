@@ -81,6 +81,14 @@ func viewContains(view, want string) bool {
 	return strings.Contains(stripANSI(view), want)
 }
 
+func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func float64Ptr(value float64) *float64 {
+	return &value
+}
+
 func TestViewGroupsSourcesAndShowsTags(t *testing.T) {
 	snapshot := orchestrator.Snapshot{
 		SourceName: "epic-a, project-a, linear-a",
@@ -220,12 +228,21 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 				HarnessKind:    "claude-code",
 				SourceName:     "project-a",
 				Status:         domain.RunStatusActive,
+				CurrentTurn:    2,
+				MaxTurns:       4,
 				Attempt:        1,
 				ApprovalPolicy: "auto",
 				ApprovalState:  domain.ApprovalStateApproved,
 				WorkspacePath:  "/tmp/workspace-a",
 				StartedAt:      startedAt,
 				LastActivityAt: lastActivity,
+				Metrics: domain.RunMetrics{
+					TokensIn:                  int64Ptr(7398146),
+					TokensOut:                 int64Ptr(28858),
+					TotalTokens:               int64Ptr(7427004),
+					DurationMS:                int64Ptr(20000),
+					ThroughputTokensPerSecond: float64Ptr(986.4),
+				},
 				Issue: domain.Issue{
 					Identifier: "team/project#1",
 					Title:      "Backend work",
@@ -264,10 +281,9 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 		"team/project#1",
 		"Run Detail",
 		"Run: run-1",
-		"Agent: coder (code-pr)",
-		"Harness: claude-code",
-		"Execution: docker",
-		"image=maestro-agent:latest",
+		"Agent: coder (code-pr)  Harness: claude-code  Source: project-a  Execution:",
+		"docker · image=maestro-agent:latest",
+		"Turn: 2/4",
 		"policy=allowlist",
 		"allow=api.openai.com,*.anthropic.com",
 		"auth=env",
@@ -275,6 +291,7 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 		"env=2",
 		"secrets=1",
 		"tools=1",
+		"Metrics: 7,398,146 in  28,858 out  7,427,004 total  20s  986.4 tok/s",
 		"Workspace: /tmp/workspace-a",
 		"agent coder started for",
 	} {
@@ -630,5 +647,46 @@ func TestUpdateShowsShutdownProgressAndCompletionInTUI(t *testing.T) {
 	exitMsg := cmd()
 	if _, ok := exitMsg.(shutdownExitMsg); !ok {
 		t.Fatalf("exit command returned %T", exitMsg)
+	}
+}
+
+func TestUpdateRequiresQuitConfirmationForQ(t *testing.T) {
+	model := NewModel(staticSnapshotProvider{snapshot: orchestrator.Snapshot{}})
+
+	updated, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	got := updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no quit command on first q")
+	}
+	if !got.quitConfirm {
+		t.Fatal("expected quit confirmation mode after first q")
+	}
+	if !viewContains(got.View(), "press q or enter again to quit, esc to cancel") {
+		t.Fatalf("quit confirmation notice missing:\n%s", stripANSI(got.View()))
+	}
+
+	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no command when cancelling quit")
+	}
+	if got.quitConfirm {
+		t.Fatal("expected quit confirmation mode to clear after esc")
+	}
+	if !viewContains(got.View(), "quit cancelled") {
+		t.Fatalf("quit cancelled notice missing:\n%s", stripANSI(got.View()))
+	}
+
+	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	got = updated.(Model)
+	if cmd != nil {
+		t.Fatal("expected no quit command on re-arming q")
+	}
+	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected quit command after enter confirmation")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected enter to confirm quit")
 	}
 }
