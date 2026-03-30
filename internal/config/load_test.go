@@ -85,6 +85,52 @@ logging:
 	}
 }
 
+func TestLoadDefaultsGlobalConcurrencyToTen(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	promptPath := filepath.Join(root, "prompt.md")
+	if err := os.WriteFile(promptPath, []byte("Issue {{.Issue.Identifier}}"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	configPath := filepath.Join(root, "maestro.yaml")
+	raw := `
+defaults:
+  poll_interval: 5s
+user:
+  name: TJ
+sources:
+  - name: platform-dev
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got, want := cfg.Defaults.MaxConcurrentGlobal, 10; got != want {
+		t.Fatalf("max_concurrent_global = %d, want %d", got, want)
+	}
+}
+
 func TestLoadResolvesLinearAssignee(t *testing.T) {
 	t.Setenv("LINEAR_TOKEN", "secret-token")
 
@@ -1605,6 +1651,9 @@ logging:
 		if !strings.Contains(agent.Context, "Never print, paste, log, summarize, quote, or intentionally expose secrets.") {
 			t.Fatalf("agent %s context missing global secret guidance: %q", agent.Name, agent.Context)
 		}
+		if !strings.Contains(agent.Context, "If a command needs interactive stdin, a TTY, browser login, device auth, or other operator interaction") {
+			t.Fatalf("agent %s context missing interactive command guidance: %q", agent.Name, agent.Context)
+		}
 		if !strings.Contains(agent.Context, "Prefer the narrowest verification that proves the change worked.") {
 			t.Fatalf("agent %s context missing configured global context: %q", agent.Name, agent.Context)
 		}
@@ -1920,5 +1969,17 @@ func TestResolveHarnessConfigAllowsExplicitEmptyExtraArgsOverride(t *testing.T) 
 	)
 	if claude.ExtraArgs == nil || len(claude.ExtraArgs) != 0 {
 		t.Fatalf("claude extra_args = %v, want explicit empty override", claude.ExtraArgs)
+	}
+}
+
+func TestResolveHarnessConfigDefaultsToSingleTurn(t *testing.T) {
+	codex := config.ResolveCodexConfig(nil, nil)
+	if got, want := codex.MaxTurns, 1; got != want {
+		t.Fatalf("codex max_turns = %d, want %d", got, want)
+	}
+
+	claude := config.ResolveClaudeConfig(nil, nil)
+	if got, want := claude.MaxTurns, 1; got != want {
+		t.Fatalf("claude max_turns = %d, want %d", got, want)
 	}
 }

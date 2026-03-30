@@ -13,7 +13,11 @@ func apiSnapshot(snapshot orchestrator.Snapshot) snapshotJSON {
 	outputMap := outputsByRunID(outputs)
 
 	var activeRun *runJSON
-	if snapshot.ActiveRun != nil {
+	if len(snapshot.ActiveRuns) > 0 {
+		first := snapshot.ActiveRuns[0]
+		encoded := apiRun(first, outputMap[first.ID], executions[first.SourceName])
+		activeRun = &encoded
+	} else if snapshot.ActiveRun != nil {
 		encoded := apiRun(*snapshot.ActiveRun, outputMap[snapshot.ActiveRun.ID], executions[snapshot.ActiveRun.SourceName])
 		activeRun = &encoded
 	}
@@ -25,6 +29,8 @@ func apiSnapshot(snapshot orchestrator.Snapshot) snapshotJSON {
 		LastPollCount:    snapshot.LastPollCount,
 		ClaimedCount:     snapshot.ClaimedCount,
 		RetryCount:       snapshot.RetryCount,
+		InstanceMetrics:  apiRunMetrics(snapshot.InstanceMetrics),
+		HarnessMetrics:   apiMetricBreakdowns(snapshot.HarnessMetrics),
 		PendingApprovals: apiApprovals(snapshot.PendingApprovals),
 		PendingMessages:  apiMessages(snapshot.PendingMessages),
 		Retries:          apiRetries(snapshot.Retries),
@@ -42,19 +48,35 @@ func apiSourceSummaries(items []orchestrator.SourceSummary) []sourceSummaryJSON 
 	out := make([]sourceSummaryJSON, 0, len(items))
 	for _, item := range items {
 		out = append(out, sourceSummaryJSON{
-			Name:             item.Name,
-			DisplayGroup:     item.DisplayGroup,
-			Tags:             append([]string(nil), item.Tags...),
-			Tracker:          item.Tracker,
-			RateLimit:        apiTrackerRateLimit(item.RateLimit),
-			Execution:        apiExecution(item.Execution),
-			LastPollAt:       item.LastPollAt,
-			LastPollCount:    item.LastPollCount,
-			ClaimedCount:     item.ClaimedCount,
-			RetryCount:       item.RetryCount,
-			ActiveRunCount:   item.ActiveRunCount,
-			PendingApprovals: item.PendingApprovals,
-			PendingMessages:  item.PendingMessages,
+			Name:                   item.Name,
+			DisplayGroup:           item.DisplayGroup,
+			Tags:                   append([]string(nil), item.Tags...),
+			Tracker:                item.Tracker,
+			RateLimit:              apiTrackerRateLimit(item.RateLimit),
+			Execution:              apiExecution(item.Execution),
+			LastPollAt:             item.LastPollAt,
+			LastPollCount:          item.LastPollCount,
+			ClaimedCount:           item.ClaimedCount,
+			RetryCount:             item.RetryCount,
+			ActiveRunCount:         item.ActiveRunCount,
+			MaxActiveRuns:          item.MaxActiveRuns,
+			AgentMaxConcurrent:     item.AgentMaxConcurrent,
+			GlobalMaxConcurrent:    item.GlobalMaxConcurrent,
+			EffectiveMaxConcurrent: item.EffectiveMaxConcurrent,
+			Metrics:                apiRunMetrics(item.Metrics),
+			PendingApprovals:       item.PendingApprovals,
+			PendingMessages:        item.PendingMessages,
+		})
+	}
+	return out
+}
+
+func apiMetricBreakdowns(items []orchestrator.MetricBreakdown) []metricBreakdownJSON {
+	out := make([]metricBreakdownJSON, 0, len(items))
+	for _, item := range items {
+		out = append(out, metricBreakdownJSON{
+			Name:    item.Name,
+			Metrics: apiRunMetrics(item.Metrics),
 		})
 	}
 	return out

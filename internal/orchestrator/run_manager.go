@@ -19,18 +19,21 @@ type runManager struct {
 	service *Service
 }
 
-func (r *runManager) dispatch(ctx context.Context, issue domain.Issue) error {
+func (r *runManager) dispatch(ctx context.Context, issue domain.Issue) (bool, string, error) {
 	return r.dispatchWithAttempt(ctx, issue, nil)
 }
 
-func (r *runManager) dispatchRetry(ctx context.Context, issue domain.Issue, attempt int) error {
+func (r *runManager) dispatchRetry(ctx context.Context, issue domain.Issue, attempt int) (bool, string, error) {
 	return r.dispatchWithAttempt(ctx, issue, &attempt)
 }
 
-func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue, attemptOverride *int) error {
+func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue, attemptOverride *int) (bool, string, error) {
 	s := r.service
-	if s.limiter != nil && !s.limiter.TryAcquire() {
-		return nil
+	if s.limiter != nil {
+		acquired, blockedBy := s.limiter.TryAcquire()
+		if !acquired {
+			return false, blockedBy, nil
+		}
 	}
 
 	attempt := s.stateMgr.takeAttempt(issue)
@@ -58,7 +61,7 @@ func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue
 
 	s.mu.Lock()
 	s.claimed[issue.ID] = struct{}{}
-	s.activeRun = run
+	s.setActiveRunLocked(run)
 	s.mu.Unlock()
 	_ = s.stateMgr.saveStateBestEffort()
 
@@ -70,7 +73,7 @@ func (r *runManager) dispatchWithAttempt(ctx context.Context, issue domain.Issue
 
 	s.runWG.Add(1)
 	go r.executeRun(ctx, run)
-	return nil
+	return true, "", nil
 }
 
 func newRunID(now time.Time) string {

@@ -13,8 +13,8 @@ const runOutputTailBytes = 4096
 
 func (s *Service) markRunActivity(runID string) {
 	s.mu.Lock()
-	if s.activeRun != nil && s.activeRun.ID == runID {
-		s.activeRun.LastActivityAt = time.Now()
+	if run := s.activeRunByIDLocked(runID); run != nil {
+		run.LastActivityAt = time.Now()
 	}
 	s.mu.Unlock()
 }

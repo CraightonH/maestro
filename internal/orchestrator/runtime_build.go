@@ -14,12 +14,14 @@ type runtimeSharedDeps struct {
 	globalLimiter *semaphoreLimiter
 	agentLimiters map[string]*semaphoreLimiter
 	dockerReuse   *harness.DockerReuseManager
+	metrics       *runtimeMetricsStore
 }
 
 func newRuntimeSharedDeps(cfg *config.Config) *runtimeSharedDeps {
 	deps := &runtimeSharedDeps{
-		globalLimiter: newSemaphoreLimiter(cfg.Defaults.MaxConcurrentGlobal),
+		globalLimiter: newNamedSemaphoreLimiter(cfg.Defaults.MaxConcurrentGlobal, "global"),
 		agentLimiters: map[string]*semaphoreLimiter{},
+		metrics:       newRuntimeMetricsStore(),
 	}
 	if manager, err := harness.NewDockerReuseManager(); err == nil {
 		deps.dockerReuse = manager
@@ -39,7 +41,7 @@ func (d *runtimeSharedDeps) applyConfig(cfg *config.Config) {
 	for _, agent := range cfg.AgentTypes {
 		limiter, ok := d.agentLimiters[agent.Name]
 		if !ok {
-			limiter = newSemaphoreLimiter(agent.MaxConcurrent)
+			limiter = newNamedSemaphoreLimiter(agent.MaxConcurrent, "agent")
 			d.agentLimiters[agent.Name] = limiter
 		}
 		limiter.SetCapacity(agent.MaxConcurrent)
@@ -52,7 +54,7 @@ func (d *runtimeSharedDeps) limiterFor(agent config.AgentTypeConfig) dispatchLim
 	}
 	agentLimiter, ok := d.agentLimiters[agent.Name]
 	if !ok {
-		agentLimiter = newSemaphoreLimiter(agent.MaxConcurrent)
+		agentLimiter = newNamedSemaphoreLimiter(agent.MaxConcurrent, "agent")
 		d.agentLimiters[agent.Name] = agentLimiter
 	}
 	agentLimiter.SetCapacity(agent.MaxConcurrent)
@@ -96,6 +98,7 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(source.Connection.BaseURL, source.Connection.Token),
 		StateStore:    state.NewStore(config.ScopedStateDir(cfg, source)),
 		Limiter:       shared.limiterFor(agent),
+		MetricsStore:  shared.metrics,
 	})
 }
 

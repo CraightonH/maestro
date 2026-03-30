@@ -19,7 +19,7 @@ maestro.yaml          issue tracker          agent (Claude/Codex)
  Complete ── apply lifecycle ── update tracker state
 ```
 
-Each **source** defines a tracker + filter + agent type. Maestro polls for eligible issues, claims them, prepares a workspace (git clone or reuse), renders the agent prompt with issue context, and launches the agent. When the agent exits, Maestro applies lifecycle transitions (labels, state changes) and optionally hands off to the next source in a pipeline.
+Each **source** defines a tracker + filter + agent type. Maestro polls for eligible issues, claims them, prepares a workspace (git clone or reuse), renders the agent prompt with issue context, and launches the agent. A source can keep multiple runs active at once via `sources[].max_active_runs`, subject to the per-agent and global concurrency caps. When an agent exits, Maestro applies lifecycle transitions (labels, state changes) and optionally hands off to the next source in a pipeline.
 
 **Workflow chaining**: multiple sources can form a pipeline. Source A's `on_complete` changes labels and/or tracker state so Source B's filter picks it up. Example: implement → review → merge.
 
@@ -116,7 +116,7 @@ defaults:
 codex_defaults:                   # defaults for all codex agents
   model: gpt-5.4                  # (default)
   reasoning: high                 # (default)
-  max_turns: 20                   # (default) multi-turn continuation
+  max_turns: 1                    # default; raise to enable continuation
   extra_args: []                  # additional CLI flags
   # thread_sandbox: workspaceWrite       # optional override (derived from approval_policy)
   # turn_sandbox_policy:                 # optional override (derived from approval_policy)
@@ -181,6 +181,7 @@ sources:
       assignee: ""
 
     agent_type: dev-codex          # which agent_type to dispatch
+    max_active_runs: 3             # max concurrent runs for this source
 
     poll_interval: 10s             # override defaults.poll_interval
     max_attempts: 3                # max retries before marking terminal
@@ -222,7 +223,7 @@ agent_types:
     codex:
       model: gpt-5.4
       reasoning: high
-      max_turns: 20
+      max_turns: 1
       extra_args: []
       # thread_sandbox and turn_sandbox_policy are derived from approval_policy.
       # Only set these to decouple sandbox from approval behavior.
@@ -694,9 +695,9 @@ server:
 
 Open `http://127.0.0.1:7777` for the built-in dashboard.
 
-Run snapshots include optional per-run metrics when the harness provides them: token input/output totals, derived total tokens, cost, duration, and throughput. Source summaries also include the latest tracker rate-limit snapshot when the tracker exposes one.
+Run snapshots include optional per-run metrics when the harness provides them: token input/output totals, derived total tokens, duration, and throughput. The dashboard also shows process-lifetime aggregate token totals for the current Maestro instance, plus source and harness breakdowns. Source summaries also include the latest tracker rate-limit snapshot when the tracker exposes one.
 
-The overview includes `Poll all now`, and each workflow page includes `Poll now`, both backed by the same debounced runtime poll request path used by the TUI and API.
+The overview includes `Poll all now`, and each workflow page includes `Poll now`, both backed by the same debounced runtime poll request path used by the TUI and API. A successful force poll runs immediately, bypasses the normal poll interval, and resets the next scheduled poll window from that completed poll.
 
 When the server binds to loopback (`127.0.0.1`, `localhost`, or `::1`), API auth is optional so local use stays frictionless. If you bind the server to any non-loopback host, Maestro requires an API key. Set `server.api_key` for a stable key, or let Maestro generate an ephemeral one at startup.
 

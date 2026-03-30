@@ -1,11 +1,12 @@
 import { useMemo, useState } from "react";
 import type { Approval, ConfigSourceSummary, EventItem, Message, MessageHistoryEntry, RetryEntry, Run, RunOutput, SourceSummary } from "../types";
-import { formatExecutionSummary, formatRunMetrics, formatRunTurns, formatTrackerRateLimit, sourceScopeHref, type SourceDraft } from "../lib/helpers";
+import { formatExecutionSummary, formatRelativeTime, formatRunMetrics, formatRunTurns, formatSourceActiveOccupancy, formatSourceConcurrency, formatTrackerRateLimit, sourceScopeHref, type SourceDraft } from "../lib/helpers";
 import { Control, EmptyState, PanelHeader, Pill } from "./ui";
 
 export function WorkflowWorkspace({
   workflow,
   runtime,
+  selectedRunId,
   currentRun,
   currentOutput,
   runs,
@@ -24,11 +25,13 @@ export function WorkflowWorkspace({
   onToggleEditor,
   onStopWorkflow,
   onForcePollWorkflow,
+  onSelectRun,
   onOpenAgent,
   onResolveMessage,
 }: {
   workflow?: ConfigSourceSummary;
   runtime?: SourceSummary;
+  selectedRunId?: string;
   currentRun?: Run;
   currentOutput?: RunOutput;
   runs: Run[];
@@ -47,6 +50,7 @@ export function WorkflowWorkspace({
   onToggleEditor: () => void;
   onStopWorkflow: () => void;
   onForcePollWorkflow: () => void;
+  onSelectRun: (runId: string) => void;
   onOpenAgent: (name: string) => void;
   onResolveMessage: (requestId: string, reply: string) => Promise<void>;
 }) {
@@ -54,6 +58,7 @@ export function WorkflowWorkspace({
   const [messageReplies, setMessageReplies] = useState<Record<string, string>>({});
   const agentName = workflow?.agent_type || "";
   const metricsSummary = formatRunMetrics(currentRun?.metrics);
+  const sourceMetricsSummary = formatRunMetrics(runtime?.metrics);
   const turnSummary = formatRunTurns(currentRun);
   const executionSummary = formatExecutionSummary(currentRun?.execution || runtime?.execution);
   const logText = useMemo(() => {
@@ -93,7 +98,15 @@ export function WorkflowWorkspace({
               <p>{currentRun?.issue.title || "This workflow is currently idle. When it picks up work, the active issue will appear here."}</p>
               {turnSummary ? <p className="message">Turn {turnSummary}</p> : null}
               {metricsSummary.length ? <p className="message">{metricsSummary.join(" · ")}</p> : null}
+              {sourceMetricsSummary.length ? <p className="message">Source lifetime: {sourceMetricsSummary.join(" · ")}</p> : null}
               {executionSummary ? <p className="message">Execution: {executionSummary}</p> : null}
+              {currentRun?.last_activity_at || currentRun?.metrics?.updated_at ? (
+                <p className="message">
+                  {currentRun?.last_activity_at ? `Last output ${formatRelativeTime(currentRun.last_activity_at)}` : ""}
+                  {currentRun?.last_activity_at && currentRun?.metrics?.updated_at ? " · " : ""}
+                  {currentRun?.metrics?.updated_at ? `Last metrics ${formatRelativeTime(currentRun.metrics.updated_at)}` : ""}
+                </p>
+              ) : null}
               <div className="pills">
                 <Pill tone={workflowStatus(runtime) === "active" ? "info" : workflowStatus(runtime) === "awaiting approval" || workflowStatus(runtime) === "retrying" ? "warn" : "ok"}>
                   {workflowStatus(runtime)}
@@ -107,6 +120,22 @@ export function WorkflowWorkspace({
                 )}
                 {(workflow.tags || []).map((tag) => <Pill key={tag}>{tag}</Pill>)}
               </div>
+              {runs.length > 1 ? (
+                <div className="runSelectorRow">
+                  <span className="eyebrow">Selected run</span>
+                  <select
+                    className="compactSelect"
+                    value={selectedRunId || currentRun?.id || ""}
+                    onChange={(event) => onSelectRun(event.target.value)}
+                  >
+                    {runs.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {(run.issue.identifier || run.id) + " · " + run.status + " · attempt " + run.attempt}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
             </div>
             <div className="workflowSideRail">
               <div className="workflowTopBar">
@@ -121,7 +150,7 @@ export function WorkflowWorkspace({
                   ) : null}
                   <button className="tinyButton primaryButton" onClick={onForcePollWorkflow}>Poll now</button>
                   {agentName ? <button className="tinyButton" onClick={() => onOpenAgent(agentName)}>Open agent</button> : null}
-                  {currentRun ? <button className="tinyButton primaryButton" onClick={onStopWorkflow}>Stop workflow</button> : null}
+                  {currentRun ? <button className="tinyButton primaryButton" onClick={onStopWorkflow}>Stop run</button> : null}
                 </div>
               </div>
               <div className="workflowMetaRow">
@@ -131,6 +160,8 @@ export function WorkflowWorkspace({
                 <CompactMeta label="Labels" value={(workflow.filter_labels || []).join(", ") || "n/a"} />
                 <CompactMeta label="Issue labels" value={(workflow.issue_filter_labels || []).join(", ") || "n/a"} />
                 <CompactMeta label="Execution" value={executionSummary || "host"} />
+                <CompactMeta label="Active" value={`${formatSourceActiveOccupancy(runtime)} active`} />
+                <CompactMeta label="Concurrency" value={formatSourceConcurrency(runtime)} />
                 <CompactMeta label="Rate limit" value={formatTrackerRateLimit(runtime?.rate_limit)} />
                 <CompactMeta label="Queue" value={`${messages.length} controls · ${approvals.length} approvals · ${retries.length} retries`} />
               </div>
@@ -223,12 +254,17 @@ export function WorkflowWorkspace({
         <section className="panel">
           <PanelHeader title="Pending work" copy="" meta={`${runs.length + approvals.length + retries.length} items`} />
           <div className="stack">
-            {currentRun ? (
-              <article className="listCard staticCard">
-                <strong>Active: {currentRun.issue.identifier || currentRun.id}</strong>
-                <span>{currentRun.status} · attempt {currentRun.attempt}</span>
-              </article>
-            ) : null}
+            {runs.map((run) => (
+              <button
+                key={run.id}
+                className={selectedRunId === run.id || (!selectedRunId && currentRun?.id === run.id) ? "listCard staticCard selected" : "listCard staticCard"}
+                onClick={() => onSelectRun(run.id)}
+                type="button"
+              >
+                <strong>Active: {run.issue.identifier || run.id}</strong>
+                <span>{run.status} · attempt {run.attempt}</span>
+              </button>
+            ))}
             {messages.map((message) => (
               <article key={message.request_id} className="listCard staticCard">
                 <strong>{message.summary || "Operator control"}</strong>

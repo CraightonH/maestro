@@ -352,6 +352,7 @@ func (r *ReloadableRuntime) reloadFromDisk() error {
 	rootCtx := r.rootCtx
 	r.mu.Unlock()
 
+	updated := 0
 	restarted := 0
 	started := 0
 	stopped := 0
@@ -359,22 +360,26 @@ func (r *ReloadableRuntime) reloadFromDisk() error {
 		switch transition.Action {
 		case reloadActionKeep:
 			continue
+		case reloadActionUpdate:
+			if r.updateSourceLiveConfig(transition.SourceName, plan.Desired[transition.SourceName], nextCfg.Defaults.MaxConcurrentGlobal) {
+				updated++
+			}
 		case reloadActionStart:
 			if err := r.installStartedSource(rootCtx, transition.SourceName, plan.Desired[transition.SourceName], starts[transition.SourceName]); err == nil {
 				started++
 			}
 		case reloadActionStop:
-			if r.drainSource(transition.SourceName, transition.Current.Signature, "") {
+			if r.drainSource(transition.SourceName, transition.Current.RestartSignature, "") {
 				stopped++
 			}
 		case reloadActionRestart:
-			if r.drainSource(transition.SourceName, transition.Current.Signature, transition.Desired.Signature) {
+			if r.drainSource(transition.SourceName, transition.Current.RestartSignature, transition.Desired.RestartSignature) {
 				restarted++
 			}
 		}
 	}
 
-	r.recordReloadEvent("info", "config reloaded: %d started, %d draining restarts, %d draining removals", started, restarted, stopped)
+	r.recordReloadEvent("info", "config reloaded: %d started, %d live updates, %d draining restarts, %d draining removals", started, updated, restarted, stopped)
 	return nil
 }
 
@@ -383,7 +388,7 @@ func (r *ReloadableRuntime) installStartedSource(ctx context.Context, sourceName
 	defer r.mu.Unlock()
 	if existing, ok := r.slots[sourceName]; ok {
 		existing.draining = true
-		existing.service.Drain(formatDrainReason(sourceName, existing.spec.Signature, spec.Signature))
+		existing.service.Drain(formatDrainReason(sourceName, existing.spec.RestartSignature, spec.RestartSignature))
 		return nil
 	}
 	slot := &reloadRuntimeSlot{
@@ -395,6 +400,22 @@ func (r *ReloadableRuntime) installStartedSource(ctx context.Context, sourceName
 		r.startSlotLocked(ctx, sourceName, slot)
 	}
 	return nil
+}
+
+func (r *ReloadableRuntime) updateSourceLiveConfig(sourceName string, spec reloadServiceSpec, globalMaxConcurrent int) bool {
+	r.mu.Lock()
+	slot, ok := r.slots[sourceName]
+	if !ok {
+		r.mu.Unlock()
+		return false
+	}
+	slot.spec = spec
+	service := slot.service
+	r.mu.Unlock()
+
+	service.ApplyLiveConcurrency(spec.Source, spec.Agent, globalMaxConcurrent)
+	r.recordReloadEvent("info", "source %s applied live concurrency update", sourceName)
+	return true
 }
 
 func (r *ReloadableRuntime) drainSource(sourceName string, currentSignature string, desiredSignature string) bool {

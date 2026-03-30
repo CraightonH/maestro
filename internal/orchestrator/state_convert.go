@@ -159,3 +159,29 @@ func persistedRunFromAgentRun(run *domain.AgentRun) *state.PersistedRun {
 		Metrics:        metrics,
 	}
 }
+
+func persistedRunsFromAgentRuns(runs []domain.AgentRun) []state.PersistedRun {
+	if len(runs) == 0 {
+		return nil
+	}
+	out := make([]state.PersistedRun, 0, len(runs))
+	for i := range runs {
+		persisted := persistedRunFromAgentRun(&runs[i])
+		if persisted != nil {
+			out = append(out, *persisted)
+		}
+	}
+	return out
+}
+
+func persistedActiveRuns(snapshot state.Snapshot) []state.PersistedRun {
+	if len(snapshot.ActiveRuns) > 0 {
+		out := make([]state.PersistedRun, 0, len(snapshot.ActiveRuns))
+		out = append(out, snapshot.ActiveRuns...)
+		return out
+	}
+	if snapshot.ActiveRun == nil {
+		return nil
+	}
+	return []state.PersistedRun{*snapshot.ActiveRun}
+}

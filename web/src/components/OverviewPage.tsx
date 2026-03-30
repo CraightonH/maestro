@@ -1,9 +1,11 @@
-import type { Approval, ApprovalHistoryEntry, EventItem, Message, MessageHistoryEntry, RetryEntry } from "../types";
-import { formatDate } from "../lib/helpers";
+import type { Approval, ApprovalHistoryEntry, EventItem, Message, MessageHistoryEntry, MetricBreakdown, RetryEntry, RunMetrics } from "../types";
+import { formatDate, formatRunMetrics } from "../lib/helpers";
 import { EmptyState, PanelHeader, Pill } from "./ui";
 
 export function OverviewPage({
   generatedAt,
+  instanceMetrics,
+  harnessMetrics,
   quickFilter,
   onQuickFilterChange,
   sourceGroup,
@@ -20,6 +22,8 @@ export function OverviewPage({
   onForcePollAll,
 }: {
   generatedAt?: string;
+  instanceMetrics?: RunMetrics;
+  harnessMetrics?: MetricBreakdown[];
   quickFilter: "all" | "attention" | "awaiting-approval";
   onQuickFilterChange: (next: "all" | "attention" | "awaiting-approval") => void;
   sourceGroup: string;
@@ -28,7 +32,7 @@ export function OverviewPage({
   approvals: Approval[];
   messages: Message[];
   retries: RetryEntry[];
-  sources: Array<{ name: string; displayGroup?: string; tracker: string; agentType?: string; health: string; visibleCount: number }>;
+  sources: Array<{ name: string; displayGroup?: string; tracker: string; agentType?: string; health: string; visibleCount: number; metrics?: RunMetrics }>;
   events: EventItem[];
   approvalHistory: ApprovalHistoryEntry[];
   messageHistory: MessageHistoryEntry[];
@@ -72,11 +76,13 @@ export function OverviewPage({
               </div>
             }
           />
+          {formatRunMetrics(instanceMetrics).length ? <p className="message">{formatRunMetrics(instanceMetrics).join(" · ")}</p> : null}
           <div className="stack">
             {sources.map((source) => (
               <button key={source.name} className="listCard" onClick={() => onOpenSource(source.name)}>
                 <strong>{source.name}</strong>
                 <span>{source.displayGroup || source.tracker} · {source.agentType || "unmapped"}</span>
+                {formatRunMetrics(source.metrics).length ? <span>{formatRunMetrics(source.metrics).join(" · ")}</span> : null}
                 <div className="pills">
                   <Pill tone={source.health === "active" ? "info" : source.health === "awaiting approval" || source.health === "retrying" ? "warn" : "ok"}>
                     {source.health}
@@ -86,6 +92,19 @@ export function OverviewPage({
               </button>
             ))}
             {!sources.length ? <EmptyState copy="No workflows are configured in the current view." /> : null}
+          </div>
+        </section>
+
+        <section className="panel">
+          <PanelHeader title="Usage by harness" copy="" meta={`${harnessMetrics?.length || 0} harnesses`} />
+          <div className="stack">
+            {(harnessMetrics || []).map((item) => (
+              <article key={item.name} className="listCard staticCard">
+                <strong>{item.name}</strong>
+                <span>{formatRunMetrics(item.metrics).join(" · ") || "No usage yet."}</span>
+              </article>
+            ))}
+            {!harnessMetrics?.length ? <EmptyState copy="No harness metrics recorded yet." /> : null}
           </div>
         </section>
 

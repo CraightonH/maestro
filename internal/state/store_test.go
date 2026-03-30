@@ -48,6 +48,30 @@ func TestStoreSaveAndLoad(t *testing.T) {
 			LastActivityAt: now,
 			IssueUpdatedAt: now,
 		},
+		ActiveRuns: []state.PersistedRun{
+			{
+				RunID:          "run-1",
+				IssueID:        "issue-3",
+				Identifier:     "TAN-3",
+				Status:         domain.RunStatusActive,
+				Attempt:        1,
+				WorkspacePath:  filepath.Join(t.TempDir(), "workspace"),
+				StartedAt:      now,
+				LastActivityAt: now,
+				IssueUpdatedAt: now,
+			},
+			{
+				RunID:          "run-2",
+				IssueID:        "issue-4",
+				Identifier:     "TAN-4",
+				Status:         domain.RunStatusAwaiting,
+				Attempt:        0,
+				WorkspacePath:  filepath.Join(t.TempDir(), "workspace-2"),
+				StartedAt:      now.Add(time.Second),
+				LastActivityAt: now.Add(time.Second),
+				IssueUpdatedAt: now.Add(time.Second),
+			},
+		},
 		PendingApprovals: []state.PersistedApprovalRequest{
 			{
 				RequestID:       "req-1",
@@ -99,6 +123,9 @@ func TestStoreSaveAndLoad(t *testing.T) {
 	}
 	if got.ActiveRun == nil || got.ActiveRun.RunID != "run-1" {
 		t.Fatalf("active run = %+v, want run-1", got.ActiveRun)
+	}
+	if len(got.ActiveRuns) != 2 || got.ActiveRuns[1].RunID != "run-2" {
+		t.Fatalf("active runs = %+v, want run-1/run-2", got.ActiveRuns)
 	}
 	if len(got.PendingApprovals) != 1 || got.PendingApprovals[0].RequestID != "req-1" {
 		t.Fatalf("pending approvals = %+v, want req-1", got.PendingApprovals)

@@ -90,7 +90,7 @@ func applySystemDefaults(cfg *Config) {
 		cfg.Defaults.PollInterval = Duration{Duration: 60 * time.Second}
 	}
 	if cfg.Defaults.MaxConcurrentGlobal == 0 {
-		cfg.Defaults.MaxConcurrentGlobal = 1
+		cfg.Defaults.MaxConcurrentGlobal = 10
 	}
 	if cfg.Defaults.StallTimeout.Duration == 0 {
 		cfg.Defaults.StallTimeout = Duration{Duration: 10 * time.Minute}
@@ -202,6 +202,9 @@ func mergeSourceDefaults(target *SourceConfig, defaults SourceDefaultsEntry) {
 	target.IssueFilter = mergeFilterDefaults(target.IssueFilter, defaults.IssueFilter)
 	if strings.TrimSpace(target.AgentType) == "" {
 		target.AgentType = defaults.AgentType
+	}
+	if target.MaxActiveRuns == 0 {
+		target.MaxActiveRuns = defaults.MaxActiveRuns
 	}
 	if target.PollInterval.Duration == 0 {
 		target.PollInterval = defaults.PollInterval

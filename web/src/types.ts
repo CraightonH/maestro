@@ -172,8 +172,18 @@ export interface SourceSummary {
   claimed_count: number;
   retry_count: number;
   active_run_count: number;
+  max_active_runs: number;
+  agent_max_concurrent: number;
+  global_max_concurrent: number;
+  effective_max_concurrent: number;
+  metrics?: RunMetrics;
   pending_approvals: number;
   pending_messages: number;
+}
+
+export interface MetricBreakdown {
+  name: string;
+  metrics?: RunMetrics;
 }
 
 export interface ConfigFileSummary {
@@ -279,6 +289,8 @@ export interface StatusResponse {
   generated_at: string;
   config: ConfigSummary;
   snapshot: {
+    instance_metrics?: RunMetrics;
+    harness_metrics?: MetricBreakdown[];
     approval_history?: ApprovalHistoryEntry[];
     message_history?: MessageHistoryEntry[];
   };

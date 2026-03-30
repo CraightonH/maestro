@@ -50,6 +50,8 @@ function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialRoute.settingsTab);
   const [selectedAgentName, setSelectedAgentName] = useState(initialRoute.agentName);
   const [selectedSourceName, setSelectedSourceName] = useState(initialRoute.workflowName);
+  const [selectedAgentRunId, setSelectedAgentRunId] = useState("");
+  const [selectedWorkflowRunId, setSelectedWorkflowRunId] = useState("");
   const [selectedBackupName, setSelectedBackupName] = useState("");
   const [selectedBackup, setSelectedBackup] = useState<ConfigBackupDetailResponse | null>(null);
   const [configEditor, setConfigEditor] = useState("");
@@ -244,11 +246,11 @@ function App() {
 
   const selectedAgent = agents.find((agent) => agent.name === selectedAgentName) ?? agents[0];
   const selectedAgentRuns = runs.filter((run) => run.agent_name === selectedAgent?.name);
-  const currentRun = selectedAgentRuns[0];
+  const currentRun = selectedAgentRuns.find((run) => run.id === selectedAgentRunId) ?? selectedAgentRuns[0];
   const currentOutput = currentRun ? outputs.find((output) => output.run_id === currentRun.id) : undefined;
   const selectedSource = mergedSources.find((item) => item.config.name === selectedSourceName) ?? mergedSources[0];
   const selectedSourceRuns = runs.filter((run) => run.source_name === selectedSource?.config.name);
-  const selectedWorkflowRun = selectedSourceRuns[0];
+  const selectedWorkflowRun = selectedSourceRuns.find((run) => run.id === selectedWorkflowRunId) ?? selectedSourceRuns[0];
   const selectedWorkflowOutput = selectedWorkflowRun ? outputs.find((output) => output.run_id === selectedWorkflowRun.id) : undefined;
   const selectedSourceRetries = retries.filter((retry) => retry.source_name === selectedSource?.config.name);
   const selectedSourceApprovals = approvals.filter((approval) => {
@@ -262,6 +264,26 @@ function App() {
   const selectedSourceEvents = events.filter((event) => event.source === selectedSource?.config.name);
   const selectedAgentApprovals = approvals.filter((approval) => approval.agent_name === selectedAgent?.name);
   const selectedAgentEvents = events.filter((event) => event.run_id === currentRun?.id || event.source === currentRun?.source_name);
+
+  useEffect(() => {
+    if (selectedAgentRuns.length === 0) {
+      if (selectedAgentRunId) setSelectedAgentRunId("");
+      return;
+    }
+    if (!selectedAgentRuns.some((run) => run.id === selectedAgentRunId)) {
+      setSelectedAgentRunId(selectedAgentRuns[0].id);
+    }
+  }, [selectedAgentRunId, selectedAgentRuns]);
+
+  useEffect(() => {
+    if (selectedSourceRuns.length === 0) {
+      if (selectedWorkflowRunId) setSelectedWorkflowRunId("");
+      return;
+    }
+    if (!selectedSourceRuns.some((run) => run.id === selectedWorkflowRunId)) {
+      setSelectedWorkflowRunId(selectedSourceRuns[0].id);
+    }
+  }, [selectedSourceRuns, selectedWorkflowRunId]);
 
   async function handleApproval(requestId: string, action: "approve" | "reject") {
     await resolveApproval(requestId, action);
@@ -380,7 +402,7 @@ function App() {
   async function applySettingsDraftToEditor() {
     const nextEditor = (() => {
       let next = configEditor;
-      next = next.replace(/max_concurrent_global:\s*\d+/m, `max_concurrent_global: ${settingsDraft.maxConcurrentGlobal || 1}`);
+      next = next.replace(/max_concurrent_global:\s*\d+/m, `max_concurrent_global: ${settingsDraft.maxConcurrentGlobal || 10}`);
       next = next.replace(/(defaults:\n(?:.*\n)*?\s+poll_interval:\n\s+duration:\s*)(.*)/m, `$1${settingsDraft.defaultPollInterval || "30s"}`);
       next = next.replace(/(defaults:\n(?:.*\n)*?\s+stall_timeout:\n\s+duration:\s*)(.*)/m, `$1${settingsDraft.stallTimeout || "10m"}`);
       next = next.replace(/(logging:\n(?:.*\n)*?\s+max_files:\s*)(\d+)/m, `$1${settingsDraft.logMaxFiles || 10}`);
@@ -581,9 +603,11 @@ function App() {
           <ApprovalBanner approval={visibleApprovals[0]} approvals={visibleApprovals.length} onResolve={handleApproval} />
 
           {view === "overview" ? (
-            <OverviewPage
-              generatedAt={dashboard?.status.generated_at}
-              quickFilter={quickFilter}
+        <OverviewPage
+          generatedAt={dashboard?.status.generated_at}
+          instanceMetrics={dashboard?.status.snapshot.instance_metrics}
+          harnessMetrics={dashboard?.status.snapshot.harness_metrics}
+          quickFilter={quickFilter}
               onQuickFilterChange={setQuickFilter}
               sourceGroup={sourceGroup}
               onSourceGroupChange={setSourceGroup}
@@ -598,6 +622,7 @@ function App() {
                   agentType: source.config.agent_type,
                   health: source.health,
                   visibleCount: source.runtime?.last_poll_count || 0,
+                  metrics: source.runtime?.metrics,
                 }))}
               events={visibleEvents}
               approvalHistory={approvalHistory
@@ -636,11 +661,14 @@ function App() {
           {view === "agent" && selectedAgent ? (
             <AgentWorkspace
               agent={selectedAgent}
+              runs={selectedAgentRuns}
+              selectedRunId={currentRun?.id}
               currentRun={currentRun}
               currentOutput={currentOutput}
               approvals={selectedAgentApprovals}
               events={selectedAgentEvents}
               sources={config?.sources.filter((source) => source.agent_type === selectedAgent.name) ?? []}
+              onSelectRun={setSelectedAgentRunId}
               onResolveApproval={handleApproval}
             />
           ) : null}
@@ -649,6 +677,7 @@ function App() {
             <WorkflowWorkspace
               workflow={selectedSource?.config}
               runtime={selectedSource?.runtime}
+              selectedRunId={selectedWorkflowRun?.id}
               currentRun={selectedWorkflowRun}
               currentOutput={selectedWorkflowOutput}
               runs={selectedSourceRuns}
@@ -670,6 +699,7 @@ function App() {
               onToggleEditor={() => setShowWorkflowEditor((value) => !value)}
               onStopWorkflow={() => void handleStopWorkflow()}
               onForcePollWorkflow={() => void handleForcePollWorkflow()}
+              onSelectRun={setSelectedWorkflowRunId}
               onOpenAgent={(name) => {
                 setSelectedAgentName(name);
                 navigate("agent", { agentName: name });

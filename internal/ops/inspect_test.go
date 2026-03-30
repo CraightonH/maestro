@@ -90,15 +90,27 @@ func TestSummarizeState(t *testing.T) {
 func TestSummarizeRuns(t *testing.T) {
 	now := time.Now().UTC()
 	summary := SummarizeRuns("source-a", state.Snapshot{
-		ActiveRun: &state.PersistedRun{
-			RunID:          "run-1",
-			IssueID:        "issue-1",
-			Identifier:     "TAN-1",
-			Status:         domain.RunStatusActive,
-			Attempt:        1,
-			WorkspacePath:  "/tmp/workspaces/TAN-1",
-			StartedAt:      now.Add(-time.Minute),
-			LastActivityAt: now,
+		ActiveRuns: []state.PersistedRun{
+			{
+				RunID:          "run-1",
+				IssueID:        "issue-1",
+				Identifier:     "TAN-1",
+				Status:         domain.RunStatusActive,
+				Attempt:        1,
+				WorkspacePath:  "/tmp/workspaces/TAN-1",
+				StartedAt:      now.Add(-time.Minute),
+				LastActivityAt: now,
+			},
+			{
+				RunID:          "run-2",
+				IssueID:        "issue-2a",
+				Identifier:     "TAN-2A",
+				Status:         domain.RunStatusAwaiting,
+				Attempt:        2,
+				WorkspacePath:  "/tmp/workspaces/TAN-2A",
+				StartedAt:      now.Add(-2 * time.Minute),
+				LastActivityAt: now.Add(-30 * time.Second),
+			},
 		},
 		RetryQueue: map[string]state.RetryEntry{
 			"issue-2": {IssueID: "issue-2", Identifier: "TAN-2", Attempt: 2, DueAt: now.Add(time.Minute), Error: "retry err"},
@@ -111,6 +123,9 @@ func TestSummarizeRuns(t *testing.T) {
 
 	if summary.ActiveRun == nil || summary.ActiveRun.RunID != "run-1" {
 		t.Fatalf("active run summary = %+v", summary.ActiveRun)
+	}
+	if summary.ActiveCount != 2 || len(summary.ActiveRuns) != 2 {
+		t.Fatalf("active runs summary = %+v", summary.ActiveRuns)
 	}
 	if len(summary.Retries) != 1 || summary.Retries[0].Status != "retry_queued" {
 		t.Fatalf("retries = %+v", summary.Retries)
@@ -176,12 +191,12 @@ func TestResetIssueRejectsActiveRun(t *testing.T) {
 	root := t.TempDir()
 	store := state.NewStore(filepath.Join(root, "state"))
 	err := store.Save(state.Snapshot{
-		ActiveRun: &state.PersistedRun{
+		ActiveRuns: []state.PersistedRun{{
 			RunID:      "run-1",
 			IssueID:    "issue-9",
 			Identifier: "TAN-9",
 			Status:     domain.RunStatusActive,
-		},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("save snapshot: %v", err)
@@ -195,15 +210,19 @@ func TestResetIssueRejectsActiveRun(t *testing.T) {
 func TestCleanupWorkspacesKeepsActiveRun(t *testing.T) {
 	root := t.TempDir()
 	active := filepath.Join(root, "TAN-1")
+	activeTwo := filepath.Join(root, "TAN-3")
 	stale := filepath.Join(root, "TAN-2")
-	for _, path := range []string{active, stale} {
+	for _, path := range []string{active, activeTwo, stale} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", path, err)
 		}
 	}
 
 	result, err := CleanupWorkspaces(root, state.Snapshot{
-		ActiveRun: &state.PersistedRun{WorkspacePath: active},
+		ActiveRuns: []state.PersistedRun{
+			{WorkspacePath: active},
+			{WorkspacePath: activeTwo},
+		},
 	}, false)
 	if err != nil {
 		t.Fatalf("cleanup workspaces: %v", err)
@@ -211,11 +230,14 @@ func TestCleanupWorkspacesKeepsActiveRun(t *testing.T) {
 	if len(result.Removed) != 1 || result.Removed[0] != stale {
 		t.Fatalf("removed = %+v", result.Removed)
 	}
-	if len(result.Skipped) != 1 || result.Skipped[0] != active {
+	if len(result.Skipped) != 2 {
 		t.Fatalf("skipped = %+v", result.Skipped)
 	}
 	if _, err := os.Stat(active); err != nil {
 		t.Fatalf("active workspace missing: %v", err)
+	}
+	if _, err := os.Stat(activeTwo); err != nil {
+		t.Fatalf("second active workspace missing: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale workspace still exists, stat err=%v", err)

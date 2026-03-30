@@ -826,6 +826,14 @@ select {
   padding: 0;
 }
 
+.runSelectorRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
 .workflowTaskLink {
   display: inline-block;
   color: var(--text);
@@ -1088,6 +1096,12 @@ select {
 
 .quickLink:hover {
   border-color: var(--line-strong);
+}
+
+button.listCard {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
 }
 
 .quickLink.ghost {

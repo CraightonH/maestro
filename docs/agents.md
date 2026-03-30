@@ -60,7 +60,7 @@ claude:
 codex:
   model: gpt-5.4
   reasoning: high
-  max_turns: 20
+  max_turns: 1
   # thread_sandbox: workspaceWrite  # optional: overrides approval_policy-derived sandbox
 
 docker:
@@ -98,7 +98,7 @@ agent_packs_dir: ../agents
 codex_defaults:
   model: gpt-5.4
   reasoning: high
-  max_turns: 20
+  max_turns: 1
 
 claude_defaults:
   model: claude-opus-4-6
@@ -201,7 +201,7 @@ in `maestro.yaml` win over pack values for the same harness block. Top-level `co
 `docker:` values in `maestro.yaml` override pack values field-by-field.
 
 Claude multi-turn runs reuse the saved Claude session via `--resume` between turns. Set
-`claude.max_turns` above `1` when you want continuation behavior similar to Codex.
+`claude.max_turns` above `1` when you want continuation behavior.
 
 Loaded context file contents are concatenated into `.Agent.Context` for prompt templates.
 

@@ -23,6 +23,7 @@ type RunsSummary struct {
 	FailedCount   int         `json:"failed_count"`
 	LastError     string      `json:"last_error,omitempty"`
 	ActiveRun     *RunRecord  `json:"active_run,omitempty"`
+	ActiveRuns    []RunRecord `json:"active_runs,omitempty"`
 	Retries       []RunRecord `json:"retries,omitempty"`
 	Finished      []RunRecord `json:"finished,omitempty"`
 }
@@ -63,19 +64,24 @@ type CleanupWorkspacesResult struct {
 
 func SummarizeRuns(sourceName string, snapshot state.Snapshot) RunsSummary {
 	summary := RunsSummary{SourceName: sourceName}
-	if snapshot.ActiveRun != nil {
-		summary.ActiveCount = 1
-		summary.ActiveRun = &RunRecord{
-			IssueID:        snapshot.ActiveRun.IssueID,
-			Identifier:     snapshot.ActiveRun.Identifier,
-			RunID:          snapshot.ActiveRun.RunID,
-			Status:         string(snapshot.ActiveRun.Status),
-			Attempt:        snapshot.ActiveRun.Attempt,
-			WorkspacePath:  snapshot.ActiveRun.WorkspacePath,
-			StartedAt:      snapshot.ActiveRun.StartedAt,
-			LastActivityAt: snapshot.ActiveRun.LastActivityAt,
-			IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
+	for _, run := range persistedActiveRuns(snapshot) {
+		record := RunRecord{
+			IssueID:        run.IssueID,
+			Identifier:     run.Identifier,
+			RunID:          run.RunID,
+			Status:         string(run.Status),
+			Attempt:        run.Attempt,
+			WorkspacePath:  run.WorkspacePath,
+			StartedAt:      run.StartedAt,
+			LastActivityAt: run.LastActivityAt,
+			IssueUpdatedAt: run.IssueUpdatedAt,
 		}
+		summary.ActiveRuns = append(summary.ActiveRuns, record)
+	}
+	summary.ActiveCount = len(summary.ActiveRuns)
+	if len(summary.ActiveRuns) > 0 {
+		first := summary.ActiveRuns[0]
+		summary.ActiveRun = &first
 	}
 	for _, retry := range snapshot.RetryQueue {
 		summary.RetryCount++
@@ -169,8 +175,10 @@ func ResetIssue(store *state.Store, issueRef string, workspaceRoot string, remov
 	result.MatchedIssueID = matchID
 	result.MatchedIdentifier = matchIdentifier
 
-	if snapshot.ActiveRun != nil && matchesIssueRef(snapshot.ActiveRun.IssueID, snapshot.ActiveRun.Identifier, issueRef) {
-		return result, fmt.Errorf("issue %q is the active run; stop Maestro before resetting it", issueRef)
+	for _, run := range persistedActiveRuns(snapshot) {
+		if matchesIssueRef(run.IssueID, run.Identifier, issueRef) {
+			return result, fmt.Errorf("issue %q is an active run; stop Maestro before resetting it", issueRef)
+		}
 	}
 
 	if _, ok := snapshot.Finished[matchID]; ok {
@@ -221,8 +229,10 @@ func ResetIssue(store *state.Store, issueRef string, workspaceRoot string, remov
 
 func CleanupWorkspaces(root string, snapshot state.Snapshot, dryRun bool) (CleanupWorkspacesResult, error) {
 	protected := []string{}
-	if snapshot.ActiveRun != nil && strings.TrimSpace(snapshot.ActiveRun.WorkspacePath) != "" {
-		protected = append(protected, snapshot.ActiveRun.WorkspacePath)
+	for _, run := range persistedActiveRuns(snapshot) {
+		if strings.TrimSpace(run.WorkspacePath) != "" {
+			protected = append(protected, run.WorkspacePath)
+		}
 	}
 	return CleanupWorkspacesWithProtected(root, protected, dryRun)
 }
@@ -284,8 +294,10 @@ func locateIssue(snapshot state.Snapshot, issueRef string) (string, string, erro
 			return issueID, retry.Identifier, nil
 		}
 	}
-	if snapshot.ActiveRun != nil && matchesIssueRef(snapshot.ActiveRun.IssueID, snapshot.ActiveRun.Identifier, issueRef) {
-		return snapshot.ActiveRun.IssueID, snapshot.ActiveRun.Identifier, nil
+	for _, run := range persistedActiveRuns(snapshot) {
+		if matchesIssueRef(run.IssueID, run.Identifier, issueRef) {
+			return run.IssueID, run.Identifier, nil
+		}
 	}
 	for _, approval := range snapshot.PendingApprovals {
 		if matchesIssueRef(approval.IssueID, approval.IssueIdentifier, issueRef) {
@@ -311,4 +323,14 @@ func workspaceCandidates(root string, identifier string) []string {
 	}
 	key := workspace.WorkspaceKey(identifier)
 	return []string{filepath.Join(root, key)}
+}
+
+func persistedActiveRuns(snapshot state.Snapshot) []state.PersistedRun {
+	if len(snapshot.ActiveRuns) > 0 {
+		return append([]state.PersistedRun(nil), snapshot.ActiveRuns...)
+	}
+	if snapshot.ActiveRun == nil {
+		return nil
+	}
+	return []state.PersistedRun{*snapshot.ActiveRun}
 }

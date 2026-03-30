@@ -85,6 +85,21 @@ export function sourceHealth(source?: SourceSummary) {
   return "idle";
 }
 
+export function formatSourceActiveOccupancy(source?: SourceSummary) {
+  if (!source) return "0/1";
+  const max = source.max_active_runs && source.max_active_runs > 0 ? source.max_active_runs : 1;
+  return `${source.active_run_count}/${max}`;
+}
+
+export function formatSourceConcurrency(source?: SourceSummary) {
+  if (!source) return "source 1 · agent 1 · global 10 · effective 1";
+  const sourceCap = source.max_active_runs && source.max_active_runs > 0 ? source.max_active_runs : 1;
+  const agentCap = source.agent_max_concurrent && source.agent_max_concurrent > 0 ? source.agent_max_concurrent : 1;
+  const globalCap = source.global_max_concurrent && source.global_max_concurrent > 0 ? source.global_max_concurrent : 1;
+  const effectiveCap = source.effective_max_concurrent && source.effective_max_concurrent > 0 ? source.effective_max_concurrent : 1;
+  return `source ${sourceCap} · agent ${agentCap} · global ${globalCap} · effective ${effectiveCap}`;
+}
+
 export function attentionScore(run: Run) {
   let score = 0;
   if (run.approval_state === "awaiting" || run.status === "awaiting_approval") score += 10;
@@ -109,7 +124,7 @@ export function formatDate(value?: string) {
   }).format(new Date(value));
 }
 
-export function relativeTime(value?: string) {
+export function formatRelativeTime(value?: string) {
   if (!value) return "n/a";
   const delta = Date.now() - new Date(value).getTime();
   const future = delta < 0;
@@ -122,20 +137,20 @@ export function relativeTime(value?: string) {
   return future ? `in ${days}d` : `${days}d ago`;
 }
 
+export const relativeTime = formatRelativeTime;
+
 export function formatRunMetrics(metrics?: RunMetrics) {
   if (!metrics) return [];
   const parts: string[] = [];
   if (typeof metrics.tokens_in === "number") parts.push(`${formatInteger(metrics.tokens_in)} in`);
   if (typeof metrics.tokens_out === "number") parts.push(`${formatInteger(metrics.tokens_out)} out`);
   if (typeof metrics.total_tokens === "number") parts.push(`${formatInteger(metrics.total_tokens)} total`);
-  if (typeof metrics.cost_usd === "number") parts.push(formatCurrency(metrics.cost_usd));
   if (
     typeof metrics.duration_ms === "number" &&
     (
       typeof metrics.tokens_in === "number" ||
       typeof metrics.tokens_out === "number" ||
       typeof metrics.total_tokens === "number" ||
-      typeof metrics.cost_usd === "number" ||
       typeof metrics.throughput_tokens_per_second === "number"
     )
   ) {
@@ -196,15 +211,6 @@ export function formatTrackerRateLimit(rateLimit?: TrackerRateLimit) {
 
 export function formatInteger(value: number) {
   return new Intl.NumberFormat().format(value);
-}
-
-export function formatCurrency(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: value >= 1 ? 2 : 4,
-    maximumFractionDigits: value >= 1 ? 2 : 4,
-  }).format(value);
 }
 
 export function formatDuration(durationMs: number) {

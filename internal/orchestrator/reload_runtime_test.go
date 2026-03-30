@@ -399,7 +399,7 @@ agent_types:
 		desired:    desiredSpecs,
 		slots: map[string]*reloadRuntimeSlot{
 			"change": {
-				spec:     reloadServiceSpec{Source: config.SourceConfig{Name: "change"}, Agent: config.AgentTypeConfig{Name: "code-pr"}, Signature: "old-signature"},
+				spec:     reloadServiceSpec{Source: config.SourceConfig{Name: "change"}, Agent: config.AgentTypeConfig{Name: "code-pr"}, RestartSignature: "old-signature", LiveSignature: "old-live"},
 				service:  oldService,
 				draining: true,
 			},
@@ -425,8 +425,174 @@ agent_types:
 	if slot.draining {
 		t.Fatal("replacement slot should not be draining")
 	}
-	if slot.spec.Signature != desiredSpecs["change"].Signature {
-		t.Fatalf("replacement signature = %q, want %q", slot.spec.Signature, desiredSpecs["change"].Signature)
+	if slot.spec.RestartSignature != desiredSpecs["change"].RestartSignature {
+		t.Fatalf("replacement restart signature = %q, want %q", slot.spec.RestartSignature, desiredSpecs["change"].RestartSignature)
+	}
+}
+
+func TestPlanReloadClassifiesConcurrencyOnlyChangesAsLiveUpdate(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prompt.md"), []byte("prompt"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	current := loadReloadTestConfig(t, filepath.Join(root, "current.yaml"), `
+defaults:
+  max_concurrent_global: 1
+sources:
+  - name: change
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    max_active_runs: 1
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+`)
+	desired := loadReloadTestConfig(t, filepath.Join(root, "desired.yaml"), `
+defaults:
+  max_concurrent_global: 5
+sources:
+  - name: change
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    max_active_runs: 3
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: prompt.md
+    approval_policy: auto
+    max_concurrent: 3
+`)
+
+	plan, err := planReload(current, desired)
+	if err != nil {
+		t.Fatalf("plan reload: %v", err)
+	}
+	if len(plan.Transitions) != 1 {
+		t.Fatalf("transitions = %d, want 1", len(plan.Transitions))
+	}
+	if got := plan.Transitions[0].Action; got != reloadActionUpdate {
+		t.Fatalf("action = %q, want update", got)
+	}
+}
+
+func TestReloadRuntimeAppliesLiveConcurrencyUpdateWithoutDraining(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "secret-token")
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prompt.md"), []byte("prompt"), 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	currentCfg := loadReloadTestConfig(t, filepath.Join(root, "current.yaml"), `
+defaults:
+  max_concurrent_global: 1
+sources:
+  - name: change
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    max_active_runs: 1
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: prompt.md
+    approval_policy: auto
+    max_concurrent: 1
+`)
+	desiredCfg := loadReloadTestConfig(t, filepath.Join(root, "desired.yaml"), `
+defaults:
+  max_concurrent_global: 5
+sources:
+  - name: change
+    tracker: gitlab
+    connection:
+      base_url: https://gitlab.example.com
+      token_env: GITLAB_TOKEN
+      project: team/project
+    filter:
+      labels: [agent:ready]
+    agent_type: code-pr
+    max_active_runs: 3
+agent_types:
+  - name: code-pr
+    harness: claude-code
+    workspace: git-clone
+    prompt: prompt.md
+    approval_policy: auto
+    max_concurrent: 3
+`)
+
+	currentSpecs, err := buildReloadServiceSpecs(currentCfg)
+	if err != nil {
+		t.Fatalf("build current specs: %v", err)
+	}
+	plan, err := planReloadWithCurrentSpecs(currentSpecs, desiredCfg)
+	if err != nil {
+		t.Fatalf("plan reload: %v", err)
+	}
+
+	svc := reloadTestService("change")
+	svc.agent = currentCfg.AgentTypes[0]
+	svc.source = currentCfg.Sources[0]
+	svc.globalMaxConcurrent = currentCfg.Defaults.MaxConcurrentGlobal
+	runtime := &ReloadableRuntime{
+		logger:     supervisorTestLogger(),
+		shared:     newRuntimeSharedDeps(currentCfg),
+		currentCfg: currentCfg,
+		desired:    currentSpecs,
+		slots: map[string]*reloadRuntimeSlot{
+			"change": {
+				spec:    currentSpecs["change"],
+				service: svc,
+			},
+		},
+	}
+
+	runtime.shared.applyConfig(desiredCfg)
+	runtime.currentCfg = desiredCfg
+	runtime.desired = plan.Desired
+
+	updated := runtime.updateSourceLiveConfig("change", plan.Desired["change"], desiredCfg.Defaults.MaxConcurrentGlobal)
+	if !updated {
+		t.Fatal("expected live update to apply")
+	}
+	if svc.IsDraining() {
+		t.Fatal("service should not be draining after live update")
+	}
+	if got := svc.source.EffectiveMaxActiveRuns(); got != 3 {
+		t.Fatalf("source max_active_runs = %d, want 3", got)
+	}
+	if got := svc.agent.MaxConcurrent; got != 3 {
+		t.Fatalf("agent max_concurrent = %d, want 3", got)
+	}
+	if got := svc.globalMaxConcurrent; got != 5 {
+		t.Fatalf("global max concurrent = %d, want 5", got)
 	}
 }
 

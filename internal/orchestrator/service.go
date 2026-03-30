@@ -138,22 +138,32 @@ type RunOutputView struct {
 }
 
 type SourceSummary struct {
-	Name             string
-	DisplayGroup     string
-	Tags             []string
-	Tracker          string
-	RateLimit        *domain.TrackerRateLimit
-	ProjectURL       string
-	FilterStates     []string
-	FilterLabels     []string
-	Execution        *ExecutionSummary
-	LastPollAt       time.Time
-	LastPollCount    int
-	ClaimedCount     int
-	RetryCount       int
-	ActiveRunCount   int
-	PendingApprovals int
-	PendingMessages  int
+	Name                   string
+	DisplayGroup           string
+	Tags                   []string
+	Tracker                string
+	RateLimit              *domain.TrackerRateLimit
+	ProjectURL             string
+	FilterStates           []string
+	FilterLabels           []string
+	Execution              *ExecutionSummary
+	LastPollAt             time.Time
+	LastPollCount          int
+	ClaimedCount           int
+	RetryCount             int
+	ActiveRunCount         int
+	MaxActiveRuns          int
+	AgentMaxConcurrent     int
+	GlobalMaxConcurrent    int
+	EffectiveMaxConcurrent int
+	Metrics                domain.RunMetrics
+	PendingApprovals       int
+	PendingMessages        int
+}
+
+type MetricBreakdown struct {
+	Name    string
+	Metrics domain.RunMetrics
 }
 
 type Snapshot struct {
@@ -163,6 +173,8 @@ type Snapshot struct {
 	LastPollCount    int
 	ClaimedCount     int
 	RetryCount       int
+	InstanceMetrics  domain.RunMetrics
+	HarnessMetrics   []MetricBreakdown
 	PendingApprovals []ApprovalView
 	PendingMessages  []MessageView
 	Retries          []RetryView
@@ -204,6 +216,7 @@ type Dependencies struct {
 	Workspace     *workspace.Manager
 	StateStore    *state.Store
 	Limiter       dispatchLimiter
+	MetricsStore  *runtimeMetricsStore
 }
 
 type Service struct {
@@ -222,31 +235,35 @@ type Service struct {
 	messageMgr    *messageRouter
 	runMgr        *runManager
 
-	mu                sync.RWMutex
-	claimed           map[string]struct{}
-	finished          map[string]state.TerminalIssue
-	retryQueue        map[string]state.RetryEntry
-	activeRun         *domain.AgentRun
-	lastPollAt        time.Time
-	lastPollCount     int
-	events            []Event
-	runWG             sync.WaitGroup
-	pendingStops      map[string]pendingStop
-	approvals         map[string]ApprovalView
-	approvalOrder     []string
-	approvalHistory   []ApprovalHistoryEntry
-	messages          map[string]MessageView
-	messageOrder      []string
-	messageHistory    []MessageHistoryEntry
-	messageWaiters    map[string]chan string
-	runOutputs        map[string]*runOutputBuffer
-	forcePollCh       chan struct{}
-	forcePollPending  bool
-	polling           bool
-	lastPollAttemptAt time.Time
-	draining          bool
-	controlCh         chan struct{}
-	cleanup           func() error
+	mu                  sync.RWMutex
+	claimed             map[string]struct{}
+	finished            map[string]state.TerminalIssue
+	retryQueue          map[string]state.RetryEntry
+	activeRun           *domain.AgentRun
+	activeRuns          map[string]*domain.AgentRun
+	activeRunOrder      []string
+	lastPollAt          time.Time
+	lastPollCount       int
+	events              []Event
+	runWG               sync.WaitGroup
+	pendingStops        map[string]pendingStop
+	approvals           map[string]ApprovalView
+	approvalOrder       []string
+	approvalHistory     []ApprovalHistoryEntry
+	messages            map[string]MessageView
+	messageOrder        []string
+	messageHistory      []MessageHistoryEntry
+	messageWaiters      map[string]chan string
+	runOutputs          map[string]*runOutputBuffer
+	forcePollCh         chan struct{}
+	forcePollPending    bool
+	polling             bool
+	lastPollAttemptAt   time.Time
+	globalMaxConcurrent int
+	draining            bool
+	controlCh           chan struct{}
+	cleanup             func() error
+	metricsStore        *runtimeMetricsStore
 }
 
 func NewService(cfg *config.Config, logger *slog.Logger) (*Service, error) {
@@ -304,26 +321,32 @@ func NewServiceWithDeps(cfg *config.Config, logger *slog.Logger, deps Dependenci
 	}
 
 	svc := &Service{
-		cfg:            cfg,
-		logger:         logger,
-		source:         cfg.Sources[0],
-		agent:          cfg.AgentTypes[0],
-		tracker:        deps.Tracker,
-		harness:        deps.Harness,
-		processRunner:  deps.ProcessRunner,
-		workspace:      deps.Workspace,
-		claimed:        map[string]struct{}{},
-		finished:       map[string]state.TerminalIssue{},
-		retryQueue:     map[string]state.RetryEntry{},
-		stateStore:     deps.StateStore,
-		limiter:        deps.Limiter,
-		pendingStops:   map[string]pendingStop{},
-		approvals:      map[string]ApprovalView{},
-		messages:       map[string]MessageView{},
-		messageWaiters: map[string]chan string{},
-		runOutputs:     map[string]*runOutputBuffer{},
-		forcePollCh:    make(chan struct{}, 1),
-		controlCh:      make(chan struct{}, 1),
+		cfg:                 cfg,
+		logger:              logger,
+		source:              cfg.Sources[0],
+		agent:               cfg.AgentTypes[0],
+		tracker:             deps.Tracker,
+		harness:             deps.Harness,
+		processRunner:       deps.ProcessRunner,
+		workspace:           deps.Workspace,
+		claimed:             map[string]struct{}{},
+		finished:            map[string]state.TerminalIssue{},
+		retryQueue:          map[string]state.RetryEntry{},
+		activeRuns:          map[string]*domain.AgentRun{},
+		stateStore:          deps.StateStore,
+		limiter:             deps.Limiter,
+		pendingStops:        map[string]pendingStop{},
+		approvals:           map[string]ApprovalView{},
+		messages:            map[string]MessageView{},
+		messageWaiters:      map[string]chan string{},
+		runOutputs:          map[string]*runOutputBuffer{},
+		forcePollCh:         make(chan struct{}, 1),
+		controlCh:           make(chan struct{}, 1),
+		globalMaxConcurrent: cfg.Defaults.MaxConcurrentGlobal,
+		metricsStore:        deps.MetricsStore,
+	}
+	if svc.metricsStore == nil {
+		svc.metricsStore = newRuntimeMetricsStore()
 	}
 	svc.stateMgr = &stateManager{service: svc}
 	svc.approvalMgr = &approvalRouter{service: svc}
@@ -339,14 +362,13 @@ func (s *Service) Snapshot() Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	activeRuns := s.activeRunSnapshotsLocked(time.Now())
 	var activeRun *domain.AgentRun
-	if s.activeRun != nil {
-		copyRun := *s.activeRun
-		copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, time.Now())
-		activeRun = &copyRun
+	if len(activeRuns) > 0 {
+		activeRun = &activeRuns[0]
 	}
 
-	events := append([]Event(nil), s.events...)
+	events := filterRecentEvents(append([]Event(nil), s.events...))
 	pendingApprovals := make([]ApprovalView, 0, len(s.approvalOrder))
 	for _, requestID := range s.approvalOrder {
 		if request, ok := s.approvals[requestID]; ok {
@@ -391,12 +413,13 @@ func (s *Service) Snapshot() Snapshot {
 			UpdatedAt:  updatedAt,
 		})
 	}
-	if activeRun != nil {
-		for i := range runOutputs {
-			if runOutputs[i].RunID == activeRun.ID {
-				runOutputs[i].IssueIdentifier = activeRun.Issue.Identifier
-				break
-			}
+	runIdentifiers := make(map[string]string, len(activeRuns))
+	for _, run := range activeRuns {
+		runIdentifiers[run.ID] = run.Issue.Identifier
+	}
+	for i := range runOutputs {
+		if identifier, ok := runIdentifiers[runOutputs[i].RunID]; ok {
+			runOutputs[i].IssueIdentifier = identifier
 		}
 	}
 	sort.Slice(runOutputs, func(i, j int) bool {
@@ -405,6 +428,13 @@ func (s *Service) Snapshot() Snapshot {
 		}
 		return runOutputs[i].UpdatedAt.After(runOutputs[j].UpdatedAt)
 	})
+	sourceMetrics := aggregateMetricsForSource(s.metricsStore.snapshotForSource(s.source.Name), activeRuns)
+	harnessRuns := activeRunsForHarness(activeRuns, s.agent.Harness)
+	harnessMetrics := []MetricBreakdown{{
+		Name:    s.agent.Harness,
+		Metrics: aggregateMetricsForSource(s.metricsStore.snapshotForHarness(s.agent.Harness), harnessRuns),
+	}}
+	instanceMetrics := aggregateMetricsForSource(s.metricsStore.snapshotForSource(s.source.Name), activeRuns)
 	return Snapshot{
 		SourceName:       s.source.Name,
 		SourceTracker:    s.source.Tracker,
@@ -412,51 +442,196 @@ func (s *Service) Snapshot() Snapshot {
 		LastPollCount:    s.lastPollCount,
 		ClaimedCount:     len(s.claimed),
 		RetryCount:       len(s.retryQueue),
+		InstanceMetrics:  instanceMetrics,
+		HarnessMetrics:   harnessMetrics,
 		PendingApprovals: pendingApprovals,
 		PendingMessages:  pendingMessages,
 		Retries:          retries,
 		ApprovalHistory:  history,
 		MessageHistory:   messageHistory,
 		ActiveRun:        activeRun,
-		ActiveRuns:       activeRuns(activeRun),
+		ActiveRuns:       activeRuns,
 		RunOutputs:       runOutputs,
-		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.agent, s.tracker, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns(activeRun)), len(pendingApprovals), len(pendingMessages))},
+		SourceSummaries:  []SourceSummary{sourceSummaryForSnapshot(s.source, s.agent, s.globalMaxConcurrent, s.tracker, s.lastPollAt, s.lastPollCount, len(s.claimed), len(s.retryQueue), len(activeRuns), len(pendingApprovals), len(pendingMessages), sourceMetrics)},
 		RecentEvents:     events,
 	}
 }
 
-func activeRuns(run *domain.AgentRun) []domain.AgentRun {
+func (s *Service) activeRunSnapshotsLocked(now time.Time) []domain.AgentRun {
+	if len(s.activeRunOrder) == 0 {
+		if s.activeRun == nil {
+			return nil
+		}
+		copyRun := *s.activeRun
+		copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, now)
+		return []domain.AgentRun{copyRun}
+	}
+	runs := make([]domain.AgentRun, 0, len(s.activeRunOrder))
+	for _, runID := range s.activeRunOrder {
+		run := s.activeRuns[runID]
+		if run == nil {
+			continue
+		}
+		copyRun := *run
+		copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, now)
+		runs = append(runs, copyRun)
+	}
+	return runs
+}
+
+func (s *Service) activeRunCountLocked() int {
+	if len(s.activeRunOrder) == 0 {
+		if s.activeRun != nil {
+			return 1
+		}
+		return 0
+	}
+	return len(s.activeRunOrder)
+}
+
+func activeRunsForHarness(runs []domain.AgentRun, harnessKind string) []domain.AgentRun {
+	if len(runs) == 0 || harnessKind == "" {
+		return nil
+	}
+	filtered := make([]domain.AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run.HarnessKind == harnessKind {
+			filtered = append(filtered, run)
+		}
+	}
+	return filtered
+}
+
+func (s *Service) activeRunByIDLocked(runID string) *domain.AgentRun {
+	if len(s.activeRunOrder) == 0 && s.activeRun != nil && s.activeRun.ID == runID {
+		return s.activeRun
+	}
+	return s.activeRuns[runID]
+}
+
+func (s *Service) setActiveRunLocked(run *domain.AgentRun) {
+	if run == nil {
+		return
+	}
+	if s.activeRuns == nil {
+		s.activeRuns = map[string]*domain.AgentRun{}
+	}
+	if _, exists := s.activeRuns[run.ID]; !exists {
+		s.activeRunOrder = append(s.activeRunOrder, run.ID)
+	}
+	s.activeRuns[run.ID] = run
+	s.syncPrimaryActiveRunLocked()
+}
+
+func (s *Service) removeActiveRunLocked(runID string) *domain.AgentRun {
+	run := s.activeRunByIDLocked(runID)
 	if run == nil {
 		return nil
 	}
-	copyRun := *run
-	copyRun.Metrics = domain.DeriveRunMetrics(copyRun.Metrics, copyRun.StartedAt, copyRun.CompletedAt, time.Now())
-	return []domain.AgentRun{copyRun}
+	if len(s.activeRunOrder) == 0 {
+		s.activeRun = nil
+		return run
+	}
+	delete(s.activeRuns, runID)
+	s.activeRunOrder = removeFromOrder(s.activeRunOrder, runID)
+	s.syncPrimaryActiveRunLocked()
+	return run
 }
 
-func sourceSummaryForSnapshot(source config.SourceConfig, agent config.AgentTypeConfig, sourceTracker tracker.Tracker, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int) SourceSummary {
+func (s *Service) activeRunsAtCapacityLocked() bool {
+	return s.activeRunCountLocked() >= s.source.EffectiveMaxActiveRuns()
+}
+
+func (s *Service) concurrencyCapsLocked() (int, int, int, int) {
+	sourceCap := s.source.EffectiveMaxActiveRuns()
+	agentCap := effectivePositiveCap(s.agent.MaxConcurrent)
+	globalCap := effectivePositiveCap(s.globalMaxConcurrent)
+	return sourceCap, agentCap, globalCap, effectivePositiveCap(sourceCap, agentCap, globalCap)
+}
+
+func (s *Service) availableRunCapacityLocked() int {
+	remaining := s.source.EffectiveMaxActiveRuns() - s.activeRunCountLocked()
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
+}
+
+func (s *Service) syncPrimaryActiveRunLocked() {
+	s.activeRun = nil
+	for _, runID := range s.activeRunOrder {
+		if run := s.activeRuns[runID]; run != nil {
+			s.activeRun = run
+			return
+		}
+	}
+}
+
+func sourceSummaryForSnapshot(source config.SourceConfig, agent config.AgentTypeConfig, globalMaxConcurrent int, sourceTracker tracker.Tracker, lastPollAt time.Time, lastPollCount int, claimedCount int, retryCount int, activeRunCount int, pendingApprovals int, pendingMessages int, metrics domain.RunMetrics) SourceSummary {
 	var rateLimit *domain.TrackerRateLimit
 	if reporter, ok := sourceTracker.(tracker.RateLimitReporter); ok {
 		rateLimit = domain.CloneTrackerRateLimit(reporter.RateLimit())
 	}
+	sourceMax := source.EffectiveMaxActiveRuns()
+	agentMax := effectivePositiveCap(agent.MaxConcurrent)
+	globalMax := effectivePositiveCap(globalMaxConcurrent)
 	return SourceSummary{
-		Name:             source.Name,
-		DisplayGroup:     source.DisplayGroup,
-		Tags:             append([]string(nil), source.Tags...),
-		Tracker:          source.Tracker,
-		RateLimit:        rateLimit,
-		ProjectURL:       source.ProjectURL,
-		FilterStates:     append([]string(nil), source.Filter.States...),
-		FilterLabels:     append([]string(nil), source.Filter.Labels...),
-		Execution:        summarizeExecution(agent),
-		LastPollAt:       lastPollAt,
-		LastPollCount:    lastPollCount,
-		ClaimedCount:     claimedCount,
-		RetryCount:       retryCount,
-		ActiveRunCount:   activeRunCount,
-		PendingApprovals: pendingApprovals,
-		PendingMessages:  pendingMessages,
+		Name:                   source.Name,
+		DisplayGroup:           source.DisplayGroup,
+		Tags:                   append([]string(nil), source.Tags...),
+		Tracker:                source.Tracker,
+		RateLimit:              rateLimit,
+		ProjectURL:             source.ProjectURL,
+		FilterStates:           append([]string(nil), source.Filter.States...),
+		FilterLabels:           append([]string(nil), source.Filter.Labels...),
+		Execution:              summarizeExecution(agent),
+		LastPollAt:             lastPollAt,
+		LastPollCount:          lastPollCount,
+		ClaimedCount:           claimedCount,
+		RetryCount:             retryCount,
+		ActiveRunCount:         activeRunCount,
+		MaxActiveRuns:          sourceMax,
+		AgentMaxConcurrent:     agentMax,
+		GlobalMaxConcurrent:    globalMax,
+		EffectiveMaxConcurrent: effectivePositiveCap(sourceMax, agentMax, globalMax),
+		Metrics:                metrics,
+		PendingApprovals:       pendingApprovals,
+		PendingMessages:        pendingMessages,
 	}
+}
+
+func effectivePositiveCap(values ...int) int {
+	best := 0
+	for _, value := range values {
+		if value < 1 {
+			continue
+		}
+		if best == 0 || value < best {
+			best = value
+		}
+	}
+	if best == 0 {
+		return 1
+	}
+	return best
+}
+
+func (s *Service) ApplyLiveConcurrency(source config.SourceConfig, agent config.AgentTypeConfig, globalMaxConcurrent int) {
+	s.mu.Lock()
+	s.source.MaxActiveRuns = source.MaxActiveRuns
+	s.agent.MaxConcurrent = agent.MaxConcurrent
+	s.globalMaxConcurrent = globalMaxConcurrent
+	s.mu.Unlock()
+
+	s.recordSourceEvent(
+		"info",
+		s.source.Name,
+		"applied live concurrency update: source %d, agent %d, global %d, effective %d",
+		source.EffectiveMaxActiveRuns(),
+		effectivePositiveCap(agent.MaxConcurrent),
+		effectivePositiveCap(globalMaxConcurrent),
+		effectivePositiveCap(source.EffectiveMaxActiveRuns(), agent.MaxConcurrent, globalMaxConcurrent),
+	)
 }
 
 func summarizeExecution(agent config.AgentTypeConfig) *ExecutionSummary {

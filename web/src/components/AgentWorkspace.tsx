@@ -5,19 +5,25 @@ import { EmptyState, Metric, PanelHeader, Pill } from "./ui";
 
 export function AgentWorkspace({
   agent,
+  runs,
+  selectedRunId,
   currentRun,
   currentOutput,
   approvals,
   events,
   sources,
+  onSelectRun,
   onResolveApproval,
 }: {
   agent: ConfigAgentSummary;
+  runs: Run[];
+  selectedRunId?: string;
   currentRun?: Run;
   currentOutput?: RunOutput;
   approvals: Approval[];
   events: EventItem[];
   sources: ConfigSourceSummary[];
+  onSelectRun: (runId: string) => void;
   onResolveApproval: (requestId: string, action: "approve" | "reject") => Promise<void>;
 }) {
   const [tab, setTab] = useState<"summary" | "logs" | "routing" | "prompt">("summary");
@@ -37,7 +43,23 @@ export function AgentWorkspace({
             <div className="heroLead">
               <span className="eyebrow">Runtime profile</span>
               <strong>{sources.length} workflow{sources.length === 1 ? "" : "s"}</strong>
-              <p>{currentRun ? `One live workflow is using this pack right now: ${currentRun.source_name} on ${currentRun.issue.identifier || currentRun.id}.` : "This agent pack is reusable across workflows and does not own work directly."}</p>
+              <p>{currentRun ? `${runs.length} live workflow${runs.length === 1 ? "" : "s"} currently use this pack. Selected: ${currentRun.source_name} on ${currentRun.issue.identifier || currentRun.id}.` : "This agent pack is reusable across workflows and does not own work directly."}</p>
+              {runs.length > 1 ? (
+                <div className="runSelectorRow">
+                  <span className="eyebrow">Selected run</span>
+                  <select
+                    className="compactSelect"
+                    value={selectedRunId || currentRun?.id || ""}
+                    onChange={(event) => onSelectRun(event.target.value)}
+                  >
+                    {runs.map((run) => (
+                      <option key={run.id} value={run.id}>
+                        {(run.source_name || "workflow") + " · " + (run.issue.identifier || run.id) + " · " + run.status}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
               <div className="pills">
                 <Pill tone="info">{agent.harness}</Pill>
                 <Pill>{agent.workspace}</Pill>
@@ -47,7 +69,7 @@ export function AgentWorkspace({
             <div className="heroMetrics">
               <Metric label="Mapped workflows" value={String(sources.length)} />
               <Metric label="Approvals" value={approvals.length ? `${approvals.length} waiting` : "Clear"} />
-              <Metric label="Live workflows" value={currentRun ? "1" : "0"} />
+              <Metric label="Live workflows" value={String(runs.length)} />
               <Metric label="Max concurrency" value={String(agent.max_concurrent)} />
             </div>
           </div>
@@ -64,7 +86,7 @@ export function AgentWorkspace({
           {tab === "summary" ? (
             <div className="agentTabGrid">
               <section className="panel nestedPanel">
-                <PanelHeader title="Live workflow sample" copy="One current run using this agent pack." meta={currentRun?.id || "Idle"} />
+                <PanelHeader title="Live workflow detail" copy="The selected current run using this agent pack." meta={currentRun?.id || "Idle"} />
                 {currentRun ? (
                   <>
                     <div className="detailList">
@@ -74,7 +96,8 @@ export function AgentWorkspace({
                       <Metric label="Started" value={formatDate(currentRun.started_at)} />
                       <Metric label="Turn" value={formatRunTurns(currentRun) || "1/1"} />
                       <Metric label="Attempt" value={String(currentRun.attempt)} />
-                      <Metric label="Last activity" value={formatDate(currentRun.last_activity_at)} />
+                      <Metric label="Last output" value={formatDate(currentRun.last_activity_at)} />
+                      <Metric label="Last metrics" value={formatDate(currentRun.metrics?.updated_at)} />
                     </div>
                     {formatRunMetrics(currentRun.metrics).length ? <p className="message">{formatRunMetrics(currentRun.metrics).join(" · ")}</p> : null}
                     {currentRun.issue.url ? (
@@ -82,6 +105,21 @@ export function AgentWorkspace({
                         <a className="quickLink" href={currentRun.issue.url} target="_blank" rel="noreferrer">
                           Open {currentRun.issue.identifier || "issue"}
                         </a>
+                      </div>
+                    ) : null}
+                    {runs.length > 1 ? (
+                      <div className="stack">
+                        {runs.map((run) => (
+                          <button
+                            key={run.id}
+                            className={selectedRunId === run.id || (!selectedRunId && currentRun?.id === run.id) ? "listCard staticCard selected" : "listCard staticCard"}
+                            onClick={() => onSelectRun(run.id)}
+                            type="button"
+                          >
+                            <strong>{run.source_name || "workflow"} · {run.issue.identifier || run.id}</strong>
+                            <span>{run.status} · attempt {run.attempt}</span>
+                          </button>
+                        ))}
                       </div>
                     ) : null}
                   </>

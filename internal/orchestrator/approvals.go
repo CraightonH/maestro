@@ -74,17 +74,17 @@ func (r *approvalRouter) recordApprovalRequest(request harness.ApprovalRequest) 
 	}
 
 	s.mu.Lock()
-	if s.activeRun != nil && s.activeRun.ID == request.RunID {
-		view.IssueID = s.activeRun.Issue.ID
-		view.IssueIdentifier = s.activeRun.Issue.Identifier
-		view.AgentName = s.activeRun.AgentName
-		s.activeRun.LastActivityAt = time.Now()
+	if run := s.activeRunByIDLocked(request.RunID); run != nil {
+		view.IssueID = run.Issue.ID
+		view.IssueIdentifier = run.Issue.Identifier
+		view.AgentName = run.AgentName
+		run.LastActivityAt = time.Now()
 	}
 	s.approvals[request.RequestID] = view
 	s.approvalOrder = append(s.approvalOrder, request.RequestID)
-	if s.activeRun != nil && s.activeRun.ID == request.RunID {
-		s.activeRun.Status = domain.RunStatusAwaiting
-		s.activeRun.ApprovalState = domain.ApprovalStateAwaiting
+	if run := s.activeRunByIDLocked(request.RunID); run != nil {
+		run.Status = domain.RunStatusAwaiting
+		run.ApprovalState = domain.ApprovalStateAwaiting
 	}
 	s.mu.Unlock()
 
@@ -129,15 +129,15 @@ func (r *approvalRouter) resolveApproval(requestID string, decision string) erro
 	s.mu.Lock()
 	delete(s.approvals, requestID)
 	s.approvalOrder = removeFromOrder(s.approvalOrder, requestID)
-	if s.activeRun != nil && s.activeRun.ID == request.RunID {
+	if run := s.activeRunByIDLocked(request.RunID); run != nil {
 		if decision == harness.DecisionApprove {
-			s.activeRun.Status = domain.RunStatusActive
-			s.activeRun.ApprovalState = domain.ApprovalStateApproved
+			run.Status = domain.RunStatusActive
+			run.ApprovalState = domain.ApprovalStateApproved
 		} else {
-			s.activeRun.Status = domain.RunStatusAwaiting
-			s.activeRun.ApprovalState = domain.ApprovalStateRejected
+			run.Status = domain.RunStatusAwaiting
+			run.ApprovalState = domain.ApprovalStateRejected
 		}
-		s.activeRun.LastActivityAt = now
+		run.LastActivityAt = now
 	}
 	r.appendApprovalHistory(history)
 	s.mu.Unlock()
@@ -222,9 +222,9 @@ func (r *approvalRouter) expireTimedOutApprovals(now time.Time) []ApprovalView {
 			DecidedAt:       now,
 			Outcome:         "timed_out",
 		})
-		if s.activeRun != nil && s.activeRun.ID == approval.RunID {
-			s.activeRun.ApprovalState = domain.ApprovalStateRejected
-			s.activeRun.LastActivityAt = now
+		if run := s.activeRunByIDLocked(approval.RunID); run != nil {
+			run.ApprovalState = domain.ApprovalStateRejected
+			run.LastActivityAt = now
 		}
 		delete(s.approvals, requestID)
 	}
@@ -250,7 +250,7 @@ func approvalTimeoutPollInterval(timeout time.Duration) time.Duration {
 func (r *approvalRouter) stopRunForTimedOutApproval(approval ApprovalView) {
 	s := r.service
 	s.mu.RLock()
-	active := s.activeRun != nil && s.activeRun.ID == approval.RunID
+	active := s.activeRunByIDLocked(approval.RunID) != nil
 	s.mu.RUnlock()
 	if !active {
 		return

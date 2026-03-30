@@ -332,7 +332,7 @@ Fields:
   - Harness-specific config for Codex agents. Only valid when `harness: codex`.
   - `model` (string, optional): model name. Default from `codex_defaults.model` (`gpt-5.4`).
   - `reasoning` (string, optional): reasoning effort. Default from `codex_defaults.reasoning` (`high`).
-  - `max_turns` (integer, optional): max continuation turns. Default from `codex_defaults.max_turns` (`20`).
+  - `max_turns` (integer, optional): max continuation turns. Default from `codex_defaults.max_turns` (`1`).
   - `thread_sandbox` (string, optional): Codex thread sandbox mode. Derived from `approval_policy` if not set (`auto` → `dangerFullAccess`, `manual` → `workspaceWrite`).
   - `turn_sandbox_policy` (string, optional): Codex per-turn sandbox policy.
   - `extra_args` (list of strings, optional): additional CLI arguments passed to the harness.
@@ -646,7 +646,7 @@ defaults:
   credentials: user
   communication: slack-dm
   max_concurrent_global: 5
-  max_turns: 20
+  max_turns: 1
   label_prefix: maestro             # prefix for lifecycle labels (default: "maestro")
   on_failure:
     add_labels: [maestro:needs-attention]
@@ -655,7 +655,7 @@ defaults:
 codex_defaults:
   model: gpt-5.4
   reasoning: high
-  max_turns: 20
+  max_turns: 1
 
 claude_defaults:
   model: opus-4.6
@@ -1255,7 +1255,7 @@ Observability requirements:
   - `initialize` → `thread/start` → `turn/start` → stream events → turn completion.
 - **Approval interception**: the app-server protocol has native approval events.
 - **Multi-turn**: reuse thread ID for continuation turns within the same session. `max_turns` is
-  configurable (default: 20). Between turns, Maestro sends a continuation prompt that includes
+  configurable (default: 1). Raise it when you want continuation behavior. Between turns, Maestro sends a continuation prompt that includes
   refreshed issue state from the tracker. This allows Codex to react to label/state changes made by
   the operator or other pipeline stages during a long-running session.
 - **Stall detection**: monitor codex events; no events for stall timeout → stalled.

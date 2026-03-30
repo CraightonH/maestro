@@ -101,6 +101,69 @@ func TestServiceRunsIssueOncePerProcess(t *testing.T) {
 	}
 }
 
+func TestServiceDispatchesMultipleIssuesFromSameSourceUpToSourceCapacity(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Defaults.MaxConcurrentGlobal = 3
+	cfg.Sources[0].MaxActiveRuns = 3
+	cfg.AgentTypes[0].MaxConcurrent = 3
+	repoURL := createGitRepo(t)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#42",
+				Identifier:  "team/project#42",
+				Title:       "Add feature",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta:        map[string]string{"repo_url": repoURL},
+			},
+			{
+				ID:          "gitlab:team/project#43",
+				Identifier:  "team/project#43",
+				Title:       "Add second feature",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta:        map[string]string{"repo_url": repoURL},
+			},
+			{
+				ID:          "gitlab:team/project#44",
+				Identifier:  "team/project#44",
+				Title:       "Add third feature",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta:        map[string]string{"repo_url": repoURL},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{WaitBlock: make(chan struct{})}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return len(fakeHarness.StartedRuns) == 3 && len(snapshot.ActiveRuns) == 3 && snapshot.SourceSummaries[0].ActiveRunCount == 3
+	})
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
 func TestServiceSnapshotSurfacesRunMetricsAndTrackerRateLimit(t *testing.T) {
 	cfg := testConfig(t)
 	repoURL := createGitRepo(t)
@@ -168,6 +231,81 @@ func TestServiceSnapshotSurfacesRunMetricsAndTrackerRateLimit(t *testing.T) {
 	}
 	if snapshot.SourceSummaries[0].RateLimit == nil || snapshot.SourceSummaries[0].RateLimit.Remaining == nil || *snapshot.SourceSummaries[0].RateLimit.Remaining != remaining {
 		t.Fatalf("source summary rate limit = %#v, want remaining %d", snapshot.SourceSummaries[0].RateLimit, remaining)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("run service: %v", err)
+	}
+}
+
+func TestServiceSnapshotAccumulatesInstanceMetricsAcrossCompletedRuns(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Defaults.MaxConcurrentGlobal = 2
+	cfg.Sources[0].MaxActiveRuns = 2
+	cfg.AgentTypes[0].MaxConcurrent = 2
+	repoURL := createGitRepo(t)
+	tokensIn := int64(64)
+	tokensOut := int64(16)
+
+	fakeTracker := &testutil.FakeTracker{
+		Issues: []domain.Issue{
+			{
+				ID:          "gitlab:team/project#metrics-1",
+				Identifier:  "team/project#metrics-1",
+				Title:       "Surface metrics one",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta:        map[string]string{"repo_url": repoURL},
+			},
+			{
+				ID:          "gitlab:team/project#metrics-2",
+				Identifier:  "team/project#metrics-2",
+				Title:       "Surface metrics two",
+				SourceName:  cfg.Sources[0].Name,
+				TrackerKind: "gitlab",
+				Meta:        map[string]string{"repo_url": repoURL},
+			},
+		},
+	}
+	fakeHarness := &testutil.FakeHarness{
+		Metrics: domain.RunMetrics{
+			TokensIn:  &tokensIn,
+			TokensOut: &tokensOut,
+		},
+	}
+
+	svc, err := orchestrator.NewServiceWithDeps(cfg, testLogger(), orchestrator.Dependencies{
+		Tracker:   fakeTracker,
+		Harness:   fakeHarness,
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- svc.Run(ctx)
+	}()
+
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot := svc.Snapshot()
+		return snapshot.ActiveRun == nil && len(fakeHarness.StartedRuns) == 2
+	})
+
+	snapshot := svc.Snapshot()
+	if snapshot.InstanceMetrics.TokensIn == nil || *snapshot.InstanceMetrics.TokensIn != 128 {
+		t.Fatalf("tokens_in = %#v, want 128", snapshot.InstanceMetrics.TokensIn)
+	}
+	if snapshot.InstanceMetrics.TokensOut == nil || *snapshot.InstanceMetrics.TokensOut != 32 {
+		t.Fatalf("tokens_out = %#v, want 32", snapshot.InstanceMetrics.TokensOut)
+	}
+	if snapshot.InstanceMetrics.TotalTokens == nil || *snapshot.InstanceMetrics.TotalTokens != 160 {
+		t.Fatalf("total_tokens = %#v, want 160", snapshot.InstanceMetrics.TotalTokens)
 	}
 
 	cancel()

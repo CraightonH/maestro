@@ -19,15 +19,17 @@ type reloadAction string
 
 const (
 	reloadActionKeep    reloadAction = "keep"
+	reloadActionUpdate  reloadAction = "update"
 	reloadActionStart   reloadAction = "start"
 	reloadActionStop    reloadAction = "stop"
 	reloadActionRestart reloadAction = "restart"
 )
 
 type reloadServiceSpec struct {
-	Source    config.SourceConfig
-	Agent     config.AgentTypeConfig
-	Signature string
+	Source           config.SourceConfig
+	Agent            config.AgentTypeConfig
+	RestartSignature string
+	LiveSignature    string
 }
 
 type reloadTransition struct {
@@ -93,10 +95,17 @@ func planReloadWithCurrentSpecs(currentSpecs map[string]reloadServiceSpec, desir
 		currentSpec, hasCurrent := currentSpecs[name]
 		desiredSpec, hasDesired := desiredSpecs[name]
 		switch {
-		case hasCurrent && hasDesired && currentSpec.Signature == desiredSpec.Signature:
+		case hasCurrent && hasDesired && currentSpec.RestartSignature == desiredSpec.RestartSignature && currentSpec.LiveSignature == desiredSpec.LiveSignature:
 			transitions = append(transitions, reloadTransition{
 				SourceName: name,
 				Action:     reloadActionKeep,
+				Current:    &currentSpec,
+				Desired:    &desiredSpec,
+			})
+		case hasCurrent && hasDesired && currentSpec.RestartSignature == desiredSpec.RestartSignature:
+			transitions = append(transitions, reloadTransition{
+				SourceName: name,
+				Action:     reloadActionUpdate,
 				Current:    &currentSpec,
 				Desired:    &desiredSpec,
 			})
@@ -139,20 +148,25 @@ func buildReloadServiceSpecs(cfg *config.Config) (map[string]reloadServiceSpec, 
 		if !ok {
 			return nil, fmt.Errorf("source %q references unknown agent_type %q", source.Name, source.AgentType)
 		}
-		signature, err := serviceSignature(cfg, source, agent)
+		restartSignature, err := serviceRestartSignature(cfg, source, agent)
 		if err != nil {
 			return nil, fmt.Errorf("signature for source %q: %w", source.Name, err)
 		}
+		liveSignature, err := serviceLiveSignature(cfg, source, agent)
+		if err != nil {
+			return nil, fmt.Errorf("live signature for source %q: %w", source.Name, err)
+		}
 		specs[source.Name] = reloadServiceSpec{
-			Source:    source,
-			Agent:     agent,
-			Signature: signature,
+			Source:           source,
+			Agent:            agent,
+			RestartSignature: restartSignature,
+			LiveSignature:    liveSignature,
 		}
 	}
 	return specs, nil
 }
 
-func serviceSignature(cfg *config.Config, source config.SourceConfig, agent config.AgentTypeConfig) (string, error) {
+func serviceRestartSignature(cfg *config.Config, source config.SourceConfig, agent config.AgentTypeConfig) (string, error) {
 	scoped := scopedConfig(cfg, source, agent)
 	snapshot := serviceConfigSnapshot{
 		Source:         scoped.Sources[0],
@@ -167,6 +181,9 @@ func serviceSignature(cfg *config.Config, source config.SourceConfig, agent conf
 		Controls:       scoped.Controls,
 		SourceDefaults: scoped.SourceDefaults,
 	}
+	snapshot.Source.MaxActiveRuns = 0
+	snapshot.Agent.MaxConcurrent = 0
+	snapshot.Defaults.MaxConcurrentGlobal = 0
 	raw, err := json.Marshal(snapshot)
 	if err != nil {
 		return "", fmt.Errorf("encode config snapshot: %w", err)
@@ -177,6 +194,27 @@ func serviceSignature(cfg *config.Config, source config.SourceConfig, agent conf
 	}
 
 	sum := sha256.Sum256(append(raw, []byte(assetDigest)...))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+type serviceLiveConfigSnapshot struct {
+	SourceMaxActiveRuns int `json:"source_max_active_runs"`
+	AgentMaxConcurrent  int `json:"agent_max_concurrent"`
+	GlobalMaxConcurrent int `json:"global_max_concurrent"`
+}
+
+func serviceLiveSignature(cfg *config.Config, source config.SourceConfig, agent config.AgentTypeConfig) (string, error) {
+	scoped := scopedConfig(cfg, source, agent)
+	snapshot := serviceLiveConfigSnapshot{
+		SourceMaxActiveRuns: scoped.Sources[0].EffectiveMaxActiveRuns(),
+		AgentMaxConcurrent:  scoped.AgentTypes[0].MaxConcurrent,
+		GlobalMaxConcurrent: scoped.Defaults.MaxConcurrentGlobal,
+	}
+	raw, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("encode live config snapshot: %w", err)
+	}
+	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }
 

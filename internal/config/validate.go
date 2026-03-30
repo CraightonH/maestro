@@ -192,6 +192,9 @@ func ValidateMVP(cfg *Config) error {
 		if source.EffectiveMaxAttempts(cfg.State) < 1 {
 			return fmt.Errorf("source %q max_attempts must be at least 1", source.Name)
 		}
+		if source.EffectiveMaxActiveRuns() < 1 {
+			return fmt.Errorf("source %q max_active_runs must be at least 1", source.Name)
+		}
 		if err := validateLifecycleLabels(source, cfg.Defaults.OnComplete, cfg.Defaults.OnFailure, reservedLabels); err != nil {
 			return err
 		}

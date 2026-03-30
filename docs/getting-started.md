@@ -144,8 +144,10 @@ You can now define multiple `sources` and multiple `agent_types` in one config.
 
 Current runtime rules:
 
+- `sources[].max_active_runs` bounds how many active runs one source may hold at once
 - `defaults.max_concurrent_global` bounds the total number of active runs across the process
 - `agent_types[].max_concurrent` bounds runs for that agent type across all sources using it
+- the effective concurrency for a source is the smallest of those three limits
 - the shipped multi-source sample starts at `max_concurrent_global: 3` and `max_concurrent: 2` per agent type
 
 That means multi-source configs are useful for:
@@ -264,7 +266,7 @@ Model, reasoning effort, and other harness-specific settings are configurable at
 codex_defaults:
   model: gpt-5.4
   reasoning: high
-  max_turns: 20
+  max_turns: 1
 
 claude_defaults:
   model: claude-opus-4-6

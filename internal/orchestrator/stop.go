@@ -9,7 +9,7 @@ import (
 
 func (s *Service) StopRun(runID string, reason string) error {
 	s.mu.Lock()
-	if s.activeRun == nil || s.activeRun.ID != runID {
+	if s.activeRunByIDLocked(runID) == nil {
 		s.mu.Unlock()
 		return fmt.Errorf("run %q: %w", runID, ErrRunNotFound)
 	}

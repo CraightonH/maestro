@@ -60,6 +60,15 @@ func TestSupervisorStopRunUsesTypedNotFound(t *testing.T) {
 }
 
 func TestSupervisorRequestForcePollRoutesAllAndSingleSource(t *testing.T) {
+	oldTimeout := forcePollCompletionTimeout
+	oldWait := forcePollWaitInterval
+	forcePollCompletionTimeout = 25 * time.Millisecond
+	forcePollWaitInterval = 5 * time.Millisecond
+	defer func() {
+		forcePollCompletionTimeout = oldTimeout
+		forcePollWaitInterval = oldWait
+	}()
+
 	first := &Service{
 		logger:      supervisorTestLogger(),
 		source:      config.SourceConfig{Name: "source-a"},
@@ -80,8 +89,8 @@ func TestSupervisorRequestForcePollRoutesAllAndSingleSource(t *testing.T) {
 		t.Fatalf("all force poll results = %#v, want 2 items", allResult.Results)
 	}
 	for _, item := range allResult.Results {
-		if item.Status != ForcePollQueued {
-			t.Fatalf("all force poll status = %q, want queued", item.Status)
+		if item.Status != ForcePollTimedOut {
+			t.Fatalf("all force poll status = %q, want timed out", item.Status)
 		}
 	}
 

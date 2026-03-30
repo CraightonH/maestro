@@ -6,13 +6,17 @@ import (
 )
 
 var forcePollDebounce = 2 * time.Second
+var forcePollCompletionTimeout = 5 * time.Second
+var forcePollWaitInterval = 25 * time.Millisecond
 
 type ForcePollStatus string
 
 const (
+	ForcePollCompleted     ForcePollStatus = "completed"
 	ForcePollQueued        ForcePollStatus = "queued"
 	ForcePollDebounced     ForcePollStatus = "debounced"
 	ForcePollAlreadyQueued ForcePollStatus = "already_queued"
+	ForcePollTimedOut      ForcePollStatus = "timed_out"
 )
 
 type ForcePollSourceResult struct {
@@ -30,9 +34,16 @@ func (s *Service) RequestForcePoll(sourceName string) (ForcePollResult, error) {
 		return ForcePollResult{}, fmt.Errorf("source %q: %w", sourceName, ErrSourceNotFound)
 	}
 
+	requestedAt := time.Now()
 	status := s.queueForcePoll()
 	if status == ForcePollQueued {
-		s.recordSourceEvent("info", s.source.Name, "force poll queued")
+		s.recordSourceEvent("info", s.source.Name, "force poll requested")
+		status = s.waitForForcePollCompletion(requestedAt)
+		if status == ForcePollCompleted {
+			s.recordSourceEvent("info", s.source.Name, "force poll completed")
+		} else if status == ForcePollTimedOut {
+			s.recordSourceEvent("warn", s.source.Name, "force poll did not complete within %s", forcePollCompletionTimeout)
+		}
 	}
 	return ForcePollResult{
 		Scope: "source",
@@ -61,5 +72,22 @@ func (s *Service) queueForcePoll() ForcePollStatus {
 	default:
 		s.forcePollPending = true
 		return ForcePollAlreadyQueued
+	}
+}
+
+func (s *Service) waitForForcePollCompletion(requestedAt time.Time) ForcePollStatus {
+	deadline := time.Now().Add(forcePollCompletionTimeout)
+	for {
+		s.mu.RLock()
+		lastPollAt := s.lastPollAt
+		polling := s.polling
+		s.mu.RUnlock()
+		if !lastPollAt.IsZero() && !lastPollAt.Before(requestedAt) && !polling {
+			return ForcePollCompleted
+		}
+		if time.Now().After(deadline) {
+			return ForcePollTimedOut
+		}
+		time.Sleep(forcePollWaitInterval)
 	}
 }

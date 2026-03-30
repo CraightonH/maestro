@@ -106,6 +106,7 @@ type StateSummary struct {
 	ApprovalHistCount int                    `json:"approval_history_count"`
 	LastError         string                 `json:"last_error,omitempty"`
 	ActiveRun         *state.PersistedRun    `json:"active_run,omitempty"`
+	ActiveRuns        []state.PersistedRun   `json:"active_runs,omitempty"`
 	Finished          []StateTerminalSummary `json:"finished,omitempty"`
 	Retries           []state.RetryEntry     `json:"retries,omitempty"`
 	PendingApprovals  []StateApprovalSummary `json:"pending_approvals,omitempty"`
@@ -240,7 +241,11 @@ func SummarizeState(sourceName string, path string, snapshot state.Snapshot) Sta
 		RetryCount:        len(snapshot.RetryQueue),
 		PendingCount:      len(snapshot.PendingApprovals),
 		ApprovalHistCount: len(snapshot.ApprovalHistory),
-		ActiveRun:         snapshot.ActiveRun,
+		ActiveRuns:        persistedActiveRuns(snapshot),
+	}
+	if len(summary.ActiveRuns) > 0 {
+		first := summary.ActiveRuns[0]
+		summary.ActiveRun = &first
 	}
 
 	for _, finished := range snapshot.Finished {
@@ -317,9 +322,9 @@ func summarizeStateHealth(summary StateSummary) string {
 	switch {
 	case summary.RetryCount > 0:
 		return "retrying"
-	case summary.ActiveRun != nil && summary.FailedCount > 0:
+	case len(summary.ActiveRuns) > 0 && summary.FailedCount > 0:
 		return "active+degraded"
-	case summary.ActiveRun != nil:
+	case len(summary.ActiveRuns) > 0:
 		return "active"
 	case summary.PendingCount > 0 && summary.FailedCount > 0:
 		return "awaiting-approval+degraded"

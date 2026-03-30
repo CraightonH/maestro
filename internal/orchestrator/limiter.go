@@ -3,7 +3,7 @@ package orchestrator
 import "sync"
 
 type dispatchLimiter interface {
-	TryAcquire() bool
+	TryAcquire() (bool, string)
 	Release()
 }
 
@@ -11,6 +11,7 @@ type semaphoreLimiter struct {
 	mu       sync.Mutex
 	capacity int
 	inUse    int
+	label    string
 }
 
 type compositeLimiter struct {
@@ -18,10 +19,14 @@ type compositeLimiter struct {
 }
 
 func newSemaphoreLimiter(capacity int) *semaphoreLimiter {
+	return newNamedSemaphoreLimiter(capacity, "limiter")
+}
+
+func newNamedSemaphoreLimiter(capacity int, label string) *semaphoreLimiter {
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &semaphoreLimiter{capacity: capacity}
+	return &semaphoreLimiter{capacity: capacity, label: label}
 }
 
 func newCompositeLimiter(limiters ...dispatchLimiter) dispatchLimiter {
@@ -40,14 +45,14 @@ func newCompositeLimiter(limiters ...dispatchLimiter) dispatchLimiter {
 	return &compositeLimiter{limiters: filtered}
 }
 
-func (l *semaphoreLimiter) TryAcquire() bool {
+func (l *semaphoreLimiter) TryAcquire() (bool, string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.inUse >= l.capacity {
-		return false
+		return false, l.label
 	}
 	l.inUse++
-	return true
+	return true, ""
 }
 
 func (l *semaphoreLimiter) Release() {
@@ -67,19 +72,23 @@ func (l *semaphoreLimiter) SetCapacity(capacity int) {
 	l.capacity = capacity
 }
 
-func (l *compositeLimiter) TryAcquire() bool {
+func (l *compositeLimiter) TryAcquire() (bool, string) {
 	acquired := make([]dispatchLimiter, 0, len(l.limiters))
 	for _, limiter := range l.limiters {
-		if limiter.TryAcquire() {
+		acquiredOK, blockedBy := limiter.TryAcquire()
+		if acquiredOK {
 			acquired = append(acquired, limiter)
 			continue
 		}
 		for i := len(acquired) - 1; i >= 0; i-- {
 			acquired[i].Release()
 		}
-		return false
+		if blockedBy == "" {
+			blockedBy = "limiter"
+		}
+		return false, blockedBy
 	}
-	return true
+	return true, ""
 }
 
 func (l *compositeLimiter) Release() {

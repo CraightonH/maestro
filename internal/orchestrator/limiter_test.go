@@ -4,20 +4,29 @@ import "testing"
 
 type stubLimiter struct {
 	acquireResults []bool
+	blockedBy      string
 	acquireCalls   int
 	releaseCalls   int
 }
 
-func (s *stubLimiter) TryAcquire() bool {
+func (s *stubLimiter) TryAcquire() (bool, string) {
 	s.acquireCalls++
 	if len(s.acquireResults) == 0 {
-		return true
+		return true, ""
 	}
 	idx := s.acquireCalls - 1
 	if idx >= len(s.acquireResults) {
-		return s.acquireResults[len(s.acquireResults)-1]
+		ok := s.acquireResults[len(s.acquireResults)-1]
+		if ok {
+			return true, ""
+		}
+		return false, s.blockedBy
 	}
-	return s.acquireResults[idx]
+	ok := s.acquireResults[idx]
+	if ok {
+		return true, ""
+	}
+	return false, s.blockedBy
 }
 
 func (s *stubLimiter) Release() {
@@ -26,25 +35,28 @@ func (s *stubLimiter) Release() {
 
 func TestSemaphoreLimiterTryAcquireAndRelease(t *testing.T) {
 	limiter := newSemaphoreLimiter(2)
-	if !limiter.TryAcquire() || !limiter.TryAcquire() {
+	if ok, _ := limiter.TryAcquire(); !ok {
+		t.Fatal("expected first acquire to succeed")
+	}
+	if ok, _ := limiter.TryAcquire(); !ok {
 		t.Fatal("expected first two acquires to succeed")
 	}
-	if limiter.TryAcquire() {
+	if ok, blockedBy := limiter.TryAcquire(); ok || blockedBy != "limiter" {
 		t.Fatal("expected third acquire to fail at capacity")
 	}
 	limiter.Release()
-	if !limiter.TryAcquire() {
+	if ok, _ := limiter.TryAcquire(); !ok {
 		t.Fatal("expected acquire to succeed after release")
 	}
 }
 
 func TestCompositeLimiterReleasesOnSecondAcquireFailure(t *testing.T) {
 	first := &stubLimiter{acquireResults: []bool{true}}
-	second := &stubLimiter{acquireResults: []bool{false}}
+	second := &stubLimiter{acquireResults: []bool{false}, blockedBy: "agent"}
 
 	limiter := newCompositeLimiter(first, second)
-	if limiter.TryAcquire() {
-		t.Fatal("expected composite acquire to fail")
+	if ok, blockedBy := limiter.TryAcquire(); ok || blockedBy != "agent" {
+		t.Fatalf("expected composite acquire to fail with agent blocker, got ok=%v blockedBy=%q", ok, blockedBy)
 	}
 	if first.acquireCalls != 1 || second.acquireCalls != 1 {
 		t.Fatalf("acquire calls = %d/%d, want 1/1", first.acquireCalls, second.acquireCalls)
@@ -62,7 +74,7 @@ func TestCompositeLimiterReleaseReleasesAll(t *testing.T) {
 	second := &stubLimiter{}
 
 	limiter := newCompositeLimiter(first, second)
-	if !limiter.TryAcquire() {
+	if ok, _ := limiter.TryAcquire(); !ok {
 		t.Fatal("expected composite acquire to succeed")
 	}
 	limiter.Release()

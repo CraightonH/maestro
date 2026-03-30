@@ -141,44 +141,47 @@ func deriveDryRunState(snapshot state.Snapshot, source config.SourceConfig, agen
 		retryQueue[issueID] = item
 	}
 
-	if snapshot.ActiveRun == nil {
+	activeRuns := persistedActiveRuns(snapshot)
+	if len(activeRuns) == 0 {
 		return finished, retryQueue
 	}
 
-	nextAttempt := snapshot.ActiveRun.Attempt + 1
-	if dryRunApprovalTimedOut(snapshot.PendingApprovals, snapshot.ActiveRun.RunID, agent.ApprovalTimeout.Duration, now) {
-		finished[snapshot.ActiveRun.IssueID] = state.TerminalIssue{
-			IssueID:        snapshot.ActiveRun.IssueID,
-			Identifier:     snapshot.ActiveRun.Identifier,
-			Status:         domain.RunStatusFailed,
-			Attempt:        snapshot.ActiveRun.Attempt,
-			IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
-			FinishedAt:     now,
-			Error:          "approval timeout",
+	for _, run := range activeRuns {
+		nextAttempt := run.Attempt + 1
+		if dryRunApprovalTimedOut(snapshot.PendingApprovals, run.RunID, agent.ApprovalTimeout.Duration, now) {
+			finished[run.IssueID] = state.TerminalIssue{
+				IssueID:        run.IssueID,
+				Identifier:     run.Identifier,
+				Status:         domain.RunStatusFailed,
+				Attempt:        run.Attempt,
+				IssueUpdatedAt: run.IssueUpdatedAt,
+				FinishedAt:     now,
+				Error:          "approval timeout",
+			}
+			continue
 		}
-		return finished, retryQueue
-	}
-	if nextAttempt >= source.EffectiveMaxAttempts(stateCfg) {
-		finished[snapshot.ActiveRun.IssueID] = state.TerminalIssue{
-			IssueID:        snapshot.ActiveRun.IssueID,
-			Identifier:     snapshot.ActiveRun.Identifier,
-			Status:         domain.RunStatusFailed,
-			Attempt:        snapshot.ActiveRun.Attempt,
-			IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
-			FinishedAt:     now,
-			Error:          "run interrupted during shutdown or restart",
+		if nextAttempt >= source.EffectiveMaxAttempts(stateCfg) {
+			finished[run.IssueID] = state.TerminalIssue{
+				IssueID:        run.IssueID,
+				Identifier:     run.Identifier,
+				Status:         domain.RunStatusFailed,
+				Attempt:        run.Attempt,
+				IssueUpdatedAt: run.IssueUpdatedAt,
+				FinishedAt:     now,
+				Error:          "run interrupted during shutdown or restart",
+			}
+			continue
 		}
-		return finished, retryQueue
-	}
 
-	retryQueue[snapshot.ActiveRun.IssueID] = state.RetryEntry{
-		IssueID:        snapshot.ActiveRun.IssueID,
-		Identifier:     snapshot.ActiveRun.Identifier,
-		Attempt:        nextAttempt,
-		DueAt:          now,
-		Error:          "recovered active run after restart",
-		IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
-		WorkspacePath:  snapshot.ActiveRun.WorkspacePath,
+		retryQueue[run.IssueID] = state.RetryEntry{
+			IssueID:        run.IssueID,
+			Identifier:     run.Identifier,
+			Attempt:        nextAttempt,
+			DueAt:          now,
+			Error:          "recovered active run after restart",
+			IssueUpdatedAt: run.IssueUpdatedAt,
+			WorkspacePath:  run.WorkspacePath,
+		}
 	}
 	return finished, retryQueue
 }

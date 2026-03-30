@@ -249,8 +249,8 @@ func TestServiceForcePollTriggersImmediatePoll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("request force poll: %v", err)
 	}
-	if len(result.Results) != 1 || result.Results[0].Status != ForcePollQueued {
-		t.Fatalf("force poll result = %#v, want queued", result)
+	if len(result.Results) != 1 || result.Results[0].Status != ForcePollCompleted {
+		t.Fatalf("force poll result = %#v, want completed", result)
 	}
 
 	waitForCondition(t, 2*time.Second, func() bool { return tracker.Count() == 2 })
@@ -306,8 +306,16 @@ func TestServiceForcePollDebouncesRecentPolls(t *testing.T) {
 
 func TestServiceForcePollDoesNotOverlapInFlightPolls(t *testing.T) {
 	oldDebounce := forcePollDebounce
+	oldTimeout := forcePollCompletionTimeout
+	oldWait := forcePollWaitInterval
 	forcePollDebounce = 20 * time.Millisecond
-	defer func() { forcePollDebounce = oldDebounce }()
+	forcePollCompletionTimeout = 40 * time.Millisecond
+	forcePollWaitInterval = 5 * time.Millisecond
+	defer func() {
+		forcePollDebounce = oldDebounce
+		forcePollCompletionTimeout = oldTimeout
+		forcePollWaitInterval = oldWait
+	}()
 
 	cfg := forcePollTestConfig(t)
 	cfg.Sources[0].PollInterval = config.Duration{Duration: time.Hour}
@@ -339,8 +347,8 @@ func TestServiceForcePollDoesNotOverlapInFlightPolls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first request force poll: %v", err)
 	}
-	if len(first.Results) != 1 || first.Results[0].Status != ForcePollQueued {
-		t.Fatalf("first force poll result = %#v, want queued", first)
+	if len(first.Results) != 1 || first.Results[0].Status != ForcePollTimedOut {
+		t.Fatalf("first force poll result = %#v, want timed out", first)
 	}
 
 	waitForCondition(t, 2*time.Second, func() bool { return tracker.Count() == 2 })
@@ -362,5 +370,41 @@ func TestServiceForcePollDoesNotOverlapInFlightPolls(t *testing.T) {
 	cancel()
 	if err := <-errCh; err != nil {
 		t.Fatalf("service run: %v", err)
+	}
+}
+
+func TestServiceForcePollTimesOutWhenPollDoesNotStart(t *testing.T) {
+	oldDebounce := forcePollDebounce
+	oldTimeout := forcePollCompletionTimeout
+	oldWait := forcePollWaitInterval
+	forcePollDebounce = 0
+	forcePollCompletionTimeout = 40 * time.Millisecond
+	forcePollWaitInterval = 5 * time.Millisecond
+	defer func() {
+		forcePollDebounce = oldDebounce
+		forcePollCompletionTimeout = oldTimeout
+		forcePollWaitInterval = oldWait
+	}()
+
+	cfg := forcePollTestConfig(t)
+	tracker := &forcePollTracker{}
+	svc, err := NewServiceWithDeps(cfg, forcePollTestLogger(), Dependencies{
+		Tracker:   tracker,
+		Harness:   &testutil.FakeHarness{},
+		Workspace: workspace.NewManager(cfg.Workspace.Root),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	result, err := svc.RequestForcePoll("")
+	if err != nil {
+		t.Fatalf("request force poll: %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].Status != ForcePollTimedOut {
+		t.Fatalf("force poll result = %#v, want timed out", result)
+	}
+	if tracker.Count() != 0 {
+		t.Fatalf("poll count = %d, want 0", tracker.Count())
 	}
 }

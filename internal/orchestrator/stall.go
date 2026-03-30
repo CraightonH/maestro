@@ -10,29 +10,26 @@ import (
 
 func (s *Service) reconcileStalledRun(ctx context.Context) {
 	s.mu.RLock()
-	if s.activeRun == nil {
-		s.mu.RUnlock()
-		return
-	}
-	run := *s.activeRun
+	runs := s.activeRunSnapshotsLocked(time.Now())
 	s.mu.RUnlock()
 
-	if run.Status != domain.RunStatusActive && run.Status != domain.RunStatusAwaiting {
-		return
+	for _, run := range runs {
+		if run.Status != domain.RunStatusActive && run.Status != domain.RunStatusAwaiting {
+			continue
+		}
+		if run.LastActivityAt.IsZero() {
+			continue
+		}
+		if time.Since(run.LastActivityAt) < s.agent.StallTimeout.Duration {
+			continue
+		}
+		s.stopRunAsFailed(ctx, run.ID, fmt.Sprintf("run stalled after %s without observable activity", s.agent.StallTimeout.Duration))
 	}
-	if run.LastActivityAt.IsZero() {
-		return
-	}
-	if time.Since(run.LastActivityAt) < s.agent.StallTimeout.Duration {
-		return
-	}
-
-	s.stopRunAsFailed(ctx, run.ID, fmt.Sprintf("run stalled after %s without observable activity", s.agent.StallTimeout.Duration))
 }
 
 func (s *Service) stopRunAsFailed(ctx context.Context, runID string, reason string) {
 	s.mu.Lock()
-	if s.activeRun == nil || s.activeRun.ID != runID {
+	if s.activeRunByIDLocked(runID) == nil {
 		s.mu.Unlock()
 		return
 	}

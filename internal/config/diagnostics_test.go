@@ -252,6 +252,45 @@ func TestDiagnoseConfigWarnsOnRiskyStatelessDockerReuse(t *testing.T) {
 	}
 }
 
+func TestDiagnoseConfigWarnsWhenGlobalConcurrencyCapsSourcesAndAgents(t *testing.T) {
+	cfg := &config.Config{
+		Defaults: testDefaults(1),
+		Sources: []config.SourceConfig{
+			{
+				Name:          "implement",
+				Tracker:       "gitlab",
+				AgentType:     "code",
+				MaxActiveRuns: 3,
+				Connection: config.SourceConnection{
+					BaseURL: "https://gitlab.example.com",
+					Project: "team/project",
+				},
+			},
+		},
+		AgentTypes: []config.AgentTypeConfig{
+			{
+				Name:           "code",
+				Harness:        "codex",
+				Workspace:      "git-clone",
+				Prompt:         "prompt.md",
+				ApprovalPolicy: "auto",
+				MaxConcurrent:  4,
+			},
+		},
+	}
+
+	warnings := config.DiagnoseConfig(cfg)
+	if !hasWarningContaining(warnings, `agent "code" max_concurrent=4 exceeds defaults.max_concurrent_global=1`) {
+		t.Fatalf("warnings = %v, want global agent cap warning", warnings)
+	}
+	if !hasWarningContaining(warnings, `source "implement" max_active_runs=3 exceeds defaults.max_concurrent_global=1`) {
+		t.Fatalf("warnings = %v, want global source cap warning", warnings)
+	}
+	if !hasWarningContaining(warnings, `source "implement" concurrency resolves to source=3, agent=4, global=1, effective=1`) {
+		t.Fatalf("warnings = %v, want effective concurrency summary", warnings)
+	}
+}
+
 func hasWarningContaining(warnings []string, needle string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, needle) {

@@ -32,13 +32,13 @@ func (s *Service) IsDraining() bool {
 func (s *Service) HasActiveRun() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.activeRun != nil
+	return s.activeRunCountLocked() > 0
 }
 
 func (s *Service) shouldExitAfterDrain() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.draining && s.activeRun == nil
+	return s.draining && s.activeRunCountLocked() == 0
 }
 
 func (s *Service) signalControl() {

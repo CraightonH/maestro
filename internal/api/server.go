@@ -138,6 +138,8 @@ type snapshotJSON struct {
 	LastPollCount    int                   `json:"last_poll_count"`
 	ClaimedCount     int                   `json:"claimed_count"`
 	RetryCount       int                   `json:"retry_count"`
+	InstanceMetrics  *runMetricsJSON       `json:"instance_metrics,omitempty"`
+	HarnessMetrics   []metricBreakdownJSON `json:"harness_metrics,omitempty"`
 	PendingApprovals []approvalJSON        `json:"pending_approvals,omitempty"`
 	PendingMessages  []messageJSON         `json:"pending_messages,omitempty"`
 	Retries          []retryJSON           `json:"retries,omitempty"`
@@ -151,19 +153,29 @@ type snapshotJSON struct {
 }
 
 type sourceSummaryJSON struct {
-	Name             string                `json:"name"`
-	DisplayGroup     string                `json:"display_group,omitempty"`
-	Tags             []string              `json:"tags,omitempty"`
-	Tracker          string                `json:"tracker"`
-	RateLimit        *trackerRateLimitJSON `json:"rate_limit,omitempty"`
-	Execution        *executionJSON        `json:"execution,omitempty"`
-	LastPollAt       time.Time             `json:"last_poll_at,omitempty"`
-	LastPollCount    int                   `json:"last_poll_count"`
-	ClaimedCount     int                   `json:"claimed_count"`
-	RetryCount       int                   `json:"retry_count"`
-	ActiveRunCount   int                   `json:"active_run_count"`
-	PendingApprovals int                   `json:"pending_approvals"`
-	PendingMessages  int                   `json:"pending_messages"`
+	Name                   string                `json:"name"`
+	DisplayGroup           string                `json:"display_group,omitempty"`
+	Tags                   []string              `json:"tags,omitempty"`
+	Tracker                string                `json:"tracker"`
+	RateLimit              *trackerRateLimitJSON `json:"rate_limit,omitempty"`
+	Execution              *executionJSON        `json:"execution,omitempty"`
+	LastPollAt             time.Time             `json:"last_poll_at,omitempty"`
+	LastPollCount          int                   `json:"last_poll_count"`
+	ClaimedCount           int                   `json:"claimed_count"`
+	RetryCount             int                   `json:"retry_count"`
+	ActiveRunCount         int                   `json:"active_run_count"`
+	MaxActiveRuns          int                   `json:"max_active_runs"`
+	AgentMaxConcurrent     int                   `json:"agent_max_concurrent"`
+	GlobalMaxConcurrent    int                   `json:"global_max_concurrent"`
+	EffectiveMaxConcurrent int                   `json:"effective_max_concurrent"`
+	Metrics                *runMetricsJSON       `json:"metrics,omitempty"`
+	PendingApprovals       int                   `json:"pending_approvals"`
+	PendingMessages        int                   `json:"pending_messages"`
+}
+
+type metricBreakdownJSON struct {
+	Name    string          `json:"name"`
+	Metrics *runMetricsJSON `json:"metrics,omitempty"`
 }
 
 type issueJSON struct {
@@ -455,6 +467,11 @@ func (s *Server) authorized(r *http.Request) bool {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	serverCtx, cancelServer := context.WithCancel(context.Background())
+	defer cancelServer()
+	s.httpServer.BaseContext = func(net.Listener) context.Context {
+		return serverCtx
+	}
 	errCh := make(chan error, 1)
 	go func() {
 		s.logger.Info("api server listening", "addr", s.addr)
@@ -470,9 +487,12 @@ func (s *Server) Run(ctx context.Context) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
+		cancelServer()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		_ = s.httpServer.Shutdown(shutdownCtx)
+		if err := s.httpServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) {
+			return err
+		}
 		return <-errCh
 	}
 }

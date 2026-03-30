@@ -15,7 +15,7 @@ NewRuntime()
                   └─ per-agent-type limiters
 
 Service loop:
-  tick() → Poll tracker → reconcile active run OR dispatch new
+  tick() → Poll tracker → reconcile active runs → dispatch retries/new work until source capacity is full
   approval watcher → route to Slack/TUI/web → resolve → resume harness
   message watcher  → same pattern
 ```
@@ -36,6 +36,7 @@ Important practical boundaries:
 - Only the exact reserved lifecycle labels are intake blockers: `{prefix}:active`, `{prefix}:done`, `{prefix}:failed`, `{prefix}:retry`.
 - Routing labels such as `{prefix}:coding` or `{prefix}:review` remain visible to source filters.
 - Retry policy can be set globally and overridden per source (`retry_base`, `max_retry_backoff`, `max_attempts`).
+- Each source can run more than one issue at a time via `sources[].max_active_runs`; effective concurrency is still capped by the per-agent and global limiters.
 - State persistence includes rolling backups and corrupt-file fallback; unreadable `runs.json` is archived and recovery continues with empty state.
 - Run stdout/stderr is persisted under `state.dir/runs/<run-id>/`.
 - Loopback web/API binds do not require auth. Non-loopback binds require `server.api_key`.

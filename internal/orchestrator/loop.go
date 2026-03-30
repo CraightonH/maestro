@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -47,6 +48,7 @@ func (s *Service) Run(ctx context.Context) error {
 				s.recordEvent("error", "poll failed: %v", err)
 			}
 		case <-s.forcePollCh:
+			s.recordSourceEvent("info", s.source.Name, "running forced poll")
 			if err := s.runTick(ctx, true); err != nil {
 				s.recordSourceEvent("error", s.source.Name, "force poll failed: %v", err)
 			}
@@ -88,32 +90,57 @@ func (s *Service) tick(ctx context.Context) error {
 	s.mu.Lock()
 	s.lastPollAt = time.Now()
 	s.lastPollCount = len(issues)
-	hasActive := s.activeRun != nil
+	activeRunCount := s.activeRunCountLocked()
 	s.mu.Unlock()
 
 	s.recordSourceEvent("info", s.source.Name, "polled %d candidate issues from %s", len(issues), s.source.Name)
 
-	if hasActive {
-		s.reconcileActiveRun(ctx, issues)
-		return nil
+	if activeRunCount > 0 {
+		s.reconcileActiveRuns(ctx, issues)
 	}
 
 	if s.IsDraining() {
 		return nil
 	}
 
-	if err := s.dispatchDueRetry(ctx); err != nil {
+	dispatchedRetries, err := s.dispatchDueRetry(ctx)
+	if err != nil {
 		return err
+	}
+	if dispatchedRetries > 0 {
+		s.mu.RLock()
+		if s.activeRunsAtCapacityLocked() {
+			s.mu.RUnlock()
+			return nil
+		}
+		s.mu.RUnlock()
 	}
 
 	for _, issue := range issues {
+		s.mu.RLock()
+		atCapacity := s.activeRunsAtCapacityLocked()
+		s.mu.RUnlock()
+		if atCapacity {
+			s.recordSourceEvent("info", s.source.Name, "dispatch paused: source concurrency at capacity (%s)", s.concurrencySummary())
+			break
+		}
 		if s.isClaimed(issue.ID) || s.stateMgr.shouldSkipIssue(issue) {
 			continue
 		}
 		guarded, status, reason, err := s.guardDispatchCandidate(ctx, issue)
 		switch status {
 		case dispatchGuardReady:
-			return s.runMgr.dispatch(ctx, guarded)
+			dispatched, blockedBy, err := s.runMgr.dispatch(ctx, guarded)
+			if err != nil {
+				return err
+			}
+			if dispatched {
+				continue
+			}
+			if blockedBy != "" {
+				s.recordSourceEvent("info", s.source.Name, "dispatch paused: %s concurrency at capacity (%s)", blockedBy, s.concurrencySummary())
+			}
+			return nil
 		case dispatchGuardBlocked:
 			s.recordSourceEvent("info", s.source.Name, "skipping %s because it is blocked by %s", guarded.Identifier, reason)
 		case dispatchGuardSkipped:
@@ -126,12 +153,13 @@ func (s *Service) tick(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) dispatchDueRetry(ctx context.Context) error {
+func (s *Service) dispatchDueRetry(ctx context.Context) (int, error) {
 	type retryCandidate struct {
 		issueID string
 		dueAt   time.Time
 		attempt int
 	}
+	dispatchedRetries := 0
 
 	s.mu.RLock()
 	candidates := make([]retryCandidate, 0, len(s.retryQueue))
@@ -155,6 +183,13 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 	})
 
 	for _, candidate := range candidates {
+		s.mu.RLock()
+		atCapacity := s.activeRunsAtCapacityLocked()
+		s.mu.RUnlock()
+		if atCapacity {
+			s.recordSourceEvent("info", s.source.Name, "retry dispatch paused: source concurrency at capacity (%s)", s.concurrencySummary())
+			break
+		}
 		if s.isClaimed(candidate.issueID) {
 			continue
 		}
@@ -174,7 +209,18 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 		guarded, status, reason, err := s.guardRetryCandidate(ctx, issue)
 		switch status {
 		case dispatchGuardReady:
-			return s.runMgr.dispatchRetry(ctx, guarded, candidate.attempt)
+			dispatched, blockedBy, err := s.runMgr.dispatchRetry(ctx, guarded, candidate.attempt)
+			if err != nil {
+				return dispatchedRetries, err
+			}
+			if dispatched {
+				dispatchedRetries++
+				continue
+			}
+			if blockedBy != "" {
+				s.recordSourceEvent("info", s.source.Name, "retry dispatch paused: %s concurrency at capacity (%s)", blockedBy, s.concurrencySummary())
+				return dispatchedRetries, nil
+			}
 		case dispatchGuardBlocked:
 			s.recordSourceEvent("info", s.source.Name, "skipping retry for %s because it is blocked by %s", guarded.Identifier, reason)
 		case dispatchGuardSkipped:
@@ -188,20 +234,35 @@ func (s *Service) dispatchDueRetry(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return dispatchedRetries, nil
 }
 
 func (s *Service) shutdown() error {
 	s.mu.RLock()
-	activeRun := s.activeRun
+	runIDs := append([]string(nil), s.activeRunOrder...)
+	if len(runIDs) == 0 && s.activeRun != nil {
+		runIDs = append(runIDs, s.activeRun.ID)
+	}
 	s.mu.RUnlock()
 
-	if activeRun == nil {
+	if len(runIDs) == 0 {
 		return nil
 	}
 
-	s.recordRunEvent(activeRun, "info", "stopping active run %s", activeRun.ID)
 	stopCtx, cancel := withHarnessShutdownTimeout()
 	defer cancel()
-	return s.harness.Stop(stopCtx, activeRun.ID)
+	for _, runID := range runIDs {
+		s.recordRunEventByFields("info", s.source.Name, runID, "", "stopping active run %s", runID)
+		if err := s.harness.Stop(stopCtx, runID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) concurrencySummary() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sourceCap, agentCap, globalCap, effectiveCap := s.concurrencyCapsLocked()
+	return fmt.Sprintf("source %d · agent %d · global %d · effective %d", sourceCap, agentCap, globalCap, effectiveCap)
 }

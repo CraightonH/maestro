@@ -215,6 +215,7 @@ type SourceDefaultsEntry struct {
 	EpicFilter      FilterConfig     `yaml:"epic_filter"`
 	IssueFilter     FilterConfig     `yaml:"issue_filter"`
 	AgentType       string           `yaml:"agent_type"`
+	MaxActiveRuns   int              `yaml:"max_active_runs"`
 	PollInterval    Duration         `yaml:"poll_interval"`
 	RetryBase       Duration         `yaml:"retry_base"`
 	MaxRetryBackoff Duration         `yaml:"max_retry_backoff"`
@@ -258,6 +259,7 @@ type SourceConfig struct {
 	EpicFilter      FilterConfig         `yaml:"epic_filter"`
 	IssueFilter     FilterConfig         `yaml:"issue_filter"`
 	AgentType       string               `yaml:"agent_type"`
+	MaxActiveRuns   int                  `yaml:"max_active_runs"`
 	PollInterval    Duration             `yaml:"poll_interval"`
 	RetryBase       Duration             `yaml:"retry_base"`
 	MaxRetryBackoff Duration             `yaml:"max_retry_backoff"`
@@ -392,6 +394,13 @@ func (s SourceConfig) EffectiveRespectBlockers() bool {
 		return *s.RespectBlockers
 	}
 	return true
+}
+
+func (s SourceConfig) EffectiveMaxActiveRuns() int {
+	if s.MaxActiveRuns > 0 {
+		return s.MaxActiveRuns
+	}
+	return 1
 }
 
 func expandPath(path string) (string, error) {
@@ -865,7 +874,7 @@ func ResolveCodexConfig(defaults *CodexConfig, override *CodexConfig) CodexConfi
 	base := &CodexConfig{
 		Model:     "gpt-5.4",
 		Reasoning: "high",
-		MaxTurns:  20,
+		MaxTurns:  1,
 	}
 	return *mergeCodexConfig(mergeCodexConfig(base, defaults), override)
 }

@@ -47,6 +47,7 @@ type filterRelation struct {
 func DiagnoseConfig(cfg *Config) []string {
 	var warnings []string
 	warnings = append(warnings, diagnoseDockerReuseWarnings(cfg)...)
+	warnings = append(warnings, diagnoseConcurrencyWarnings(cfg)...)
 	for _, source := range cfg.Sources {
 		prefix := source.LabelPrefix
 		if prefix == "" {
@@ -97,6 +98,67 @@ func DiagnoseConfig(cfg *Config) []string {
 
 	sort.Strings(warnings)
 	return dedupeStrings(warnings)
+}
+
+func diagnoseConcurrencyWarnings(cfg *Config) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	globalCap := cfg.Defaults.MaxConcurrentGlobal
+	if globalCap < 1 {
+		globalCap = 1
+	}
+
+	agents := map[string]AgentTypeConfig{}
+	for _, agent := range cfg.AgentTypes {
+		agents[agent.Name] = agent
+	}
+
+	var warnings []string
+	for _, agent := range cfg.AgentTypes {
+		if agent.MaxConcurrent > globalCap {
+			warnings = append(warnings, fmt.Sprintf(
+				"agent %q max_concurrent=%d exceeds defaults.max_concurrent_global=%d; the effective agent cap is limited by the global cap",
+				agent.Name,
+				agent.MaxConcurrent,
+				globalCap,
+			))
+		}
+	}
+
+	for _, source := range cfg.Sources {
+		sourceCap := source.EffectiveMaxActiveRuns()
+		if sourceCap > globalCap {
+			warnings = append(warnings, fmt.Sprintf(
+				"source %q max_active_runs=%d exceeds defaults.max_concurrent_global=%d; the effective source cap is limited by the global cap",
+				source.Name,
+				sourceCap,
+				globalCap,
+			))
+		}
+		agent, ok := agents[source.AgentType]
+		if !ok {
+			continue
+		}
+		agentCap := agent.MaxConcurrent
+		if agentCap < 1 {
+			agentCap = 1
+		}
+		effectiveCap := min(sourceCap, agentCap, globalCap)
+		if effectiveCap < sourceCap || effectiveCap < agentCap {
+			warnings = append(warnings, fmt.Sprintf(
+				"source %q concurrency resolves to source=%d, agent=%d, global=%d, effective=%d",
+				source.Name,
+				sourceCap,
+				agentCap,
+				globalCap,
+				effectiveCap,
+			))
+		}
+	}
+
+	return warnings
 }
 
 func diagnoseDockerReuseWarnings(cfg *Config) []string {

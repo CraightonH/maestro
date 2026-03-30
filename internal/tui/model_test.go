@@ -33,7 +33,7 @@ func (s staticSnapshotProvider) RequestForcePoll(sourceName string) (orchestrato
 		Scope: "source",
 		Results: []orchestrator.ForcePollSourceResult{{
 			Source: sourceName,
-			Status: orchestrator.ForcePollQueued,
+			Status: orchestrator.ForcePollCompleted,
 		}},
 	}, nil
 }
@@ -65,7 +65,7 @@ func (s *forcePollSnapshotProvider) RequestForcePoll(sourceName string) (orchest
 		Scope: scope,
 		Results: []orchestrator.ForcePollSourceResult{{
 			Source: map[bool]string{true: sourceName, false: "all"}[sourceName != ""],
-			Status: orchestrator.ForcePollQueued,
+			Status: orchestrator.ForcePollCompleted,
 		}},
 	}, nil
 }
@@ -124,6 +124,89 @@ func TestViewGroupsSourcesAndShowsTags(t *testing.T) {
 	}
 }
 
+func TestViewShowsSourceActiveOccupancy(t *testing.T) {
+	snapshot := orchestrator.Snapshot{
+		SourceName: "project-a",
+		SourceSummaries: []orchestrator.SourceSummary{
+			{
+				Name:                   "project-a",
+				Tracker:                "gitlab",
+				ActiveRunCount:         2,
+				MaxActiveRuns:          3,
+				AgentMaxConcurrent:     4,
+				GlobalMaxConcurrent:    10,
+				EffectiveMaxConcurrent: 3,
+				Metrics: domain.RunMetrics{
+					TokensIn:    int64Ptr(120),
+					TokensOut:   int64Ptr(30),
+					TotalTokens: int64Ptr(150),
+				},
+				LastPollAt:             time.Date(2026, 3, 16, 10, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	model := NewModel(staticSnapshotProvider{snapshot: snapshot})
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "2/3 active") {
+		t.Fatalf("view missing source occupancy: %s", view)
+	}
+	if !strings.Contains(view, "source 3 · agent 4 · global 10 · effective 3") {
+		t.Fatalf("view missing concurrency hierarchy: %s", view)
+	}
+	if !strings.Contains(view, "Metrics: 120 in  30 out  150 total") {
+		t.Fatalf("view missing source metrics: %s", view)
+	}
+}
+
+func TestViewShowsActiveRunsInSourceDetail(t *testing.T) {
+	snapshot := orchestrator.Snapshot{
+		SourceName: "project-a",
+		SourceSummaries: []orchestrator.SourceSummary{
+			{
+				Name:           "project-a",
+				Tracker:        "gitlab",
+				ActiveRunCount: 2,
+				MaxActiveRuns:  3,
+			},
+		},
+		ActiveRuns: []domain.AgentRun{
+			{
+				ID:             "run-1",
+				SourceName:     "project-a",
+				Issue:          domain.Issue{Identifier: "team/project#1"},
+				Status:         domain.RunStatusActive,
+				CurrentTurn:    1,
+				MaxTurns:       3,
+				LastActivityAt: time.Now().Add(-10 * time.Second),
+			},
+			{
+				ID:             "run-2",
+				SourceName:     "project-a",
+				Issue:          domain.Issue{Identifier: "team/project#2"},
+				Status:         domain.RunStatusAwaiting,
+				CurrentTurn:    2,
+				MaxTurns:       4,
+				LastActivityAt: time.Now().Add(-20 * time.Second),
+			},
+		},
+	}
+	model := NewModel(staticSnapshotProvider{snapshot: snapshot})
+
+	view := stripANSI(model.View())
+	for _, want := range []string{
+		"Active runs:",
+		"team/project#1",
+		"team/project#2",
+		"turn 1/3",
+		"turn 2/4",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestViewAppliesGroupFilterAndSearch(t *testing.T) {
 	snapshot := orchestrator.Snapshot{
 		SourceName: "epic-a, project-a, linear-a",
@@ -143,7 +226,6 @@ func TestViewAppliesGroupFilterAndSearch(t *testing.T) {
 		searchQuery: "platform",
 		focus:       focusSources,
 		runSort:     runSortStallRisk,
-		retrySort:   retrySortDueSoonest,
 		quickFilter: quickFilterAll,
 		width:       80,
 		height:      24,
@@ -242,6 +324,7 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 					TotalTokens:               int64Ptr(7427004),
 					DurationMS:                int64Ptr(20000),
 					ThroughputTokensPerSecond: float64Ptr(986.4),
+					UpdatedAt:                 startedAt.Add(3 * time.Minute),
 				},
 				Issue: domain.Issue{
 					Identifier: "team/project#1",
@@ -284,6 +367,8 @@ func TestViewShowsSelectedRunDetails(t *testing.T) {
 		"Agent: coder (code-pr)  Harness: claude-code  Source: project-a  Execution:",
 		"docker · image=maestro-agent:latest",
 		"Turn: 2/4",
+		"Last output:",
+		"Last metrics:",
 		"policy=allowlist",
 		"allow=api.openai.com,*.anthropic.com",
 		"auth=env",
@@ -352,6 +437,26 @@ func TestUpdateTabSwitchesFocusAndRunSelection(t *testing.T) {
 	}
 }
 
+func TestHeaderShowsInstanceMetrics(t *testing.T) {
+	snapshot := orchestrator.Snapshot{
+		LastPollAt: time.Date(2026, 3, 29, 22, 0, 0, 0, time.UTC),
+		SourceSummaries: []orchestrator.SourceSummary{
+			{Name: "project-a", Tracker: "gitlab"},
+		},
+		InstanceMetrics: domain.RunMetrics{
+			TokensIn:    int64Ptr(7398146),
+			TokensOut:   int64Ptr(28858),
+			TotalTokens: int64Ptr(7427004),
+		},
+	}
+	model := NewModel(staticSnapshotProvider{snapshot: snapshot})
+
+	view := model.View()
+	if !viewContains(view, "Metrics: 7,398,146 in  28,858 out  7,427,004 total") {
+		t.Fatalf("view missing header metrics:\n%s", stripANSI(view))
+	}
+}
+
 func TestUpdateRequestsForcePollForSelectedSource(t *testing.T) {
 	provider := &forcePollSnapshotProvider{
 		snapshot: orchestrator.Snapshot{
@@ -370,7 +475,7 @@ func TestUpdateRequestsForcePollForSelectedSource(t *testing.T) {
 	if got := strings.Join(provider.polls, ","); got != "project-b" {
 		t.Fatalf("force poll requests = %q, want project-b", got)
 	}
-	if gotModel.notice != "force poll queued for project-b" {
+	if gotModel.notice != "" {
 		t.Fatalf("notice = %q", gotModel.notice)
 	}
 }
@@ -422,7 +527,7 @@ func TestViewShowsRetriesPane(t *testing.T) {
 	}
 }
 
-func TestUpdateCyclesSortModesAndCompactView(t *testing.T) {
+func TestUpdateCyclesRunSortMode(t *testing.T) {
 	model := NewModel(staticSnapshotProvider{snapshot: orchestrator.Snapshot{
 		SourceSummaries: []orchestrator.SourceSummary{{Name: "project-a", Tracker: "gitlab"}},
 		ActiveRuns: []domain.AgentRun{
@@ -437,18 +542,6 @@ func TestUpdateCyclesSortModesAndCompactView(t *testing.T) {
 	got := updated.(Model)
 	if got.runSort != runSortApprovalFirst {
 		t.Fatalf("run sort = %q", got.runSort)
-	}
-
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("O")})
-	got = updated.(Model)
-	if got.retrySort != retrySortOverdue {
-		t.Fatalf("retry sort = %q", got.retrySort)
-	}
-
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("v")})
-	got = updated.(Model)
-	if !got.compact {
-		t.Fatal("expected compact mode to be enabled")
 	}
 }
 

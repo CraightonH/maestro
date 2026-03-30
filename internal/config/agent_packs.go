@@ -77,6 +77,8 @@ func resolveAgentContexts(cfg *Config) error {
 
 const globalAgentContext = `- If the requested outcome is already achieved and there is no new issue, PR, or review feedback requiring action, stop instead of spending extra turns re-checking unchanged status.
 - Do not use extra turns only to confirm that nothing has changed.
+- If a command needs interactive stdin, a TTY, browser login, device auth, or other operator interaction, do not keep retrying it non-interactively.
+- When blocked on an interactive command, ask the operator to run it instead and provide the exact command or minimal steps needed.
 - Never print, paste, log, summarize, quote, or intentionally expose secrets.
 - If a command, file, diff, or tool output contains a secret, redact it before echoing or summarizing it.`
 

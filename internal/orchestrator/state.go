@@ -60,65 +60,69 @@ func (m *stateManager) restoreState() error {
 	s.mu.Unlock()
 
 	expiredApprovals := s.approvalMgr.expireTimedOutApprovals(now)
+	activeRuns := persistedActiveRuns(snapshot)
 
-	if snapshot.ActiveRun == nil {
+	if len(activeRuns) == 0 {
 		if len(expiredApprovals) > 0 || m.expirePendingApprovals("restart without active run") || m.expirePendingMessages("restart without active run") {
 			return m.saveStateBestEffort()
 		}
 		return nil
 	}
-
-	if hasTimedOutApprovalForRun(expiredApprovals, snapshot.ActiveRun.RunID) {
-		s.mu.Lock()
-		s.finished[snapshot.ActiveRun.IssueID] = state.TerminalIssue{
-			IssueID:        snapshot.ActiveRun.IssueID,
-			Identifier:     snapshot.ActiveRun.Identifier,
-			Status:         domain.RunStatusFailed,
-			Attempt:        snapshot.ActiveRun.Attempt,
-			IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
-			FinishedAt:     now,
-			Error:          "approval timeout",
-		}
-		s.mu.Unlock()
-		_ = m.expirePendingApprovals("restart after approval timeout")
-		_ = m.expirePendingMessages("restart after approval timeout")
-		s.recordEvent("warn", "recovered active run %s after approval timeout", snapshot.ActiveRun.RunID)
-		return m.saveStateBestEffort()
-	}
-
-	nextAttempt := snapshot.ActiveRun.Attempt + 1
-	if nextAttempt >= s.cfg.State.MaxAttempts {
-		s.mu.Lock()
-		s.finished[snapshot.ActiveRun.IssueID] = state.TerminalIssue{
-			IssueID:        snapshot.ActiveRun.IssueID,
-			Identifier:     snapshot.ActiveRun.Identifier,
-			Status:         domain.RunStatusFailed,
-			Attempt:        snapshot.ActiveRun.Attempt,
-			IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
-			FinishedAt:     time.Now(),
-			Error:          "run interrupted during shutdown or restart",
-		}
-		s.mu.Unlock()
-		_ = m.expirePendingApprovals("restart after interrupted run")
-		_ = m.expirePendingMessages("restart after interrupted run")
-		s.recordEvent("warn", "recovered active run %s but max attempts reached", snapshot.ActiveRun.RunID)
-		return m.saveStateBestEffort()
-	}
-
 	s.mu.Lock()
-	s.retryQueue[snapshot.ActiveRun.IssueID] = state.RetryEntry{
-		IssueID:        snapshot.ActiveRun.IssueID,
-		Identifier:     snapshot.ActiveRun.Identifier,
-		Attempt:        nextAttempt,
-		DueAt:          time.Now(),
-		Error:          "recovered active run after restart",
-		IssueUpdatedAt: snapshot.ActiveRun.IssueUpdatedAt,
+	for _, run := range activeRuns {
+		if hasTimedOutApprovalForRun(expiredApprovals, run.RunID) {
+			s.finished[run.IssueID] = state.TerminalIssue{
+				IssueID:        run.IssueID,
+				Identifier:     run.Identifier,
+				Status:         domain.RunStatusFailed,
+				Attempt:        run.Attempt,
+				IssueUpdatedAt: run.IssueUpdatedAt,
+				FinishedAt:     now,
+				Error:          "approval timeout",
+			}
+			continue
+		}
+
+		nextAttempt := run.Attempt + 1
+		if nextAttempt >= s.cfg.State.MaxAttempts {
+			s.finished[run.IssueID] = state.TerminalIssue{
+				IssueID:        run.IssueID,
+				Identifier:     run.Identifier,
+				Status:         domain.RunStatusFailed,
+				Attempt:        run.Attempt,
+				IssueUpdatedAt: run.IssueUpdatedAt,
+				FinishedAt:     now,
+				Error:          "run interrupted during shutdown or restart",
+			}
+			continue
+		}
+
+		s.retryQueue[run.IssueID] = state.RetryEntry{
+			IssueID:        run.IssueID,
+			Identifier:     run.Identifier,
+			Attempt:        nextAttempt,
+			DueAt:          now,
+			Error:          "recovered active run after restart",
+			IssueUpdatedAt: run.IssueUpdatedAt,
+			WorkspacePath:  run.WorkspacePath,
+		}
 	}
 	s.mu.Unlock()
 
 	_ = m.expirePendingApprovals("restart after interrupted run")
 	_ = m.expirePendingMessages("restart after interrupted run")
-	s.recordEvent("warn", "recovered active run %s as retry attempt %d", snapshot.ActiveRun.RunID, nextAttempt)
+	for _, run := range activeRuns {
+		nextAttempt := run.Attempt + 1
+		if hasTimedOutApprovalForRun(expiredApprovals, run.RunID) {
+			s.recordEvent("warn", "recovered active run %s after approval timeout", run.RunID)
+			continue
+		}
+		if nextAttempt >= s.cfg.State.MaxAttempts {
+			s.recordEvent("warn", "recovered active run %s but max attempts reached", run.RunID)
+			continue
+		}
+		s.recordEvent("warn", "recovered active run %s as retry attempt %d", run.RunID, nextAttempt)
+	}
 	return m.saveStateBestEffort()
 }
 
@@ -173,7 +177,12 @@ func (m *stateManager) snapshotState() state.Snapshot {
 	for _, entry := range s.messageHistory {
 		snapshot.MessageHistory = append(snapshot.MessageHistory, persistedMessageReplyFromHistory(entry))
 	}
-	snapshot.ActiveRun = persistedRunFromAgentRun(s.activeRun)
+	activeRuns := s.activeRunSnapshotsLocked(time.Now())
+	snapshot.ActiveRuns = persistedRunsFromAgentRuns(activeRuns)
+	if len(snapshot.ActiveRuns) > 0 {
+		first := snapshot.ActiveRuns[0]
+		snapshot.ActiveRun = &first
+	}
 	return snapshot
 }
 

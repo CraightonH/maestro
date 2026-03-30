@@ -70,12 +70,12 @@ func (r *messageRouter) recordMessageView(input MessageView) {
 
 	s.mu.Lock()
 	view.SourceName = s.source.Name
-	if s.activeRun != nil && s.activeRun.ID == view.RunID {
-		view.IssueID = s.activeRun.Issue.ID
-		view.IssueIdentifier = s.activeRun.Issue.Identifier
-		view.AgentName = s.activeRun.AgentName
-		s.activeRun.Status = domain.RunStatusAwaiting
-		s.activeRun.LastActivityAt = time.Now()
+	if run := s.activeRunByIDLocked(view.RunID); run != nil {
+		view.IssueID = run.Issue.ID
+		view.IssueIdentifier = run.Issue.Identifier
+		view.AgentName = run.AgentName
+		run.Status = domain.RunStatusAwaiting
+		run.LastActivityAt = time.Now()
 	}
 	s.messages[view.RequestID] = view
 	s.messageOrder = append(s.messageOrder, view.RequestID)
@@ -142,9 +142,9 @@ func (r *messageRouter) resolveMessage(requestID string, reply string, resolvedV
 	if hasWaiter {
 		delete(s.messageWaiters, requestID)
 	}
-	if s.activeRun != nil && s.activeRun.ID == request.RunID {
-		s.activeRun.Status = domain.RunStatusActive
-		s.activeRun.LastActivityAt = now
+	if run := s.activeRunByIDLocked(request.RunID); run != nil {
+		run.Status = domain.RunStatusActive
+		run.LastActivityAt = now
 	}
 	r.appendMessageHistory(history)
 	s.mu.Unlock()

@@ -143,8 +143,11 @@ The process keeps enough state to:
 
 The current runtime allows multiple sources in one config. Concurrency is bounded by:
 
-- `defaults.max_concurrent_global`
+- `sources[].max_active_runs`
 - `agent_types[].max_concurrent`
+- `defaults.max_concurrent_global`
+
+The effective concurrency for a source is the smallest of those three limits.
 
 When a retry becomes due, Maestro re-fetches the issue from the tracker. If the issue is terminal
 or no longer matches the source filter, the retry is automatically discarded instead of dispatched.
@@ -156,6 +159,8 @@ Stall detection uses the configured inactivity timeout:
 - `agent_types[].stall_timeout` for a per-agent override
 
 If a run stops producing observable output for longer than that window, Maestro stops it and schedules a retry.
+
+Force-poll actions from the TUI, web, and API bypass the normal poll interval when they are not debounced. A successful force poll runs immediately and resets the next scheduled poll window from that completed poll.
 
 Supported hook phases:
 

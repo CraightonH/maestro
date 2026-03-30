@@ -3,9 +3,12 @@ package api
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,6 +138,16 @@ func TestStatusEndpointReturnsSnapshotAndConfig(t *testing.T) {
 	if !ok || len(activeRuns) != 1 {
 		t.Fatalf("active runs = %#v, want 1 item", payload.Snapshot["active_runs"])
 	}
+	sourceSummaries, ok := payload.Snapshot["source_summaries"].([]any)
+	if ok && len(sourceSummaries) > 0 {
+		summary, ok := sourceSummaries[0].(map[string]any)
+		if !ok {
+			t.Fatalf("source summary = %#v, want object", sourceSummaries[0])
+		}
+		if _, ok := summary["max_active_runs"]; !ok {
+			t.Fatalf("source summary missing max_active_runs: %#v", summary)
+		}
+	}
 	approvals, ok := payload.Snapshot["pending_approvals"].([]any)
 	if !ok || len(approvals) != 1 {
 		t.Fatalf("approvals = %#v, want 1 item", payload.Snapshot["pending_approvals"])
@@ -160,6 +173,21 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 			LastPollCount: 3,
 			ClaimedCount:  1,
 			RetryCount:    1,
+			InstanceMetrics: domain.RunMetrics{
+				TokensIn:    &tokensIn,
+				TokensOut:   &tokensOut,
+				TotalTokens: &totalTokens,
+			},
+			HarnessMetrics: []orchestrator.MetricBreakdown{
+				{
+					Name: "claude-code",
+					Metrics: domain.RunMetrics{
+						TokensIn:    &tokensIn,
+						TokensOut:   &tokensOut,
+						TotalTokens: &totalTokens,
+					},
+				},
+			},
 			PendingApprovals: []orchestrator.ApprovalView{
 				{
 					RequestID:       "approval-1",
@@ -264,12 +292,32 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 			},
 			ActiveRuns: []domain.AgentRun{
 				{
-					ID:         "run-1",
-					AgentName:  "coder",
-					SourceName: "gitlab-a",
-					Status:     domain.RunStatusActive,
+					ID:             "run-1",
+					AgentName:      "coder",
+					AgentType:      "code-pr",
+					SourceName:     "gitlab-a",
+					HarnessKind:    "claude-code",
+					WorkspacePath:  "/tmp/workspace",
+					Status:         domain.RunStatusActive,
+					Attempt:        1,
+					ApprovalPolicy: "manual",
+					ApprovalState:  domain.ApprovalStateAwaiting,
+					StartedAt:      now,
+					LastActivityAt: now.Add(30 * time.Second),
+					Metrics: domain.RunMetrics{
+						TokensIn:    &tokensIn,
+						TokensOut:   &tokensOut,
+						TotalTokens: &totalTokens,
+						DurationMS:  &durationMS,
+					},
 					Issue: domain.Issue{
+						ID:         "123",
 						Identifier: "team/project#1",
+						Title:      "Fix bug",
+						URL:        "https://example.com/issues/123",
+						State:      "opened",
+						Labels:     []string{"bug", "urgent"},
+						UpdatedAt:  now,
 					},
 				},
 			},
@@ -309,13 +357,22 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 						Remaining: &remaining,
 						ResetAt:   now.Add(time.Hour),
 					},
-					LastPollAt:       now,
-					LastPollCount:    3,
-					ClaimedCount:     1,
-					RetryCount:       1,
-					ActiveRunCount:   1,
-					PendingApprovals: 1,
-					PendingMessages:  1,
+					LastPollAt:             now,
+					LastPollCount:          3,
+					ClaimedCount:           1,
+					RetryCount:             1,
+					ActiveRunCount:         1,
+					MaxActiveRuns:          3,
+					AgentMaxConcurrent:     4,
+					GlobalMaxConcurrent:    10,
+					EffectiveMaxConcurrent: 3,
+					Metrics: domain.RunMetrics{
+						TokensIn:    &tokensIn,
+						TokensOut:   &tokensOut,
+						TotalTokens: &totalTokens,
+					},
+					PendingApprovals:       1,
+					PendingMessages:        1,
 				},
 			},
 			RecentEvents: []orchestrator.Event{
@@ -352,6 +409,9 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 		`"workspace_path": "/tmp/workspace"`,
 		`"tokens_in": 120`,
 		`"total_tokens": 150`,
+		`"instance_metrics": {`,
+		`"harness_metrics": [`,
+		`"name": "claude-code"`,
 		`"remaining": 4200`,
 		`"mode": "docker"`,
 		`"image": "maestro-agent:latest"`,
@@ -364,6 +424,10 @@ func TestStatusEndpointEncodesRichSnapshotFields(t *testing.T) {
 		`"tool_mount_count": 1`,
 		`"stdout_tail": "hello"`,
 		`"display_group": "Core"`,
+		`"agent_max_concurrent": 4`,
+		`"global_max_concurrent": 10`,
+		`"effective_max_concurrent": 3`,
+		`"metrics": {`,
 		`"message": "dispatched"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -653,6 +717,52 @@ func TestStreamEndpointEmitsInitialUpdate(t *testing.T) {
 	}
 	if got := int(snapshot["approval_count"].(float64)); got != 1 {
 		t.Fatalf("approval_count = %d, want 1", got)
+	}
+}
+
+func TestRunShutsDownWithActiveStreamClient(t *testing.T) {
+	runtime := &fakeRuntime{
+		snapshot: orchestrator.Snapshot{
+			SourceSummaries: []orchestrator.SourceSummary{{Name: "gitlab-a", Tracker: "gitlab"}},
+			ActiveRuns: []domain.AgentRun{
+				{ID: "run-1", AgentName: "coder", SourceName: "gitlab-a", Issue: domain.Issue{Identifier: "team/project#1"}},
+			},
+		},
+	}
+	server := New(&config.Config{Server: config.ServerConfig{Enabled: true, Host: "127.0.0.1", Port: freeTCPPort(t)}}, slog.New(slog.NewTextHandler(io.Discard, nil)), runtime)
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.Run(runCtx)
+	}()
+
+	baseURL := "http://" + server.Addr()
+	waitForHTTPHealthy(t, baseURL+"/healthz")
+
+	resp, err := http.Get(baseURL + "/api/v1/stream")
+	if err != nil {
+		t.Fatalf("stream request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	reader := bufio.NewReader(resp.Body)
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("read stream event line: %v", err)
+	}
+	if _, err := reader.ReadString('\n'); err != nil {
+		t.Fatalf("read stream data line: %v", err)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("server run returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not shut down promptly with active stream client")
 	}
 }
 
@@ -1127,4 +1237,34 @@ logging:
 func strconvQuote(input string) string {
 	raw, _ := json.Marshal(input)
 	return string(raw)
+}
+
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for free port: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func waitForHTTPHealthy(t *testing.T, url string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			lastErr = errors.New(resp.Status)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("server never became healthy: %v", lastErr)
 }

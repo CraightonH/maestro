@@ -20,12 +20,12 @@ func (r *runManager) completeRun(runID string) {
 	var retry state.RetryEntry
 	scheduledRetry := false
 	s.mu.Lock()
-	if s.activeRun != nil && s.activeRun.ID == runID {
+	if run := s.activeRunByIDLocked(runID); run != nil {
 		if stop, ok := s.pendingStops[runID]; ok {
 			if stop.Retry {
-				scheduledRetry = s.stateMgr.scheduleRetry(s.activeRun, fmt.Errorf("%s", stop.Reason))
+				scheduledRetry = s.stateMgr.scheduleRetry(run, fmt.Errorf("%s", stop.Reason))
 				if scheduledRetry {
-					retry = s.retryQueue[s.activeRun.Issue.ID]
+					retry = s.retryQueue[run.Issue.ID]
 				} else {
 					status = stop.Status
 					comment = stop.Reason
@@ -36,29 +36,30 @@ func (r *runManager) completeRun(runID string) {
 			}
 			delete(s.pendingStops, runID)
 		}
-		s.activeRun.Status = status
-		s.activeRun.CompletedAt = time.Now()
-		s.activeRun.Metrics = domain.DeriveRunMetrics(s.activeRun.Metrics, s.activeRun.StartedAt, s.activeRun.CompletedAt, s.activeRun.CompletedAt)
-		issueID = s.activeRun.Issue.ID
-		issueIdentifier = s.activeRun.Issue.Identifier
+		run.Status = status
+		run.CompletedAt = time.Now()
+		run.Metrics = domain.DeriveRunMetrics(run.Metrics, run.StartedAt, run.CompletedAt, run.CompletedAt)
+		s.metricsStore.addCompleted(s.source.Name, run.HarnessKind, run.Metrics)
+		issueID = run.Issue.ID
+		issueIdentifier = run.Issue.Identifier
 		if scheduledRetry {
 			delete(s.finished, issueID)
 		} else {
 			s.finished[issueID] = state.TerminalIssue{
-				IssueID:        s.activeRun.Issue.ID,
-				Identifier:     s.activeRun.Issue.Identifier,
+				IssueID:        run.Issue.ID,
+				Identifier:     run.Issue.Identifier,
 				Status:         status,
-				Attempt:        s.activeRun.Attempt,
-				IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
-				FinishedAt:     s.activeRun.CompletedAt,
-				Metrics:        s.activeRun.Metrics,
+				Attempt:        run.Attempt,
+				IssueUpdatedAt: run.Issue.UpdatedAt,
+				FinishedAt:     run.CompletedAt,
+				Metrics:        run.Metrics,
 				Error:          comment,
 			}
 		}
 		if !scheduledRetry {
 			delete(s.retryQueue, issueID)
 		}
-		s.activeRun = nil
+		s.removeActiveRunLocked(runID)
 	}
 	s.mu.Unlock()
 
@@ -104,51 +105,52 @@ func (r *runManager) failRun(runID string, err error) {
 	var stop pendingStop
 	plannedStop := false
 	s.mu.Lock()
-	if s.activeRun != nil && s.activeRun.ID == runID {
-		s.activeRun.Status = domain.RunStatusFailed
-		s.activeRun.CompletedAt = time.Now()
-		s.activeRun.Metrics = domain.DeriveRunMetrics(s.activeRun.Metrics, s.activeRun.StartedAt, s.activeRun.CompletedAt, s.activeRun.CompletedAt)
-		s.activeRun.Error = err.Error()
-		issueID = s.activeRun.Issue.ID
-		issueIdentifier = s.activeRun.Issue.Identifier
+	if run := s.activeRunByIDLocked(runID); run != nil {
+		run.Status = domain.RunStatusFailed
+		run.CompletedAt = time.Now()
+		run.Metrics = domain.DeriveRunMetrics(run.Metrics, run.StartedAt, run.CompletedAt, run.CompletedAt)
+		s.metricsStore.addCompleted(s.source.Name, run.HarnessKind, run.Metrics)
+		run.Error = err.Error()
+		issueID = run.Issue.ID
+		issueIdentifier = run.Issue.Identifier
 		stop, plannedStop = s.pendingStops[runID]
 		delete(s.pendingStops, runID)
 		if plannedStop {
 			if stop.Retry {
-				scheduledRetry = s.stateMgr.scheduleRetry(s.activeRun, fmt.Errorf("%s: %w", stop.Reason, err))
+				scheduledRetry = s.stateMgr.scheduleRetry(run, fmt.Errorf("%s: %w", stop.Reason, err))
 				if scheduledRetry {
 					retry = s.retryQueue[issueID]
 				}
 			} else {
 				s.finished[issueID] = state.TerminalIssue{
-					IssueID:        s.activeRun.Issue.ID,
-					Identifier:     s.activeRun.Issue.Identifier,
+					IssueID:        run.Issue.ID,
+					Identifier:     run.Issue.Identifier,
 					Status:         stop.Status,
-					Attempt:        s.activeRun.Attempt,
-					IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
-					FinishedAt:     s.activeRun.CompletedAt,
-					Metrics:        s.activeRun.Metrics,
+					Attempt:        run.Attempt,
+					IssueUpdatedAt: run.Issue.UpdatedAt,
+					FinishedAt:     run.CompletedAt,
+					Metrics:        run.Metrics,
 					Error:          stop.Reason,
 				}
 			}
 		} else {
-			scheduledRetry = s.stateMgr.scheduleRetry(s.activeRun, err)
+			scheduledRetry = s.stateMgr.scheduleRetry(run, err)
 			if scheduledRetry {
 				retry = s.retryQueue[issueID]
 			} else {
 				s.finished[issueID] = state.TerminalIssue{
-					IssueID:        s.activeRun.Issue.ID,
-					Identifier:     s.activeRun.Issue.Identifier,
+					IssueID:        run.Issue.ID,
+					Identifier:     run.Issue.Identifier,
 					Status:         domain.RunStatusFailed,
-					Attempt:        s.activeRun.Attempt,
-					IssueUpdatedAt: s.activeRun.Issue.UpdatedAt,
-					FinishedAt:     s.activeRun.CompletedAt,
-					Metrics:        s.activeRun.Metrics,
+					Attempt:        run.Attempt,
+					IssueUpdatedAt: run.Issue.UpdatedAt,
+					FinishedAt:     run.CompletedAt,
+					Metrics:        run.Metrics,
 					Error:          err.Error(),
 				}
 			}
 		}
-		s.activeRun = nil
+		s.removeActiveRunLocked(runID)
 	}
 	s.mu.Unlock()
 
@@ -207,11 +209,12 @@ func (s *Service) isClaimed(issueID string) bool {
 func (r *runManager) updateRun(runID string, mutate func(*domain.AgentRun)) {
 	s := r.service
 	s.mu.Lock()
-	if s.activeRun == nil || s.activeRun.ID != runID {
+	run := s.activeRunByIDLocked(runID)
+	if run == nil {
 		s.mu.Unlock()
 		return
 	}
-	mutate(s.activeRun)
+	mutate(run)
 	s.mu.Unlock()
 	_ = s.stateMgr.saveStateBestEffort()
 }

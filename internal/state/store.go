@@ -12,7 +12,7 @@ import (
 	"github.com/tjohnson/maestro/internal/domain"
 )
 
-const currentVersion = 4
+const currentVersion = 5
 const backupCount = 2
 
 type CorruptStateError struct {
@@ -136,6 +136,7 @@ type Snapshot struct {
 	Finished         map[string]TerminalIssue    `json:"finished"`
 	RetryQueue       map[string]RetryEntry       `json:"retry_queue"`
 	ActiveRun        *PersistedRun               `json:"active_run,omitempty"`
+	ActiveRuns       []PersistedRun              `json:"active_runs,omitempty"`
 	PendingApprovals []PersistedApprovalRequest  `json:"pending_approvals,omitempty"`
 	ApprovalHistory  []PersistedApprovalDecision `json:"approval_history,omitempty"`
 	PendingMessages  []PersistedMessageRequest   `json:"pending_messages,omitempty"`
@@ -226,6 +227,9 @@ func (s *Store) Save(snapshot Snapshot) error {
 	if snapshot.PendingApprovals == nil {
 		snapshot.PendingApprovals = []PersistedApprovalRequest{}
 	}
+	if snapshot.ActiveRuns == nil {
+		snapshot.ActiveRuns = []PersistedRun{}
+	}
 	if snapshot.ApprovalHistory == nil {
 		snapshot.ApprovalHistory = []PersistedApprovalDecision{}
 	}
@@ -278,6 +282,7 @@ func emptySnapshot() Snapshot {
 		Version:          currentVersion,
 		Finished:         map[string]TerminalIssue{},
 		RetryQueue:       map[string]RetryEntry{},
+		ActiveRuns:       []PersistedRun{},
 		PendingApprovals: []PersistedApprovalRequest{},
 		ApprovalHistory:  []PersistedApprovalDecision{},
 		PendingMessages:  []PersistedMessageRequest{},

@@ -89,7 +89,6 @@ type tickMsg time.Time
 
 type focusPane string
 type runSortMode string
-type retrySortMode string
 type quickFilterMode string
 
 const (
@@ -103,9 +102,6 @@ const (
 	runSortOldest        runSortMode     = "oldest"
 	runSortNewest        runSortMode     = "newest"
 	runSortApprovalFirst runSortMode     = "approval-first"
-	retrySortDueSoonest  retrySortMode   = "due-soonest"
-	retrySortOverdue     retrySortMode   = "overdue-first"
-	retrySortAttempts    retrySortMode   = "highest-attempt"
 	quickFilterAll       quickFilterMode = "all"
 	quickFilterAttention quickFilterMode = "attention"
 	quickFilterAwaiting  quickFilterMode = "awaiting-approval"
@@ -142,8 +138,6 @@ type Model struct {
 	groupFilter      string
 	focus            focusPane
 	runSort          runSortMode
-	retrySort        retrySortMode
-	compact          bool
 	quickFilter      quickFilterMode
 	width            int
 	height           int
@@ -167,7 +161,6 @@ func NewModel(service snapshotProvider, opts ...ModelOption) Model {
 		snapshot:    service.Snapshot(),
 		focus:       focusSources,
 		runSort:     runSortStallRisk,
-		retrySort:   retrySortDueSoonest,
 		quickFilter: quickFilterAll,
 		width:       80,
 		height:      24,
@@ -316,13 +309,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "o":
 			m.runSort = m.runSort.next()
 			m.clampSelection()
-			return m, nil
-		case "O":
-			m.retrySort = m.retrySort.next()
-			m.clampSelection()
-			return m, nil
-		case "v":
-			m.compact = !m.compact
 			return m, nil
 		case "u":
 			m.quickFilter = m.quickFilter.toggle(quickFilterAttention)
@@ -611,28 +597,37 @@ func (m Model) renderHeader(w int, sources []orchestrator.SourceSummary, runs []
 	}
 	line1 := strings.Join(line1Parts, "    ")
 
-	line2Parts := make([]string, 0, 4)
+	line2Parts := make([]string, 0, 1)
+	if metrics := renderAggregateMetrics(m.snapshot.InstanceMetrics); metrics != "" {
+		line2Parts = append(line2Parts, "Metrics: "+styleDim.Render(metrics))
+	}
+	line2 := strings.Join(line2Parts, "    ")
+
+	line3Parts := make([]string, 0, 4)
 	if !m.snapshot.LastPollAt.IsZero() && m.pollInterval > 0 {
 		nextPoll := time.Until(m.snapshot.LastPollAt.Add(m.pollInterval)).Round(time.Second)
 		if nextPoll < 0 {
-			line2Parts = append(line2Parts, "Next poll: "+styleYellow.Render("now"))
+			line3Parts = append(line3Parts, "Next poll: "+styleYellow.Render("now"))
 		} else {
-			line2Parts = append(line2Parts, "Next poll: "+styleDim.Render("~"+nextPoll.String()))
+			line3Parts = append(line3Parts, "Next poll: "+styleDim.Render("~"+nextPoll.String()))
 		}
 	} else if !m.snapshot.LastPollAt.IsZero() {
-		line2Parts = append(line2Parts, "Last poll: "+styleDim.Render(timeAgo(m.snapshot.LastPollAt)+" ago"))
+		line3Parts = append(line3Parts, "Last poll: "+styleDim.Render(timeAgo(m.snapshot.LastPollAt)+" ago"))
 	}
 	if m.snapshot.ClaimedCount > 0 {
-		line2Parts = append(line2Parts, "Claimed: "+styleGreen.Render(fmt.Sprintf("%d", m.snapshot.ClaimedCount)))
+		line3Parts = append(line3Parts, "Claimed: "+styleGreen.Render(fmt.Sprintf("%d", m.snapshot.ClaimedCount)))
 	}
 	if m.webURL != "" {
-		line2Parts = append(line2Parts, "Web: "+styleCyan.Render(m.webURL))
+		line3Parts = append(line3Parts, "Web: "+styleCyan.Render(m.webURL))
 	}
-	line2 := strings.Join(line2Parts, "    ")
+	line3 := strings.Join(line3Parts, "    ")
 
 	content := line1
 	if line2 != "" {
 		content += "\n" + line2
+	}
+	if line3 != "" {
+		content += "\n" + line3
 	}
 
 	panel := panelStyle(w, false)
@@ -699,7 +694,7 @@ func (m Model) renderSourcesPanel(w int, sources []orchestrator.SourceSummary) s
 			nameStr := lipgloss.NewStyle().Width(22).Render(summary.Name)
 			trackerStr := styleDim.Render(padRight(summary.Tracker, 12))
 
-			active := styleGreen.Render(fmt.Sprintf("%d", summary.ActiveRunCount)) + " active"
+			active := styleGreen.Render(sourceActiveOccupancy(summary)) + " active"
 			retry := retryCountStyle(summary.RetryCount).Render(fmt.Sprintf("%d", summary.RetryCount)) + " retry"
 
 			filterStr := ""
@@ -745,7 +740,7 @@ func (m Model) renderSourceDetail(w int, sources []orchestrator.SourceSummary, r
 		selected.Name,
 		healthIcon(health),
 		styleDim.Render(selected.Tracker),
-		styleDim.Render("active:") + styleGreen.Render(fmt.Sprintf("%d", selected.ActiveRunCount)),
+		styleDim.Render("active:") + styleGreen.Render(sourceActiveOccupancy(selected)),
 		styleDim.Render("retry:") + retryCountStyle(selected.RetryCount).Render(fmt.Sprintf("%d", selected.RetryCount)),
 		styleDim.Render("claimed:") + fmt.Sprintf("%d", selected.ClaimedCount),
 	}
@@ -761,6 +756,27 @@ func (m Model) renderSourceDetail(w int, sources []orchestrator.SourceSummary, r
 	}
 	if execution := formatExecutionSummary(selected.Execution); execution != "" {
 		lines = append(lines, styleDim.Render("Execution: ")+styleCyan.Render(execution))
+	}
+	if metrics := renderAggregateMetrics(selected.Metrics); metrics != "" {
+		lines = append(lines, styleDim.Render("Metrics: ")+metrics)
+	}
+	lines = append(lines, styleDim.Render("Concurrency: ")+fmt.Sprintf(
+		"source %d · agent %d · global %d · effective %d",
+		selected.MaxActiveRuns,
+		max(selected.AgentMaxConcurrent, 1),
+		max(selected.GlobalMaxConcurrent, 1),
+		max(selected.EffectiveMaxConcurrent, 1),
+	))
+	sourceRuns := m.runsForSource(selected.Name, runs)
+	if len(sourceRuns) > 0 {
+		lines = append(lines, styleDim.Render("Active runs:"))
+		for _, run := range sourceRuns {
+			runLine := fmt.Sprintf("  %s  %s  %s", run.Issue.Identifier, runStatusBadge(run), runIdle(run))
+			if turnSummary := formatRunTurns(run); turnSummary != "" {
+				runLine += "  turn " + turnSummary
+			}
+			lines = append(lines, runLine)
+		}
 	}
 
 	// Source events
@@ -827,26 +843,20 @@ func (m Model) renderRunsPanel(w int, runs []domain.AgentRun) string {
 		age := padRight(timeAgo(run.StartedAt), colAge)
 		idle := padRight(runIdle(run), colIdle)
 
-		if m.compact {
-			row := indicator + issue + agent + source + badgeStr + age + idle
-			rows = append(rows, row)
-		} else {
-			row := indicator + issue + agent + source + badgeStr + age + idle
-			rows = append(rows, row)
-			// Extra detail line in expanded mode
-			title := strings.TrimSpace(run.Issue.Title)
-			if title == "" {
-				title = "(untitled)"
-			}
-			detail := styleDim.Render("    " + title)
-			if strings.TrimSpace(run.Issue.URL) != "" {
-				detail += "  " + styleCyan.Render(run.Issue.URL)
-			}
-			if run.Error != "" {
-				detail += "  " + styleRed.Render(run.Error)
-			}
-			rows = append(rows, detail)
+		row := indicator + issue + agent + source + badgeStr + age + idle
+		rows = append(rows, row)
+		title := strings.TrimSpace(run.Issue.Title)
+		if title == "" {
+			title = "(untitled)"
 		}
+		detail := styleDim.Render("    " + title)
+		if strings.TrimSpace(run.Issue.URL) != "" {
+			detail += "  " + styleCyan.Render(run.Issue.URL)
+		}
+		if run.Error != "" {
+			detail += "  " + styleRed.Render(run.Error)
+		}
+		rows = append(rows, detail)
 	}
 
 	content := strings.Join(rows, "\n")
@@ -909,13 +919,16 @@ func (m Model) renderRunDetail(w int, runs []domain.AgentRun) string {
 	)
 	lines = append(lines, strings.Join(statusParts, "  "))
 
-	// Started + last activity on one line.
-	timeParts := make([]string, 0, 3)
+	// Started + last output/metrics activity on one line.
+	timeParts := make([]string, 0, 4)
 	if !selected.StartedAt.IsZero() {
 		timeParts = append(timeParts, styleDim.Render("Started: ")+timeAgo(selected.StartedAt)+" ago")
 	}
 	if !selected.LastActivityAt.IsZero() {
-		timeParts = append(timeParts, styleDim.Render("Last activity: ")+timeAgo(selected.LastActivityAt)+" ago")
+		timeParts = append(timeParts, styleDim.Render("Last output: ")+timeAgo(selected.LastActivityAt)+" ago")
+	}
+	if !selected.Metrics.UpdatedAt.IsZero() {
+		timeParts = append(timeParts, styleDim.Render("Last metrics: ")+timeAgo(selected.Metrics.UpdatedAt)+" ago")
 	}
 	if !selected.CompletedAt.IsZero() {
 		timeParts = append(timeParts, styleDim.Render("Completed: ")+selected.CompletedAt.Format(time.RFC3339))
@@ -983,12 +996,10 @@ func (m Model) renderRunDetail(w int, runs []domain.AgentRun) string {
 func (m Model) renderRetriesPanel(w int, retries []orchestrator.RetryView) string {
 	focused := m.focus == focusRetries
 
-	sortLabel := styleDim.Render(" sort:" + string(m.retrySort))
-
 	if len(retries) == 0 {
 		panel := panelStyle(w, focused)
 		title := panelTitleStyle().Render(" Retry Queue ")
-		return panel.Render(title + sortLabel + "\n" + styleDim.Render("No queued retries"))
+		return panel.Render(title + "\n" + styleDim.Render("No queued retries"))
 	}
 
 	colIssue := 18
@@ -1032,7 +1043,7 @@ func (m Model) renderRetriesPanel(w int, retries []orchestrator.RetryView) strin
 	content := strings.Join(rows, "\n")
 	panel := panelStyle(w, focused)
 	title := panelTitleStyle().Render(" Retry Queue ")
-	return panel.Render(title + sortLabel + "\n" + content)
+	return panel.Render(title + "\n" + content)
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,10 +1266,8 @@ func (m Model) renderFooter() string {
 		"j/k", "move",
 		"p", "poll",
 		"P", "poll all",
-		"v", "compact",
 		"/", "search",
 		"o", "sort runs",
-		"O", "sort retries",
 		"f", "group",
 		"c", "clear",
 		"q", "quit confirm",
@@ -1314,32 +1323,45 @@ func forcePollNotice(result orchestrator.ForcePollResult, sourceName string) str
 	if strings.TrimSpace(sourceName) != "" || (result.Scope == "source" && len(result.Results) == 1) {
 		item := result.Results[0]
 		switch item.Status {
+		case orchestrator.ForcePollCompleted:
+			return ""
 		case orchestrator.ForcePollQueued:
-			return "force poll queued for " + item.Source
+			return "force poll requested for " + item.Source
 		case orchestrator.ForcePollDebounced:
 			return "force poll debounced for " + item.Source
+		case orchestrator.ForcePollTimedOut:
+			return "force poll timed out for " + item.Source
 		default:
 			return "poll already in progress for " + item.Source
 		}
 	}
 
+	completed := 0
 	queued := 0
 	debounced := 0
 	alreadyQueued := 0
+	timedOut := 0
 	for _, item := range result.Results {
 		switch item.Status {
+		case orchestrator.ForcePollCompleted:
+			completed++
 		case orchestrator.ForcePollQueued:
 			queued++
 		case orchestrator.ForcePollDebounced:
 			debounced++
 		case orchestrator.ForcePollAlreadyQueued:
 			alreadyQueued++
+		case orchestrator.ForcePollTimedOut:
+			timedOut++
 		}
 	}
 
-	parts := make([]string, 0, 3)
+	parts := make([]string, 0, 5)
+	if completed > 0 {
+		parts = append(parts, fmt.Sprintf("%d completed", completed))
+	}
 	if queued > 0 {
-		parts = append(parts, fmt.Sprintf("%d queued", queued))
+		parts = append(parts, fmt.Sprintf("%d requested", queued))
 	}
 	if debounced > 0 {
 		parts = append(parts, fmt.Sprintf("%d debounced", debounced))
@@ -1347,8 +1369,14 @@ func forcePollNotice(result orchestrator.ForcePollResult, sourceName string) str
 	if alreadyQueued > 0 {
 		parts = append(parts, fmt.Sprintf("%d already polling", alreadyQueued))
 	}
+	if timedOut > 0 {
+		parts = append(parts, fmt.Sprintf("%d timed out", timedOut))
+	}
 	if len(parts) == 0 {
 		return "force poll requested"
+	}
+	if completed > 0 && queued == 0 && debounced == 0 && alreadyQueued == 0 && timedOut == 0 {
+		return ""
 	}
 	return "force poll: " + strings.Join(parts, ", ")
 }
@@ -1409,16 +1437,6 @@ func shutdownExitCmd() tea.Cmd {
 
 func (m runSortMode) next() runSortMode {
 	order := []runSortMode{runSortStallRisk, runSortApprovalFirst, runSortOldest, runSortNewest}
-	for i, item := range order {
-		if item == m {
-			return order[(i+1)%len(order)]
-		}
-	}
-	return order[0]
-}
-
-func (m retrySortMode) next() retrySortMode {
-	order := []retrySortMode{retrySortDueSoonest, retrySortOverdue, retrySortAttempts}
 	for i, item := range order {
 		if item == m {
 			return order[(i+1)%len(order)]
@@ -1589,7 +1607,7 @@ func (m Model) filteredRetries() []orchestrator.RetryView {
 		}
 		out = append(out, retry)
 	}
-	sortRetries(out, m.retrySort)
+	sortRetries(out)
 	return out
 }
 
@@ -1660,6 +1678,19 @@ func (m Model) selectedRunExecution(runs []domain.AgentRun) *orchestrator.Execut
 		}
 	}
 	return nil
+}
+
+func (m Model) runsForSource(sourceName string, runs []domain.AgentRun) []domain.AgentRun {
+	if sourceName == "" || len(runs) == 0 {
+		return nil
+	}
+	matches := make([]domain.AgentRun, 0, len(runs))
+	for _, run := range runs {
+		if run.SourceName == sourceName {
+			matches = append(matches, run)
+		}
+	}
+	return matches
 }
 
 func (m Model) selectedSourceEvents(summaries []orchestrator.SourceSummary) []orchestrator.Event {
@@ -1898,13 +1929,6 @@ func indentBlock(raw string, prefix string) string {
 	return strings.Join(lines, "\n")
 }
 
-func compactLabel(compact bool) string {
-	if compact {
-		return "compact"
-	}
-	return "expanded"
-}
-
 func eventContextSummary(event orchestrator.Event) string {
 	parts := make([]string, 0, 2)
 	if strings.TrimSpace(event.Source) != "" {
@@ -1982,7 +2006,7 @@ func messageLabel(kind string) string {
 }
 
 func renderRunMetrics(metrics domain.RunMetrics) string {
-	parts := make([]string, 0, 6)
+	parts := make([]string, 0, 5)
 	if metrics.TokensIn != nil {
 		parts = append(parts, fmt.Sprintf("%s in", formatCount(*metrics.TokensIn)))
 	}
@@ -1992,16 +2016,24 @@ func renderRunMetrics(metrics domain.RunMetrics) string {
 	if metrics.TotalTokens != nil {
 		parts = append(parts, fmt.Sprintf("%s total", formatCount(*metrics.TotalTokens)))
 	}
-	if metrics.CostUSD != nil {
-		parts = append(parts, fmt.Sprintf("$%.4f", *metrics.CostUSD))
-	}
-	if metrics.DurationMS != nil && (metrics.TokensIn != nil || metrics.TokensOut != nil || metrics.TotalTokens != nil || metrics.CostUSD != nil || metrics.ThroughputTokensPerSecond != nil) {
+	if metrics.DurationMS != nil && (metrics.TokensIn != nil || metrics.TokensOut != nil || metrics.TotalTokens != nil || metrics.ThroughputTokensPerSecond != nil) {
 		parts = append(parts, formatDurationMS(*metrics.DurationMS))
 	}
 	if metrics.ThroughputTokensPerSecond != nil {
 		parts = append(parts, fmt.Sprintf("%.1f tok/s", *metrics.ThroughputTokensPerSecond))
 	}
 	return strings.Join(parts, "  ")
+}
+
+func renderAggregateMetrics(metrics domain.RunMetrics) string {
+	aggregate := domain.RunMetrics{
+		TokensIn:    metrics.TokensIn,
+		TokensOut:   metrics.TokensOut,
+		TotalTokens: metrics.TotalTokens,
+		CostUSD:     metrics.CostUSD,
+		UpdatedAt:   metrics.UpdatedAt,
+	}
+	return renderRunMetrics(aggregate)
 }
 
 func renderTrackerRateLimit(rateLimit *domain.TrackerRateLimit) string {
@@ -2156,6 +2188,14 @@ func sourceHealth(summary orchestrator.SourceSummary, events []orchestrator.Even
 	}
 }
 
+func sourceActiveOccupancy(summary orchestrator.SourceSummary) string {
+	maxRuns := summary.MaxActiveRuns
+	if maxRuns <= 0 {
+		maxRuns = 1
+	}
+	return fmt.Sprintf("%d/%d", summary.ActiveRunCount, maxRuns)
+}
+
 func sourceHasEventLevel(sourceName string, events []orchestrator.Event, level string) bool {
 	for _, event := range events {
 		if event.Source == sourceName && strings.EqualFold(event.Level, level) {
@@ -2196,31 +2236,9 @@ func sortActiveRuns(runs []domain.AgentRun, mode runSortMode) {
 	})
 }
 
-func sortRetries(retries []orchestrator.RetryView, mode retrySortMode) {
-	now := time.Now()
+func sortRetries(retries []orchestrator.RetryView) {
 	slices.SortFunc(retries, func(a, b orchestrator.RetryView) int {
-		switch mode {
-		case retrySortAttempts:
-			if a.Attempt != b.Attempt {
-				if a.Attempt > b.Attempt {
-					return -1
-				}
-				return 1
-			}
-			return compareTime(a.DueAt, b.DueAt, a.IssueIdentifier, b.IssueIdentifier)
-		case retrySortOverdue:
-			aOverdue := a.DueAt.Before(now)
-			bOverdue := b.DueAt.Before(now)
-			if aOverdue != bOverdue {
-				if aOverdue {
-					return -1
-				}
-				return 1
-			}
-			return compareTime(a.DueAt, b.DueAt, a.IssueIdentifier, b.IssueIdentifier)
-		default:
-			return compareTime(a.DueAt, b.DueAt, a.IssueIdentifier, b.IssueIdentifier)
-		}
+		return compareTime(a.DueAt, b.DueAt, a.IssueIdentifier, b.IssueIdentifier)
 	})
 }
 

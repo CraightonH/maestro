@@ -171,136 +171,6 @@ prompt rendering (`.Agent`, `.Issue`, `.User`).
 
 ## Orchestration & Scheduling
 
-### 🔀 Multiple Active Runs Per Source
-
-Allow one source to dispatch and manage multiple active runs concurrently instead of
-the current one-source/one-run model.
-
-**Why**: The current scoped `Service` still owns a single `activeRun`. That means one
-configured source can only work one issue at a time, even if:
-
-- the agent type allows higher concurrency
-- the global limiter has free capacity
-- the source poll returns several eligible issues
-
-This is the wrong model for queue-like sources where one workflow should be able to
-process several issues in parallel.
-
-**Current limitation**:
-
-- `Service` owns exactly one `activeRun`
-- the poll loop treats any active run as “source busy”
-- approvals, messages, tracker reconciliation, stall detection, stop handling, state
-  persistence, API, TUI, and web all assume one active run per source
-- `agent_types[].max_concurrent` only limits total shared agent concurrency across
-  services; it does not let a single source dispatch multiple issues
-
-**Proposed config shape**:
-
-```yaml
-sources:
-  - name: coding
-    tracker: gitlab
-    agent_type: dev-codex
-    max_active_runs: 3
-```
-
-Default:
-
-- `max_active_runs: 1` for backward compatibility
-
-Effective concurrency should become the minimum of:
-
-- `sources[].max_active_runs`
-- `agent_types[].max_concurrent`
-- `defaults.max_concurrent_global`
-
-**Phase 1: Internal model refactor**
-
-- replace `Service.activeRun` with a keyed run set:
-  - `activeRuns map[string]*domain.AgentRun`
-  - stable ordering for UI/API selection where needed
-- update dispatch loop to:
-  - reconcile all active runs
-  - dispatch due retries while source capacity remains
-  - dispatch new issues while source capacity remains
-- make all run mutations keyed by `runID`, not “the active run”
-- keep `claimed` per issue as the duplicate-dispatch guard
-
-**Phase 2: Control-flow conversion**
-
-- approvals resolve against `activeRuns[request.RunID]`
-- messages resolve against `activeRuns[request.RunID]`
-- stall detection iterates all active runs
-- tracker reconciliation becomes per-run/per-issue
-- stop/finalize paths release only the targeted run slot
-
-Files primarily affected:
-
-- `internal/orchestrator/service.go`
-- `internal/orchestrator/loop.go`
-- `internal/orchestrator/run_manager.go`
-- `internal/orchestrator/run_finalize.go`
-- `internal/orchestrator/approvals.go`
-- `internal/orchestrator/messages.go`
-- `internal/orchestrator/tracker_sync.go`
-- `internal/orchestrator/stall.go`
-- `internal/orchestrator/stop.go`
-- `internal/orchestrator/activity.go`
-
-**Phase 3: Persistence and recovery**
-
-- change persisted state from one `ActiveRun` to `ActiveRuns []PersistedRun`
-- recover interrupted runs as a set, not a singleton
-- update dry-run recovery modeling to match
-
-Files primarily affected:
-
-- `internal/state/store.go`
-- `internal/orchestrator/state.go`
-- `internal/orchestrator/state_convert.go`
-- `internal/orchestrator/dry_run.go`
-
-**Phase 4: API / TUI / web**
-
-- stop privileging one source-level `ActiveRun` as the only truth
-- show multiple active runs per source cleanly
-- allow source detail views to drill into one selected run at a time
-- surface source occupancy such as `2/3 active`
-
-Files primarily affected:
-
-- `internal/api/server.go`
-- `internal/api/view_convert.go`
-- `internal/tui/model.go`
-- `web/src/components/WorkflowWorkspace.tsx`
-
-**Phase 5: Scheduling policy cleanup**
-
-- decide fairness and priority when capacity opens:
-  - retries first or mixed?
-  - oldest eligible issue first?
-  - starvation prevention for new work
-- optionally add source-level scheduling policy later if needed
-
-**Suggested rollout**
-
-1. Add `sources[].max_active_runs` and internal `activeRuns` map
-2. Convert finalize/stop/reconcile paths to keyed multi-run behavior
-3. Convert persistence and recovery
-4. Update API/TUI/web
-5. Add fairness/policy refinements once the multi-run baseline is stable
-
-**Verification needed**
-
-- hermetic tests for:
-  - one source dispatching 2-3 issues concurrently
-  - source capacity respected even when agent/global capacity is higher
-  - approvals and messages routed to the correct run
-  - one run finishing while others keep running
-  - restart recovery with multiple persisted active runs
-- live validation with at least one real tracker + harness path after Phase 1/2 lands
-
 ### 🔀 Subtask Orchestration
 
 A dispatch mode that processes a parent issue's subtasks sequentially, with a fresh agent
@@ -347,6 +217,24 @@ polling. Config: `webhooks.enabled`, `webhooks.secret_env`.
 Claude multi-turn continuation now resumes persisted sessions between completed turns.
 One remaining refinement is to resume a permission-blocked turn directly instead of
 rerunning that prompt from the last completed session after approval.
+
+---
+
+### 🔁 True Harness Resume After Maestro Restart
+
+Maestro already preserves workspace state and converts interrupted active runs into
+immediate retries after restart. What it does not do yet is reattach to the same live
+harness session.
+
+**Why**: Restart recovery currently behaves like "start a fresh run in the same
+checkout." That is useful, but it is weaker than a true `/resume` of the original
+Claude or Codex session.
+
+**To ship**: Persist enough harness session identity to reconnect to the original
+Claude/Codex session or thread after Maestro restarts, and fall back to the current
+workspace-based retry path only if reattachment fails. This would also need a clear
+policy for restoring pending approvals/messages versus invalidating them when the
+underlying session cannot be resumed safely.
 
 ---
 
@@ -523,6 +411,49 @@ Queue incoming messages when an agent is busy (mid-execution) and automatically 
 them sequentially when the current turn completes.
 
 **Why**: Messages/approvals arriving mid-execution may be lost or require manual retry.
+
+---
+
+### 💻 Operator-Executed Command Requests
+
+Allow agents to ask Maestro for an operator-executed local command when they are blocked on
+interactive or operator-owned tooling, for example:
+
+- browser/device login flows
+- MFA-gated cloud CLIs
+- local-only credentials or hardware-backed auth
+- commands that require a real TTY or stdin interaction
+
+Instead of repeatedly failing a non-interactive command, the agent would emit a structured
+request containing:
+
+- the exact command to run
+- working directory
+- why it is needed
+- what output or result should be pasted back
+
+Maestro would surface that request through the existing operator channels (TUI/web/Slack)
+as a pending control item. The operator could then approve it, run it locally in their own
+shell, and reply with the result for the agent to continue.
+
+**Why**: Some valuable workflows require operator-owned local context that should not be
+proxied through the agent runtime. A structured handoff is safer and more reliable than
+trying to force every interactive CLI through the harness.
+
+**To ship**: New operator-command message kind, a structured prompt contract for agents,
+UI rendering for copy/run/reply flow, and reply handling that feeds command results back
+into the active run.
+
+**Follow-up**: Capture and surface the last interactive/local-only command that failed so
+stderr-only errors like `write_stdin failed: stdin is closed for this session` are
+actionable in the TUI/web/API even when the command never became a formal approval
+request.
+
+**Related improvement**: detect long quiet single-turn runs that have likely already
+finished the meaningful work. For example, if a review agent has already merged the PR
+or the workspace is clean on the target branch but the harness remains active with no new
+output or metrics, surface that as a likely-lingering run so the operator can stop it
+confidently.
 
 ---
 
