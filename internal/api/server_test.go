@@ -805,7 +805,7 @@ sources:
   - name: demo
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       project: team/project
     filter:
       labels:
@@ -879,7 +879,7 @@ sources:
   - name: demo
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       project: team/project
     filter:
       labels:
@@ -1123,7 +1123,7 @@ sources:
   - name: gitlab-a
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: MISSING_GITLAB_TOKEN
       project: team/project
     filter:
@@ -1207,7 +1207,7 @@ sources:
   - name: gitlab-a
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:

@@ -353,6 +353,7 @@ func TestServiceWithLiveGitLabReconciliationStopsRunWhenIssueCloses(t *testing.T
 		"MAESTRO_TEST_GITLAB_PROJECT",
 		"MAESTRO_TEST_GITLAB_LABEL",
 	)
+	glDomain, glProtocol := liveGitLabDomainAndProtocol(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 
 	cfg := testConfig(t)
 	cfg.User.GitLabUsername = strings.TrimSpace(os.Getenv("MAESTRO_TEST_GITLAB_ASSIGNEE"))
@@ -362,7 +363,8 @@ func TestServiceWithLiveGitLabReconciliationStopsRunWhenIssueCloses(t *testing.T
 		Repo:      createGitRepo(t),
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Project:  env["MAESTRO_TEST_GITLAB_PROJECT"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -465,6 +467,7 @@ func TestServiceWithLiveGitLabEpicReconciliationStopsRunWhenEpicCloses(t *testin
 		"MAESTRO_TEST_GITLAB_EPIC_LABEL",
 		"MAESTRO_TEST_GITLAB_EPIC_REPO",
 	)
+	glDomain, glProtocol := liveGitLabDomainAndProtocol(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 
 	cfg := testConfig(t)
 	cfg.User.GitLabUsername = strings.TrimSpace(os.Getenv("MAESTRO_TEST_GITLAB_ASSIGNEE"))
@@ -474,7 +477,8 @@ func TestServiceWithLiveGitLabEpicReconciliationStopsRunWhenEpicCloses(t *testin
 		Repo:      env["MAESTRO_TEST_GITLAB_EPIC_REPO"],
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Group:    env["MAESTRO_TEST_GITLAB_EPIC_GROUP"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -697,6 +701,7 @@ func TestLiveMultiSourceTrackerTerminalStopDoesNotCascade(t *testing.T) {
 		"MAESTRO_TEST_LINEAR_TOKEN",
 		"MAESTRO_TEST_LINEAR_PROJECT",
 	)
+	glDomain, glProtocol := liveGitLabDomainAndProtocol(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 
 	root := t.TempDir()
 	projectRoot := filepath.Join(root, "project")
@@ -714,7 +719,8 @@ func TestLiveMultiSourceTrackerTerminalStopDoesNotCascade(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Project:  env["MAESTRO_TEST_GITLAB_PROJECT"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -737,7 +743,8 @@ func TestLiveMultiSourceTrackerTerminalStopDoesNotCascade(t *testing.T) {
 		Repo:      env["MAESTRO_TEST_GITLAB_EPIC_REPO"],
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Group:    env["MAESTRO_TEST_GITLAB_EPIC_GROUP"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -917,6 +924,7 @@ func TestLiveMultiSourceRetryDoesNotBlockPeers(t *testing.T) {
 		"MAESTRO_TEST_LINEAR_TOKEN",
 		"MAESTRO_TEST_LINEAR_PROJECT",
 	)
+	glDomain, glProtocol := liveGitLabDomainAndProtocol(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 
 	root := t.TempDir()
 	projectRoot := filepath.Join(root, "project")
@@ -934,7 +942,8 @@ func TestLiveMultiSourceRetryDoesNotBlockPeers(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Project:  env["MAESTRO_TEST_GITLAB_PROJECT"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -957,7 +966,8 @@ func TestLiveMultiSourceRetryDoesNotBlockPeers(t *testing.T) {
 		Repo:      env["MAESTRO_TEST_GITLAB_EPIC_REPO"],
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   glDomain,
+			Protocol: glProtocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Group:    env["MAESTRO_TEST_GITLAB_EPIC_GROUP"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -1365,4 +1375,15 @@ func liveGitLabGetEpicState(ctx context.Context, baseURL string, token string, g
 		return "", err
 	}
 	return epic.State, nil
+}
+
+// liveGitLabDomainAndProtocol splits a full URL env var (e.g. "https://gitlab.example.com")
+// into (domain, protocol) for the SourceConnection struct fields.
+func liveGitLabDomainAndProtocol(t *testing.T, rawURL string) (domain, protocol string) {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse base URL %q: %v", rawURL, err)
+	}
+	return u.Host, u.Scheme
 }

@@ -105,7 +105,7 @@ func newDryRunService(cfg *config.Config, logger *slog.Logger, tr tracker.Tracke
 		source:     cfg.Sources[0],
 		agent:      cfg.AgentTypes[0],
 		tracker:    tr,
-		workspace:  workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(cfg.Sources[0].Connection.BaseURL, cfg.Sources[0].Connection.Token),
+		workspace:  workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(cfg.Sources[0].Connection.BaseURL(), cfg.Sources[0].Connection.Token),
 		finished:   map[string]state.TerminalIssue{},
 		retryQueue: map[string]state.RetryEntry{},
 	}

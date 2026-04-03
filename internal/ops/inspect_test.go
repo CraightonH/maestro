@@ -24,7 +24,7 @@ func TestSummarizeConfig(t *testing.T) {
 				Repo:      "https://gitlab.example.com/team/project.git",
 				AgentType: "code-pr",
 				Connection: config.SourceConnection{
-					BaseURL:  "https://gitlab.example.com",
+					Domain:   "gitlab.example.com",
 					Project:  "team/project",
 					TokenEnv: "GITLAB_TOKEN",
 				},

@@ -179,8 +179,14 @@ func sourceDefaultsForTracker(defaults SourceDefaultsConfig, tracker string) Sou
 }
 
 func mergeSourceDefaults(target *SourceConfig, defaults SourceDefaultsEntry) {
-	if strings.TrimSpace(target.Connection.BaseURL) == "" {
-		target.Connection.BaseURL = defaults.Connection.BaseURL
+	if strings.TrimSpace(target.Connection.Domain) == "" {
+		target.Connection.Domain = defaults.Connection.Domain
+	}
+	if strings.TrimSpace(target.Connection.Protocol) == "" {
+		target.Connection.Protocol = defaults.Connection.Protocol
+	}
+	if strings.TrimSpace(target.Connection.GitProtocol) == "" {
+		target.Connection.GitProtocol = defaults.Connection.GitProtocol
 	}
 	if strings.TrimSpace(target.Connection.TokenEnv) == "" {
 		target.Connection.TokenEnv = defaults.Connection.TokenEnv

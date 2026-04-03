@@ -29,9 +29,10 @@ func TestPollNormalizesProjectIssues(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "team/project",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Project:  "team/project",
 		},
 		Filter: config.FilterConfig{Labels: []string{"agent:ready"}},
 	})
@@ -46,8 +47,8 @@ func TestPollNormalizesProjectIssues(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("issues len = %d", len(issues))
 	}
-	if got := issues[0].Meta["repo_url"]; got != "https://gitlab.example.com/team/project.git" {
-		t.Fatalf("repo_url = %q", got)
+	if got, want := issues[0].Meta["repo_url"], server.URL+"/team/project.git"; got != want {
+		t.Fatalf("repo_url = %q, want %q", got, want)
 	}
 }
 
@@ -71,9 +72,10 @@ func TestGetNormalizesBlockingLinks(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "team/project",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Project:  "team/project",
 		},
 	})
 	if err != nil {
@@ -117,9 +119,10 @@ func TestEnsureProjectIsSafeUnderConcurrentCalls(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "team/project",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Project:  "team/project",
 		},
 	})
 	if err != nil {
@@ -166,9 +169,10 @@ func TestPollNormalizesProjectIssuesWithMultipleAssignees(t *testing.T) {
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "team/project",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Project:  "team/project",
 		},
 		Filter: config.FilterConfig{
 			Labels:   []string{"agent:ready"},
@@ -219,9 +223,10 @@ func TestPollNormalizesEpicChildIssues(t *testing.T) {
 		Repo:      "https://gitlab.example.com/team/platform/repo.git",
 		AgentType: "repo-maintainer",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 		Filter: config.FilterConfig{
 			Labels:   []string{"agent:ready"},
@@ -279,9 +284,10 @@ func TestPollNormalizesEpicChildIssuesWithMultipleAssignees(t *testing.T) {
 		Repo:      "https://gitlab.example.com/team/platform/repo.git",
 		AgentType: "repo-maintainer",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 		Filter: config.FilterConfig{
 			Labels:   []string{"agent:ready"},
@@ -326,9 +332,10 @@ func TestPollNormalizesEpicChildIssuesWithRepoPath(t *testing.T) {
 		Repo:      "team/platform/repo",
 		AgentType: "repo-maintainer",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 		Filter: config.FilterConfig{
 			Labels: []string{"agent:ready"},
@@ -378,9 +385,10 @@ func TestPollNormalizesEpicChildIssuesWithSeparateEpicAndIssueFilters(t *testing
 		Repo:      "https://gitlab.example.com/team/platform/repo.git",
 		AgentType: "repo-maintainer",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 		EpicFilter: config.FilterConfig{
 			Labels: []string{"bucket:ready"},
@@ -435,9 +443,10 @@ func TestPollNormalizesEpicChildIssuesWithEpicIIDFilter(t *testing.T) {
 		Repo:      "https://gitlab.example.com/team/platform/repo.git",
 		AgentType: "repo-maintainer",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 		EpicFilter: config.FilterConfig{
 			IIDs: []int{11},
@@ -490,9 +499,10 @@ func TestEpicLifecycleOperationsUseIssueEndpoints(t *testing.T) {
 		Tracker: "gitlab-epic",
 		Repo:    "https://gitlab.example.com/team/platform/repo.git",
 		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Group:   "team/platform",
+			Domain:   strings.TrimPrefix(server.URL, "http://"),
+			Protocol: "http",
+			Token:    "secret",
+			Group:    "team/platform",
 		},
 	})
 	if err != nil {

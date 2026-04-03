@@ -14,7 +14,7 @@ sources:
   - name: gitlab-project
     tracker: gitlab
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
       project: your-group/your-project
     filter:
@@ -26,10 +26,9 @@ sources:
   - name: gitlab-epic
     tracker: gitlab-epic
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
       group: your-group
-    repo: https://gitlab.com/your-group/your-project.git
     epic_filter:
       labels: [bucket:ready]
     issue_filter:

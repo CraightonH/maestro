@@ -113,7 +113,7 @@ func DemoConfig(host string, port int) (*config.Config, error) {
 				Tags:         []string{"platform", "prod"},
 				Tracker:      "gitlab",
 				Connection: config.SourceConnection{
-					BaseURL:  "https://gitlab.example.com",
+					Domain:   "gitlab.example.com",
 					TokenEnv: "GITLAB_TOKEN",
 					Project:  "platform/app",
 				},
@@ -128,11 +128,10 @@ func DemoConfig(host string, port int) (*config.Config, error) {
 				Tags:         []string{"epic", "growth"},
 				Tracker:      "gitlab-epic",
 				Connection: config.SourceConnection{
-					BaseURL:  "https://gitlab.example.com",
+					Domain:   "gitlab.example.com",
 					TokenEnv: "GITLAB_TOKEN",
 					Group:    "growth",
 				},
-				Repo: "growth/web",
 				EpicFilter: config.FilterConfig{
 					IIDs: []int{17},
 				},
@@ -147,7 +146,7 @@ func DemoConfig(host string, port int) (*config.Config, error) {
 				Tags:         []string{"design", "ux"},
 				Tracker:      "linear",
 				Connection: config.SourceConnection{
-					BaseURL:  "https://api.linear.app/graphql",
+					Domain:   "api.linear.app",
 					TokenEnv: "LINEAR_API_KEY",
 					Project:  "Design Ops",
 					Team:     "DES",

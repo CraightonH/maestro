@@ -15,7 +15,7 @@ func TestDiagnoseConfigWarnsOnIndistinguishableLinearRoutes(t *testing.T) {
 				Name:    "triage-a",
 				Tracker: "linear",
 				Connection: config.SourceConnection{
-					BaseURL: "https://api.linear.app/graphql",
+					Domain:  "api.linear.app",
 					Project: "maestro",
 				},
 				Filter: config.FilterConfig{
@@ -27,7 +27,7 @@ func TestDiagnoseConfigWarnsOnIndistinguishableLinearRoutes(t *testing.T) {
 				Name:    "triage-b",
 				Tracker: "linear",
 				Connection: config.SourceConnection{
-					BaseURL: "https://api.linear.app/graphql",
+					Domain:  "api.linear.app",
 					Project: "maestro",
 				},
 				Filter: config.FilterConfig{
@@ -56,7 +56,7 @@ func TestDiagnoseConfigWarnsWhenBroadSourceSubsumesNarrowerRoute(t *testing.T) {
 				Tracker:     "gitlab",
 				LabelPrefix: "orch",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -69,7 +69,7 @@ func TestDiagnoseConfigWarnsWhenBroadSourceSubsumesNarrowerRoute(t *testing.T) {
 				Tracker:     "gitlab",
 				LabelPrefix: "review",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -97,7 +97,7 @@ func TestDiagnoseConfigWarnsOnGitLabProjectAndEpicOverlap(t *testing.T) {
 				Name:    "project-ready",
 				Tracker: "gitlab",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/platform/repo",
 				},
 				Filter: config.FilterConfig{
@@ -108,7 +108,7 @@ func TestDiagnoseConfigWarnsOnGitLabProjectAndEpicOverlap(t *testing.T) {
 				Name:    "epic-ready",
 				Tracker: "gitlab-epic",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Group:   "team/platform",
 				},
 				Filter: config.FilterConfig{
@@ -141,7 +141,7 @@ func TestDiagnoseConfigWarnsWhenCustomOnCompleteLeavesMultipleStagesEligible(t *
 				Tracker:     "gitlab",
 				LabelPrefix: "orch",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -157,7 +157,7 @@ func TestDiagnoseConfigWarnsWhenCustomOnCompleteLeavesMultipleStagesEligible(t *
 				Tracker:     "gitlab",
 				LabelPrefix: "orch",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -183,7 +183,7 @@ func TestDiagnoseConfigSkipsCleanlySeparatedPipelineStages(t *testing.T) {
 				Tracker:     "gitlab",
 				LabelPrefix: "orch",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -200,7 +200,7 @@ func TestDiagnoseConfigSkipsCleanlySeparatedPipelineStages(t *testing.T) {
 				Tracker:     "gitlab",
 				LabelPrefix: "orch",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 				Filter: config.FilterConfig{
@@ -262,7 +262,7 @@ func TestDiagnoseConfigWarnsWhenGlobalConcurrencyCapsSourcesAndAgents(t *testing
 				AgentType:     "code",
 				MaxActiveRuns: 3,
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 				},
 			},

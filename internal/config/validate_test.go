@@ -40,8 +40,8 @@ func TestValidateMVPRejectsZeroGlobalConcurrency(t *testing.T) {
 				Tracker:   "linear",
 				Repo:      "https://gitlab.example.com/team/project.git",
 				AgentType: "code-pr",
-				Connection: config.GitLabConnection{
-					BaseURL: "https://example.com",
+				Connection: config.SourceConnection{
+					Domain: "example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -522,8 +522,8 @@ func TestValidateMVPAcceptsClaudeManualApproval(t *testing.T) {
 				Name:      "platform-dev",
 				Tracker:   "gitlab",
 				AgentType: "triage",
-				Connection: config.GitLabConnection{
-					BaseURL: "https://gitlab.example.com",
+				Connection: config.SourceConnection{
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -571,7 +571,7 @@ func TestValidateMVPAcceptsClaudeMultiTurnOverride(t *testing.T) {
 				Tracker:   "gitlab",
 				AgentType: "code-pr",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -625,7 +625,7 @@ func TestValidateMVPAcceptsDockerHarnessConfig(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -701,7 +701,7 @@ func TestValidateMVPAcceptsDockerStructuredAccessConfig(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -763,7 +763,7 @@ func TestValidateMVPRejectsWritableDockerMount(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -810,7 +810,7 @@ func TestValidateMVPRejectsInvalidDockerPullPolicy(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -853,7 +853,7 @@ func TestValidateMVPRejectsInvalidDockerImagePinMode(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -896,7 +896,7 @@ func TestValidateMVPRejectsUnpinnedRequiredDockerImage(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -939,7 +939,7 @@ func TestValidateMVPRejectsInvalidDockerAuthMode(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -984,7 +984,7 @@ func TestValidateMVPRejectsInvalidDockerSecurityPreset(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1029,7 +1029,7 @@ func TestValidateMVPRejectsInvalidDockerCacheProfile(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1074,7 +1074,7 @@ func TestValidateMVPRejectsDockerStructuredSecretEnvConflict(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1122,7 +1122,7 @@ func TestValidateMVPRejectsDockerStructuredMountOverlap(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1170,7 +1170,7 @@ func TestValidateMVPRejectsContradictoryDockerNetworkPolicy(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1217,7 +1217,7 @@ func TestValidateMVPRejectsAllowlistNetworkPolicyProxyEnvOverride(t *testing.T) 
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1279,7 +1279,7 @@ func TestValidateMVPAcceptsClaudeDefaultsMultiTurn(t *testing.T) {
 				Tracker:   "gitlab",
 				AgentType: "code-pr",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1327,7 +1327,7 @@ func TestValidateMVPRejectsReservedLifecycleLabelsInCustomTransitions(t *testing
 				Tracker:   "gitlab",
 				AgentType: "code-pr",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1378,8 +1378,8 @@ func TestValidateMVPRejectsZeroApprovalTimeout(t *testing.T) {
 				Name:      "platform-dev",
 				Tracker:   "gitlab",
 				AgentType: "triage",
-				Connection: config.GitLabConnection{
-					BaseURL: "https://gitlab.example.com",
+				Connection: config.SourceConnection{
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1429,7 +1429,7 @@ func TestValidateMVPAcceptsGitLabEpicSource(t *testing.T) {
 				Repo:      "https://gitlab.com/team/project.git",
 				AgentType: "triage",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Group:   "team/platform",
 					Token:   "token",
 				},
@@ -1476,7 +1476,7 @@ func TestValidateMVPAcceptsSlackCommunicationChannel(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1529,7 +1529,7 @@ func TestValidateMVPRejectsUnknownCommunicationChannel(t *testing.T) {
 			Tracker:   "gitlab",
 			AgentType: "code-pr",
 			Connection: config.SourceConnection{
-				BaseURL: "https://gitlab.example.com",
+				Domain: "gitlab.example.com",
 				Project: "team/project",
 				Token:   "token",
 			},
@@ -1583,8 +1583,8 @@ func TestValidateMVPRejectsInvalidEnabledServerConfig(t *testing.T) {
 				Name:      "platform-dev",
 				Tracker:   "gitlab",
 				AgentType: "code-pr",
-				Connection: config.GitLabConnection{
-					BaseURL: "https://gitlab.example.com",
+				Connection: config.SourceConnection{
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1633,7 +1633,7 @@ func TestValidateMVPRejectsCredentialBearingRepoURL(t *testing.T) {
 				Repo:      "https://oauth2:secret@example.com/team/project.git",
 				AgentType: "triage",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Group:   "team/platform",
 					Token:   "token",
 				},
@@ -1685,7 +1685,7 @@ func TestValidateMVPRejectsMalformedPromptTemplate(t *testing.T) {
 				Tracker:   "gitlab",
 				AgentType: "triage",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1739,7 +1739,7 @@ func TestValidateMVPRejectsInvalidSourceRetryPolicy(t *testing.T) {
 				RetryBase:       config.Duration{Duration: 2 * time.Minute},
 				MaxRetryBackoff: config.Duration{Duration: time.Minute},
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1791,7 +1791,7 @@ func TestValidateMVPAcceptsMultipleSourcesAndAgents(t *testing.T) {
 				Tracker:   "gitlab",
 				AgentType: "code-pr",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Project: "team/project",
 					Token:   "token",
 				},
@@ -1861,7 +1861,7 @@ func TestValidateMVPRejectsGitLabEpicAssigneeOnEpicFilter(t *testing.T) {
 				Repo:      "https://gitlab.com/team/project.git",
 				AgentType: "triage",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Group:   "team/platform",
 					Token:   "token",
 				},
@@ -1917,7 +1917,7 @@ func TestValidateMVPAcceptsGitLabEpicIIDFilter(t *testing.T) {
 				Repo:      "https://gitlab.example.com/team/project.git",
 				AgentType: "triage",
 				Connection: config.SourceConnection{
-					BaseURL: "https://gitlab.example.com",
+					Domain: "gitlab.example.com",
 					Group:   "team/platform",
 					Token:   "token",
 				},

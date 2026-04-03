@@ -261,7 +261,7 @@ type issueLabelsResponse struct {
 }
 
 func NewAdapter(source config.SourceConfig) (*Adapter, error) {
-	client, err := NewClient(source.Connection.BaseURL, source.Connection.Token)
+	client, err := NewClient(source.Connection.BaseURL(), source.Connection.Token)
 	if err != nil {
 		return nil, err
 	}

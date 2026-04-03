@@ -153,8 +153,14 @@ func ValidateMVP(cfg *Config) error {
 		if source.Tracker != "gitlab" && source.Tracker != "gitlab-epic" && source.Tracker != "linear" {
 			return fmt.Errorf("source %q requires tracker=gitlab, gitlab-epic, or linear", source.Name)
 		}
-		if source.Tracker != "linear" && strings.TrimSpace(source.Connection.BaseURL) == "" {
-			return fmt.Errorf("source %q connection.base_url is required", source.Name)
+		if source.Tracker != "linear" && strings.TrimSpace(source.Connection.Domain) == "" {
+			return fmt.Errorf("source %q connection.domain is required", source.Name)
+		}
+		if p := strings.TrimSpace(source.Connection.Protocol); p != "" && p != "https" && p != "http" {
+			return fmt.Errorf("source %q connection.protocol must be http or https", source.Name)
+		}
+		if gp := strings.TrimSpace(source.Connection.GitProtocol); gp != "" && gp != "https" && gp != "ssh" {
+			return fmt.Errorf("source %q connection.git_protocol must be https or ssh", source.Name)
 		}
 		if source.Tracker == "gitlab" && strings.TrimSpace(source.Connection.Project) == "" {
 			return fmt.Errorf("source %q connection.project is required", source.Name)
@@ -175,8 +181,8 @@ func ValidateMVP(cfg *Config) error {
 		if !ok {
 			return fmt.Errorf("source %q references unknown agent_type %q", source.Name, source.AgentType)
 		}
-		if requiresSourceRepo(agent.Workspace, source.Tracker) && strings.TrimSpace(source.Repo) == "" {
-			return fmt.Errorf("source %q requires repo for git-clone workspace", source.Name)
+		if requiresSourceRepo(agent.Workspace, source.Tracker) && source.Connection.GitRepoURL(source.Connection.Project) == "" && strings.TrimSpace(source.Repo) == "" {
+			return fmt.Errorf("source %q requires either connection.domain+project or explicit repo for git-clone workspace", source.Name)
 		}
 		if strings.TrimSpace(source.Repo) != "" {
 			if err := validateRepoURL(source.Repo); err != nil {

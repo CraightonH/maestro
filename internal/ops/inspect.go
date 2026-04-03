@@ -50,7 +50,9 @@ type ConfigSourceSummary struct {
 	Tags              []string `json:"tags,omitempty"`
 	Tracker           string   `json:"tracker"`
 	AgentType         string   `json:"agent_type,omitempty"`
-	BaseURL           string   `json:"base_url,omitempty"`
+	Domain            string   `json:"domain,omitempty"`
+	Protocol          string   `json:"protocol,omitempty"`
+	GitProtocol       string   `json:"git_protocol,omitempty"`
 	Project           string   `json:"project,omitempty"`
 	Group             string   `json:"group,omitempty"`
 	Repo              string   `json:"repo,omitempty"`
@@ -177,7 +179,9 @@ func SummarizeConfig(cfg *config.Config) ConfigSummary {
 			Tags:              append([]string(nil), source.Tags...),
 			Tracker:           source.Tracker,
 			AgentType:         source.AgentType,
-			BaseURL:           source.Connection.BaseURL,
+			Domain:            source.Connection.Domain,
+			Protocol:          source.Connection.Protocol,
+			GitProtocol:       source.Connection.GitProtocol,
 			Project:           source.Connection.Project,
 			Group:             source.Connection.GroupPath(),
 			Repo:              source.Repo,

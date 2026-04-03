@@ -13,7 +13,7 @@ sources:
   - name: gitlab-poc
     tracker: gitlab
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
       project: your-group/your-project
     filter:

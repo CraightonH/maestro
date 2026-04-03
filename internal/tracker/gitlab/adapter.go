@@ -84,7 +84,7 @@ type gitLabEpicIssueRef struct {
 }
 
 func NewAdapter(source config.SourceConfig) (*Adapter, error) {
-	client, err := NewClient(source.Connection.BaseURL, source.Connection.Token)
+	client, err := NewClient(source.Connection.BaseURL(), source.Connection.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -442,9 +442,7 @@ func (a *Adapter) normalizeProjectIssue(item issueResponse) domain.Issue {
 		project = issueProject
 	}
 
-	a.projectMu.RLock()
-	repoURL := chooseRepoURL(a.project)
-	a.projectMu.RUnlock()
+	repoURL := a.source.Connection.GitRepoURL(project)
 
 	return domain.Issue{
 		ID:          formatGitLabIssueID(project, item.IID),
@@ -464,7 +462,7 @@ func (a *Adapter) normalizeProjectIssue(item issueResponse) domain.Issue {
 		Meta: map[string]string{
 			"project":         project,
 			"repo_url":        repoURL,
-			"gitlab_base_url": a.source.Connection.BaseURL,
+			"gitlab_base_url": a.source.Connection.BaseURL(),
 			"gitlab_scope":    "project-issue",
 			"state_type":      strings.ToLower(strings.TrimSpace(item.State)),
 		},
@@ -507,8 +505,8 @@ func (a *Adapter) normalizeEpicIssue(item issueResponse, epic epicResponse) (dom
 		Meta: map[string]string{
 			"project":           project,
 			"project_id":        strconv.Itoa(item.ProjectID),
-			"repo_url":          resolveSourceRepoURL(a.source.Connection.BaseURL, a.source.Repo),
-			"gitlab_base_url":   a.source.Connection.BaseURL,
+			"repo_url":          a.resolveRepoURL(project),
+			"gitlab_base_url":   a.source.Connection.BaseURL(),
 			"gitlab_scope":      "epic-issue",
 			"state_type":        strings.ToLower(strings.TrimSpace(item.State)),
 			"bucket_state_type": strings.ToLower(strings.TrimSpace(epic.State)),
@@ -572,8 +570,8 @@ func (a *Adapter) normalizeLinkedIssue(item issueResponse, fallbackProject strin
 		UpdatedAt:   trackerbase.ParseTime(item.UpdatedAt),
 		Meta: map[string]string{
 			"project":         project,
-			"repo_url":        resolveSourceRepoURL(a.source.Connection.BaseURL, project),
-			"gitlab_base_url": a.source.Connection.BaseURL,
+			"repo_url":        a.source.Connection.GitRepoURL(project),
+			"gitlab_base_url": a.source.Connection.BaseURL(),
 			"gitlab_scope":    "project-issue",
 			"state_type":      strings.ToLower(strings.TrimSpace(item.State)),
 		},
@@ -704,14 +702,25 @@ func normalizeState(state string) string {
 	return state
 }
 
-func chooseRepoURL(project projectResponse) string {
-	if strings.TrimSpace(project.HTTPURLToRepo) != "" {
-		return project.HTTPURLToRepo
+// resolveRepoURL returns the explicit source.Repo if it's a full URL,
+// resolves a bare path repo via the connection config, or falls back to
+// deriving the URL from the connection config for the given project path.
+func (a *Adapter) resolveRepoURL(project string) string {
+	repo := strings.TrimSpace(a.source.Repo)
+	if repo == "" {
+		return a.source.Connection.GitRepoURL(project)
 	}
-	if strings.TrimSpace(project.SSHURLToRepo) != "" {
-		return project.SSHURLToRepo
+	// Absolute path or relative path — return as-is.
+	if strings.HasPrefix(repo, "/") || strings.HasPrefix(repo, ".") {
+		return repo
 	}
-	return ""
+	// Full URL — return as-is.
+	parsed, err := url.Parse(repo)
+	if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return repo
+	}
+	// Bare project path — resolve against connection.
+	return a.source.Connection.GitRepoURL(repo)
 }
 
 func resolveSourceRepoURL(baseURL string, repo string) string {

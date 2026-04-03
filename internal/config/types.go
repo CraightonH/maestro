@@ -273,12 +273,51 @@ type SourceConfig struct {
 }
 
 type SourceConnection struct {
-	BaseURL  string `yaml:"base_url"`
-	TokenEnv string `yaml:"token_env"`
-	Project  string `yaml:"project"`
-	Group    string `yaml:"group"`
-	Team     string `yaml:"team"`
-	Token    string `yaml:"-"`
+	Domain      string `yaml:"domain"`
+	Protocol    string `yaml:"protocol"`
+	GitProtocol string `yaml:"git_protocol"`
+	TokenEnv    string `yaml:"token_env"`
+	Project     string `yaml:"project"`
+	Group       string `yaml:"group"`
+	Team        string `yaml:"team"`
+	Token       string `yaml:"-"`
+}
+
+// BaseURL returns the API base URL constructed from protocol and domain
+// (e.g. "https://git.taxhawk.com").
+func (c SourceConnection) BaseURL() string {
+	protocol := strings.TrimSpace(c.Protocol)
+	if protocol == "" {
+		protocol = "https"
+	}
+	domain := strings.TrimSpace(c.Domain)
+	if domain == "" {
+		return ""
+	}
+	return protocol + "://" + domain
+}
+
+// GitRepoURL constructs a git clone/push URL for the given project path
+// using the configured git_protocol preference. SSH produces SCP-style
+// "git@domain:project.git"; HTTPS produces "https://domain/project.git".
+func (c SourceConnection) GitRepoURL(project string) string {
+	domain := strings.TrimSpace(c.Domain)
+	project = strings.TrimSpace(project)
+	if domain == "" || project == "" {
+		return ""
+	}
+	project = strings.TrimPrefix(project, "/")
+	if !strings.HasSuffix(project, ".git") {
+		project += ".git"
+	}
+	if strings.EqualFold(strings.TrimSpace(c.GitProtocol), "ssh") {
+		return "git@" + domain + ":" + project
+	}
+	protocol := strings.TrimSpace(c.Protocol)
+	if protocol == "" {
+		protocol = "https"
+	}
+	return protocol + "://" + domain + "/" + project
 }
 
 type GitLabConnection = SourceConnection

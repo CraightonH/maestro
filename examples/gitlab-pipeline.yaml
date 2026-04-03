@@ -23,10 +23,9 @@ sources:
   - name: implement
     tracker: gitlab
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $GITLAB_TOKEN
       project: "your-group/your-project"
-    repo: https://gitlab.com/your-group/your-project.git
     filter:
       labels: [todo]
     agent_type: dev-codex
@@ -48,10 +47,9 @@ sources:
   - name: review
     tracker: gitlab
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $GITLAB_TOKEN
       project: "your-group/your-project"
-    repo: https://gitlab.com/your-group/your-project.git
     filter:
       labels: [needs-review]
     agent_type: review-claude

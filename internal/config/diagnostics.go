@@ -488,24 +488,24 @@ func sentenceTerminator(values []string) string {
 }
 
 func sameLinearProject(a SourceConfig, b SourceConfig) bool {
-	if normalizeBaseURL(a.Connection.BaseURL) != normalizeBaseURL(b.Connection.BaseURL) {
+	if normalizeBaseURL(a.Connection.BaseURL()) != normalizeBaseURL(b.Connection.BaseURL()) {
 		return false
 	}
 	return hasStringIntersection(linearProjectHints(a), linearProjectHints(b))
 }
 
 func sameGitLabProject(a SourceConfig, b SourceConfig) bool {
-	return normalizeBaseURL(a.Connection.BaseURL) == normalizeBaseURL(b.Connection.BaseURL) &&
+	return normalizeBaseURL(a.Connection.BaseURL()) == normalizeBaseURL(b.Connection.BaseURL()) &&
 		strings.EqualFold(strings.TrimSpace(a.Connection.Project), strings.TrimSpace(b.Connection.Project))
 }
 
 func sameGitLabGroup(a SourceConfig, b SourceConfig) bool {
-	return normalizeBaseURL(a.Connection.BaseURL) == normalizeBaseURL(b.Connection.BaseURL) &&
+	return normalizeBaseURL(a.Connection.BaseURL()) == normalizeBaseURL(b.Connection.BaseURL()) &&
 		strings.EqualFold(strings.TrimSpace(a.Connection.GroupPath()), strings.TrimSpace(b.Connection.GroupPath()))
 }
 
 func gitLabProjectWithinEpicGroup(projectSource SourceConfig, epicSource SourceConfig) bool {
-	if normalizeBaseURL(projectSource.Connection.BaseURL) != normalizeBaseURL(epicSource.Connection.BaseURL) {
+	if normalizeBaseURL(projectSource.Connection.BaseURL()) != normalizeBaseURL(epicSource.Connection.BaseURL()) {
 		return false
 	}
 	project := strings.ToLower(strings.TrimSpace(projectSource.Connection.Project))

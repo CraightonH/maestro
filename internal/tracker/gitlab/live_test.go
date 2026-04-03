@@ -24,12 +24,14 @@ func TestLiveGitLabPollsConfiguredProject(t *testing.T) {
 		"MAESTRO_TEST_GITLAB_LABEL",
 	)
 
+	domain, protocol := parseLiveBaseURL(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 	adapter, err := NewAdapter(config.SourceConfig{
 		Name:      "live-gitlab",
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   domain,
+			Protocol: protocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Project:  env["MAESTRO_TEST_GITLAB_PROJECT"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -76,12 +78,14 @@ func TestLiveGitLabLifecycleWriteback(t *testing.T) {
 		"MAESTRO_TEST_GITLAB_LABEL",
 	)
 
+	domain, protocol := parseLiveBaseURL(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 	adapter, err := NewAdapter(config.SourceConfig{
 		Name:      "live-gitlab",
 		Tracker:   "gitlab",
 		AgentType: "code-pr",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   domain,
+			Protocol: protocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Project:  env["MAESTRO_TEST_GITLAB_PROJECT"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -165,13 +169,15 @@ func TestLiveGitLabEpicPollsConfiguredGroup(t *testing.T) {
 		"MAESTRO_TEST_GITLAB_EPIC_REPO",
 	)
 
+	domain, protocol := parseLiveBaseURL(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 	adapter, err := NewAdapter(config.SourceConfig{
 		Name:      "live-gitlab-epic",
 		Tracker:   "gitlab-epic",
 		Repo:      env["MAESTRO_TEST_GITLAB_EPIC_REPO"],
 		AgentType: "triage",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   domain,
+			Protocol: protocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Group:    env["MAESTRO_TEST_GITLAB_EPIC_GROUP"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -216,13 +222,15 @@ func TestLiveGitLabEpicLifecycleWriteback(t *testing.T) {
 		"MAESTRO_TEST_GITLAB_EPIC_REPO",
 	)
 
+	domain, protocol := parseLiveBaseURL(t, env["MAESTRO_TEST_GITLAB_BASE_URL"])
 	adapter, err := NewAdapter(config.SourceConfig{
 		Name:      "live-gitlab-epic",
 		Tracker:   "gitlab-epic",
 		Repo:      env["MAESTRO_TEST_GITLAB_EPIC_REPO"],
 		AgentType: "triage",
 		Connection: config.GitLabConnection{
-			BaseURL:  env["MAESTRO_TEST_GITLAB_BASE_URL"],
+			Domain:   domain,
+			Protocol: protocol,
 			Token:    env["MAESTRO_TEST_GITLAB_TOKEN"],
 			Group:    env["MAESTRO_TEST_GITLAB_EPIC_GROUP"],
 			TokenEnv: "MAESTRO_TEST_GITLAB_TOKEN",
@@ -293,6 +301,17 @@ func TestLiveGitLabEpicLifecycleWriteback(t *testing.T) {
 	if hasGitLabLabel(updated.Labels, trackerbase.LifecycleLabelActive) {
 		t.Fatalf("expected %q removed from issue %s, labels=%v", trackerbase.LifecycleLabelActive, updated.Identifier, updated.Labels)
 	}
+}
+
+// parseLiveBaseURL splits a full base URL env var (e.g. "https://gitlab.example.com")
+// into Domain and Protocol fields for SourceConnection.
+func parseLiveBaseURL(t *testing.T, raw string) (domain, protocol string) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse base url %q: %v", raw, err)
+	}
+	return u.Host, u.Scheme
 }
 
 func gitLabCommentExists(t *testing.T, env map[string]string, issueID string, want string) bool {

@@ -13,10 +13,9 @@ sources:
   - name: gitlab-epics
     tracker: gitlab-epic
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
       group: your-group-or-subgroup
-    repo: https://gitlab.com/your-group/your-project.git
     epic_filter:
       # Optional: pin the source to exact epic IIDs inside the group.
       # iids: [1]

@@ -5,11 +5,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/tjohnson/maestro/internal/config"
 )
+
+// testConnection returns a SourceConnection pointing at a local httptest server.
+func testConnection(serverURL, token, project string) config.SourceConnection {
+	u, _ := url.Parse(serverURL)
+	return config.SourceConnection{
+		Domain:   u.Host,
+		Protocol: u.Scheme,
+		Token:    token,
+		Project:  project,
+	}
+}
 
 func TestPollNormalizesIssues(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,11 +34,7 @@ func TestPollNormalizesIssues(t *testing.T) {
 		Tracker:   "linear",
 		Repo:      "https://gitlab.example.com/team/maestro-testbed.git",
 		AgentType: "code-pr",
-		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "project-1",
-		},
+		Connection: testConnection(server.URL, "secret", "project-1"),
 		Filter: config.FilterConfig{
 			States: []string{"Todo"},
 			Labels: []string{"agent:ready"},
@@ -93,11 +101,7 @@ func TestPollResolvesProjectNameToProjectID(t *testing.T) {
 		Name:      "linear-name",
 		Tracker:   "linear",
 		AgentType: "code-pr",
-		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "Maestro Testbed",
-		},
+		Connection: testConnection(server.URL, "secret", "Maestro Testbed"),
 	})
 	if err != nil {
 		t.Fatalf("new adapter: %v", err)
@@ -130,11 +134,7 @@ func TestGetNormalizesBlockingRelations(t *testing.T) {
 		Name:      "live-linear",
 		Tracker:   "linear",
 		AgentType: "code-pr",
-		Connection: config.SourceConnection{
-			BaseURL: server.URL,
-			Token:   "secret",
-			Project: "project-1",
-		},
+		Connection: testConnection(server.URL, "secret", "project-1"),
 	})
 	if err != nil {
 		t.Fatalf("new adapter: %v", err)

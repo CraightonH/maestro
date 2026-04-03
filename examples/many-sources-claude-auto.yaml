@@ -8,17 +8,16 @@ agent_packs_dir: ../agents
 source_defaults:
   gitlab:
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
     filter:
       assignee: $MAESTRO_USER
     poll_interval: 15s
   gitlab_epic:
     connection:
-      base_url: https://gitlab.com
+      domain: gitlab.com
       token_env: $MAESTRO_GITLAB_TOKEN
       group: your-group
-    repo: https://gitlab.com/your-group/your-project.git
     issue_filter:
       assignee: $MAESTRO_USER
     poll_interval: 15s

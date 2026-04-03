@@ -1420,7 +1420,7 @@ sources:
     tracker: gitlab
     label_prefix: orchx
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:

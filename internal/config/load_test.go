@@ -35,7 +35,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -104,7 +104,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -219,7 +219,7 @@ sources:
   - name: platform-epics
     tracker: gitlab-epic
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       group: team/platform
     repo: https://gitlab.example.com/team/project.git
@@ -281,7 +281,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -342,7 +342,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -401,7 +401,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -463,7 +463,7 @@ sources:
   - name: inherited
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -472,7 +472,7 @@ sources:
   - name: override
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -550,7 +550,7 @@ sources:
   - name: inherited
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -559,7 +559,7 @@ sources:
   - name: override
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -652,7 +652,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -760,7 +760,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -838,7 +838,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1024,7 +1024,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1114,7 +1114,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1205,7 +1205,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1305,7 +1305,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1405,7 +1405,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project
     filter:
@@ -1467,7 +1467,7 @@ sources:
   - name: platform-dev
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       project: team/project
     filter:
       labels: [agent:ready]
@@ -1541,14 +1541,14 @@ defaults:
 source_defaults:
   gitlab:
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
     filter:
       assignee: $MAESTRO_USER
       labels: [agent:ready]
   gitlab_epic:
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       group: team/platform
     repo: https://gitlab.example.com/team/platform/repo.git
@@ -1611,7 +1611,7 @@ logging:
 		t.Fatalf("load config: %v", err)
 	}
 
-	if got := cfg.Sources[0].Connection.BaseURL; got != "https://gitlab.example.com" {
+	if got := cfg.Sources[0].Connection.BaseURL(); got != "https://gitlab.example.com" {
 		t.Fatalf("gitlab base url = %q", got)
 	}
 	if got := cfg.Sources[0].Filter.Assignee; got != "tjohnson" {
@@ -1685,7 +1685,7 @@ sources:
   - name: project-a
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project-a
     filter:
@@ -1769,7 +1769,7 @@ sources:
   - name: project-a
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project-a
     agent_type: repo-maintainer
@@ -1820,7 +1820,7 @@ sources:
   - name: test
     tracker: gitlab
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: $MY_GITLAB_TOKEN
       project: team/project
     filter:
@@ -1871,7 +1871,7 @@ sources:
     tracker: gitlab
     label_prefix: fwr
     connection:
-      base_url: https://gitlab.example.com
+      domain: gitlab.example.com
       token_env: GITLAB_TOKEN
       project: team/project-a
     filter:

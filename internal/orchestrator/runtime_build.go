@@ -95,7 +95,7 @@ func buildScopedService(cfg *config.Config, source config.SourceConfig, logger *
 		Tracker:       tr,
 		Harness:       hr,
 		ProcessRunner: runner,
-		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(source.Connection.BaseURL, source.Connection.Token),
+		Workspace:     workspace.NewManager(cfg.Workspace.Root).WithGitLabAuth(source.Connection.BaseURL(), source.Connection.Token),
 		StateStore:    state.NewStore(config.ScopedStateDir(cfg, source)),
 		Limiter:       shared.limiterFor(agent),
 		MetricsStore:  shared.metrics,
